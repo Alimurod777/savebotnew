@@ -1,0 +1,27 @@
+# Maxfiy fayllar - HECH QACHON GitHub'ga yuklamang!
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Sessions (maxfiy - Telegram login ma'lumotlari)
+sessions/
+
+# Yuklab olingan fayllar
+downloads/
+
+# Loglar
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

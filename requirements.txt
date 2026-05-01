@@ -1,0 +1,61 @@
+# Telegram client - Pyrofork (MTProto layer >= 220)
+# MINIMUM VERSION REQUIREMENTS
+# Supports pyrofork 2.3.69+ with silent reply fallback strategy
+pyrofork>=2.3.69,<3.0
+
+# CRITICAL: Must use fork-specific crypto library
+# Standard tgcrypto is FORBIDDEN - causes MTProto failures
+tgcrypto-pyrofork>=1.2.8,<2.0
+
+# MongoDB (session backup, banned users, critical state only)
+# pymongo 4.x and motor 3.x verified on Python 3.10-3.13
+pymongo[srv]>=4.6.0,<5.0
+motor>=3.3.0,<4.0
+dnspython>=2.0.0,<3.0
+
+# Configuration management
+PyYAML>=6.0.1,<7.0
+
+# Media inspection
+pymediainfo>=7.0.1,<8.0
+
+# CLI progress and monitoring
+rich>=13.7.0,<14.0
+
+# QR code generation for login
+qrcode[pil]>=7.4.2,<8.0
+Pillow>=9.0.0,<11.0
+
+# Async utilities
+aiofiles>=23.2.1,<25.0
+aiocache>=0.12.2,<1.0
+aiosqlite>=0.20.0,<1.0
+
+# System monitoring
+psutil>=5.9.8,<7.0
+
+# Web framework (for health checks)
+# Pinned to compatible range verified across 3.10-3.13
+Flask>=1.1.2,<4.0
+gunicorn>=20.1.0,<23.0
+Jinja2>=3.0.3,<4.0
+werkzeug>=2.0.2,<4.0
+itsdangerous>=2.0.1,<3.0
+
+# Utils
+python-decouple>=3.6,<4.0
+
+# FFmpeg support
+ffmpeg-python>=0.2.0,<1.0
+static-ffmpeg>=2.7,<3.0
+
+# 7-Zip support
+py7zr>=0.22.0,<1.0
+
+# Async event loop acceleration (Linux/macOS only, Windows'da o'rnatilmaydi)
+uvloop>=0.19.0,<1.0; sys_platform != "win32"
+
+# Jupyter/Colab/Kaggle async loop patch
+nest_asyncio>=1.6.0,<2.0
+
+# NOTE: pyromod removed - Pyrofork has native listen() support

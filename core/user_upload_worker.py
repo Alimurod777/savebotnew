@@ -117,6 +117,7 @@ class UserUploadWorker:
         self._last_send_time = 0.0
         self._last_activity = time.monotonic()  # for idle reaper
         self._batch_count = 0
+        self._bot_prepared = False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -219,7 +220,7 @@ class UserUploadWorker:
         if self._bot_username:
             await self._prepare_bot_chat(self._bot_username)
 
-    async def _prepare_bot_chat(self, bot_username: str) -> None:
+    async def _prepare_bot_chat(self, bot_username: str, force: bool = False) -> None:
         """
         Ensure the session has an active chat with the bot.
 
@@ -231,21 +232,40 @@ class UserUploadWorker:
 
         /start is sent only once per worker lifetime (worker is reused between tasks).
         """
+        if self._bot_prepared and not force:
+            return
+
         uname = bot_username.lstrip("@")
+        blocked = False
 
-        # Step 1: try to unblock the bot
+        # Step 0: check dialog
         try:
-            await self._client.unblock_user(uname)
-            logger.debug("UserUploadWorker[%d] unblocked bot @%s", self._user_id, uname)
-        except Exception:
-            pass  # not blocked, or unblock not needed
+            await self._client.get_chat(uname)
+            self._bot_prepared = True
+            return
+        except UserIsBlocked:
+            blocked = True
+        except PeerIdInvalid:
+            blocked = False
+        except Exception as e:
+            err_upper = str(e).upper()
+            if "USER_IS_BLOCKED" in err_upper or "BOT WAS BLOCKED" in err_upper:
+                blocked = True
 
-        # Step 2: send /start
+        # Step 1: unblock only when blocked
+        if blocked:
+            try:
+                await self._client.unblock_user(uname)
+                logger.debug("UserUploadWorker[%d] unblocked bot @%s", self._user_id, uname)
+            except Exception:
+                pass
+
+        # Step 2: send /start ONCE (only if dialog missing or after unblock)
         try:
             await self._client.send_message(uname, "/start")
+            self._bot_prepared = True
             logger.debug("UserUploadWorker[%d] sent /start to @%s", self._user_id, uname)
         except (UserIsBlocked, PeerIdInvalid) as e:
-            # Bot is still blocked — this session is unusable for uploads
             logger.warning(
                 "UserUploadWorker[%d] bot @%s is blocked and cannot be unblocked: %s — "
                 "skipping this session",
@@ -255,11 +275,11 @@ class UserUploadWorker:
                 f"Bot @{uname} is blocked in session for user {self._user_id}"
             ) from e
         except Exception as e:
-            # Other errors (network, etc.) — log and continue, don't block worker
             logger.warning(
                 "UserUploadWorker[%d] /start to @%s failed (non-fatal): %s",
                 self._user_id, uname, e,
             )
+            return
 
         # Step 3: archive chat (best-effort)
         try:
@@ -307,6 +327,32 @@ class UserUploadWorker:
             if not task.future.done():
                 task.future.set_result(result)
 
+        except (UserIsBlocked, PeerIdInvalid) as e:
+            recovered = False
+            if self._bot_username:
+                try:
+                    await self._prepare_bot_chat(self._bot_username, force=True)
+                    recovered = True
+                except WorkerBotBlockedError:
+                    recovered = False
+                except Exception:
+                    recovered = False
+            if recovered:
+                try:
+                    result = await task.send_fn(self._client)
+                    self._last_send_time = time.monotonic()
+                    self._last_activity = self._last_send_time
+                    if not task.future.done():
+                        task.future.set_result(result)
+                    return
+                except Exception as retry_err:
+                    if not task.future.done():
+                        task.future.set_exception(retry_err)
+                    return
+            if not task.future.done():
+                task.future.set_exception(e)
+            return
+
         except FloodWait as e:
             wait = getattr(e, "value", getattr(e, "x", 30)) + FLOOD_BUFFER
             if wait >= FLOOD_LONG_SEC:
@@ -334,6 +380,27 @@ class UserUploadWorker:
                     task.future.set_exception(retry_err)
 
         except Exception as e:
+            err_upper = str(e).upper()
+            if "USER_IS_BLOCKED" in err_upper or "BOT WAS BLOCKED" in err_upper:
+                recovered = False
+                if self._bot_username:
+                    try:
+                        await self._prepare_bot_chat(self._bot_username, force=True)
+                        recovered = True
+                    except Exception:
+                        recovered = False
+                if recovered:
+                    try:
+                        result = await task.send_fn(self._client)
+                        self._last_send_time = time.monotonic()
+                        self._last_activity = self._last_send_time
+                        if not task.future.done():
+                            task.future.set_result(result)
+                        return
+                    except Exception as retry_err:
+                        if not task.future.done():
+                            task.future.set_exception(retry_err)
+                        return
             logger.warning(
                 "UserUploadWorker[%d] send error: %s: %s",
                 self._user_id, type(e).__name__, e,

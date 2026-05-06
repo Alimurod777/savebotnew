@@ -5,6 +5,7 @@
 
 import asyncio 
 import random
+import uuid
 import pyrogram
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
@@ -32,6 +33,7 @@ import shutil
 import re
 import logging
 from typing import List, Tuple, Optional, Any
+from dataclasses import dataclass, replace
 
 logger = logging.getLogger(__name__)
 from config import API_ID, API_HASH, OWNER_ID, OWNER_USERNAME, BANNED_MESSAGE, TEMP_DOWNLOAD_DIR
@@ -95,6 +97,119 @@ except ImportError as _thr_err:
 # Maximum retries for connection issues
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+
+# ── Task context (per request) ────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class TaskContext:
+    task_id: str
+    user_id: int
+    source_chat_id: Optional[int]
+    message_id: Optional[int]
+    target_chat_id: int
+    client_type: str  # "bot" | "user_session"
+
+    def with_client_type(self, client_type: str) -> "TaskContext":
+        return replace(self, client_type=client_type)
+
+
+def _new_task_context(message: Optional[Message], parsed=None, client_type: str = "bot") -> TaskContext:
+    user_id = None
+    if message and getattr(message, "from_user", None) and getattr(message.from_user, "id", None):
+        user_id = int(message.from_user.id)
+    elif message and getattr(message, "chat", None) and getattr(message.chat, "id", None):
+        user_id = int(message.chat.id)
+    else:
+        user_id = 0
+
+    target_chat_id = user_id
+    if message and getattr(message, "chat", None) and getattr(message.chat, "id", None):
+        target_chat_id = int(message.chat.id)
+
+    source_chat_id = getattr(parsed, "channel_id", None) if parsed is not None else None
+    message_id = getattr(message, "id", None) or getattr(message, "message_id", None)
+
+    return TaskContext(
+        task_id=uuid.uuid4().hex,
+        user_id=user_id,
+        source_chat_id=source_chat_id,
+        message_id=message_id,
+        target_chat_id=target_chat_id,
+        client_type=client_type,
+    )
+
+
+def _task_context_from_queue(item, parsed=None, client_type: str = "bot") -> TaskContext:
+    return TaskContext(
+        task_id=uuid.uuid4().hex,
+        user_id=int(item.chat_id),
+        source_chat_id=getattr(parsed, "channel_id", None) if parsed is not None else None,
+        message_id=getattr(item, "message_id", None),
+        target_chat_id=int(item.chat_id),
+        client_type=client_type,
+    )
+
+
+async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] = None) -> None:
+    """Resolve peer per request to avoid stale access_hash caches."""
+    try:
+        await acc.resolve_peer(peer_id)
+    except Exception as e:
+        logger.debug(
+            "Peer resolve failed (task=%s peer=%s): %s",
+            getattr(context, "task_id", "?"),
+            peer_id,
+            e,
+        )
+
+
+def _is_photo_only_group(messages: list) -> bool:
+    if not messages or len(messages) < 2:
+        return False
+    for m in messages:
+        if not getattr(m, "photo", None):
+            return False
+    return True
+
+
+async def _process_media_group_sequential(
+    client: Client,
+    acc,
+    user_id: int,
+    album_msgs: list,
+    temp_dir: str,
+    pipeline: StopSafePipeline,
+    request_message: Optional[Message] = None,
+    session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
+) -> bool:
+    processed_count = 0
+    for msg in sorted(album_msgs, key=lambda m: m.id):
+        if await pipeline.check_cancelled():
+            return False
+        msg_type = get_message_type(msg)
+        if not msg_type or msg_type in ("Text", "Unknown"):
+            continue
+        try:
+            success = await download_and_send_media(
+                client,
+                acc,
+                _make_reply_target_message(user_id, getattr(request_message, "id", None)),
+                msg,
+                msg_type,
+                temp_dir,
+                pipeline,
+                session_string=session_string,
+                context=context,
+            )
+            if success:
+                processed_count += 1
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.warning("Sequential media group error: %s", e)
+            continue
+    return processed_count > 0
 
 
 # ── Session invalidation helper ──────────────────────────────────────────────
@@ -2001,6 +2116,43 @@ async def comment_analyzer_command(client: Client, message: Message):
 # NOTE: /session handler session_manager_commands.py da (to'liq pool boshqaruv).
 
 
+async def _dispatch_with_priority(
+    client: Client,
+    message: Message,
+    parsed,
+    handler,
+    context: TaskContext,
+    role=None,
+):
+    """Dispatch a processing task through PriorityQueue when available."""
+    if _GOVERNANCE_AVAILABLE:
+        try:
+            from core.priority_queue import priority_queue as _pq, PriorityJob
+            if getattr(_pq, "_started", False):
+                _role = role or _UserRole.NEW_USER
+
+                async def _job_handler(c, m, p):
+                    return await handler(c, m, p, context=context)
+
+                job = PriorityJob(
+                    user_id=context.user_id,
+                    role=_role,
+                    parsed_url=parsed,
+                    message=message,
+                    handler=_job_handler,
+                    client=client,
+                )
+                fut = await _pq.enqueue(job)
+                return await fut
+        except Exception as e:
+            logger.warning(
+                "PriorityQueue dispatch failed (task=%s): %s",
+                context.task_id,
+                e,
+            )
+    return await handler(client, message, parsed, context=context)
+
+
 # ==================== MAIN MESSAGE HANDLER ====================
 
 @Client.on_message(filters.text & filters.private & ~filters.command([
@@ -2041,6 +2193,15 @@ async def save(client: Client, message: Message):
             return
         
         user_id = message.from_user.id
+        base_ctx = _new_task_context(message, parsed, client_type="bot")
+        _gov_role = None
+        logger.info(
+            "Task start id=%s user=%d type=%s source=%s",
+            base_ctx.task_id,
+            base_ctx.user_id,
+            parsed.url_type,
+            parsed.channel_id,
+        )
 
         # ── Governance middleware ──────────────────────────────────────────────
         if _GOVERNANCE_AVAILABLE:
@@ -2093,15 +2254,50 @@ async def save(client: Client, message: Message):
         try:
             # Process based on URL type
             if parsed.url_type == "thread":
-                await process_thread_comments(client, message, parsed)
+                await _dispatch_with_priority(
+                    client,
+                    message,
+                    parsed,
+                    process_thread_comments,
+                    context=base_ctx.with_client_type("user_session"),
+                    role=_gov_role if _GOVERNANCE_AVAILABLE else None,
+                )
             elif parsed.url_type == "topic":
-                await process_topic_posts(client, message, parsed)
+                await _dispatch_with_priority(
+                    client,
+                    message,
+                    parsed,
+                    process_topic_posts,
+                    context=base_ctx.with_client_type("user_session"),
+                    role=_gov_role if _GOVERNANCE_AVAILABLE else None,
+                )
             elif parsed.url_type == "private":
-                await process_private_posts(client, message, parsed)
+                await _dispatch_with_priority(
+                    client,
+                    message,
+                    parsed,
+                    process_private_posts,
+                    context=base_ctx.with_client_type("user_session"),
+                    role=_gov_role if _GOVERNANCE_AVAILABLE else None,
+                )
             elif parsed.url_type == "public":
-                await process_public_posts(client, message, parsed)
+                await _dispatch_with_priority(
+                    client,
+                    message,
+                    parsed,
+                    process_public_posts,
+                    context=base_ctx.with_client_type("bot"),
+                    role=_gov_role if _GOVERNANCE_AVAILABLE else None,
+                )
             elif parsed.url_type in ("bot", "quizbot"):
-                await process_bot_posts(client, message, parsed)
+                await _dispatch_with_priority(
+                    client,
+                    message,
+                    parsed,
+                    process_bot_posts,
+                    context=base_ctx.with_client_type("user_session"),
+                    role=_gov_role if _GOVERNANCE_AVAILABLE else None,
+                )
         finally:
             # ==================== COMPLETE & PROCESS NEXT ====================
             next_item = await user_queue.complete(user_id)
@@ -2135,18 +2331,25 @@ async def _process_queued_item(client: Client, item):
     
     try:
         parsed = item.parsed_data
+        base_ctx = _task_context_from_queue(item, parsed, client_type="bot")
+        q_role = None
+        if _GOVERNANCE_AVAILABLE:
+            try:
+                q_role = await _role_manager.get_role(user_id)
+            except Exception:
+                q_role = None
         
         # Process based on URL type
         if parsed.url_type == "thread":
-            await _process_queued_thread(client, user_id, parsed)
+            await _process_queued_thread(client, user_id, parsed, context=base_ctx, role=q_role)
         elif parsed.url_type == "topic":
-            await _process_queued_topic(client, user_id, parsed)
+            await _process_queued_topic(client, user_id, parsed, context=base_ctx, role=q_role)
         elif parsed.url_type == "private":
-            await _process_queued_private(client, user_id, parsed)
+            await _process_queued_private(client, user_id, parsed, context=base_ctx, role=q_role)
         elif parsed.url_type == "public":
-            await _process_queued_public(client, user_id, parsed)
+            await _process_queued_public(client, user_id, parsed, context=base_ctx, role=q_role)
         elif parsed.url_type in ("bot", "quizbot"):
-            await _process_queued_bot(client, user_id, parsed)
+            await _process_queued_bot(client, user_id, parsed, context=base_ctx, role=q_role)
             
     except asyncio.CancelledError:
         logger.info(f"Queued item cancelled for user {user_id}")
@@ -2172,7 +2375,7 @@ async def _process_queued_item(client: Client, item):
                 logger.error(f"Error starting next queued item: {e}")
 
 
-async def _process_queued_private(client: Client, user_id: int, parsed):
+async def _process_queued_private(client: Client, user_id: int, parsed, context: Optional[TaskContext] = None, role=None):
     """Process queued private channel download - reuses full interactive logic with proxy message"""
     from types import SimpleNamespace
     proxy_message = SimpleNamespace(
@@ -2180,10 +2383,18 @@ async def _process_queued_private(client: Client, user_id: int, parsed):
         id=None,
         from_user=SimpleNamespace(id=user_id),
     )
-    await process_private_posts(client, proxy_message, parsed)
+    ctx = context or _new_task_context(proxy_message, parsed, client_type="user_session")
+    await _dispatch_with_priority(
+        client,
+        proxy_message,
+        parsed,
+        process_private_posts,
+        context=ctx.with_client_type("user_session"),
+        role=role,
+    )
 
 
-async def _process_queued_topic(client: Client, user_id: int, parsed):
+async def _process_queued_topic(client: Client, user_id: int, parsed, context: Optional[TaskContext] = None, role=None):
     """Process queued topic download - reuses full interactive logic with proxy message"""
     from types import SimpleNamespace
     proxy_message = SimpleNamespace(
@@ -2191,10 +2402,18 @@ async def _process_queued_topic(client: Client, user_id: int, parsed):
         id=None,
         from_user=SimpleNamespace(id=user_id),
     )
-    await process_topic_posts(client, proxy_message, parsed)
+    ctx = context or _new_task_context(proxy_message, parsed, client_type="user_session")
+    await _dispatch_with_priority(
+        client,
+        proxy_message,
+        parsed,
+        process_topic_posts,
+        context=ctx.with_client_type("user_session"),
+        role=role,
+    )
 
 
-async def _process_queued_thread(client: Client, user_id: int, parsed):
+async def _process_queued_thread(client: Client, user_id: int, parsed, context: Optional[TaskContext] = None, role=None):
     """Process queued thread download - reuses full interactive logic with proxy message"""
     from types import SimpleNamespace
     proxy_message = SimpleNamespace(
@@ -2202,10 +2421,18 @@ async def _process_queued_thread(client: Client, user_id: int, parsed):
         id=None,
         from_user=SimpleNamespace(id=user_id),
     )
-    await process_thread_comments(client, proxy_message, parsed)
+    ctx = context or _new_task_context(proxy_message, parsed, client_type="user_session")
+    await _dispatch_with_priority(
+        client,
+        proxy_message,
+        parsed,
+        process_thread_comments,
+        context=ctx.with_client_type("user_session"),
+        role=role,
+    )
 
 
-async def _process_queued_public(client: Client, user_id: int, parsed):
+async def _process_queued_public(client: Client, user_id: int, parsed, context: Optional[TaskContext] = None, role=None):
     """Process queued public channel download - reuses full interactive logic with proxy message"""
     from types import SimpleNamespace
     proxy_message = SimpleNamespace(
@@ -2213,10 +2440,18 @@ async def _process_queued_public(client: Client, user_id: int, parsed):
         id=None,
         from_user=SimpleNamespace(id=user_id),
     )
-    await process_public_posts(client, proxy_message, parsed)
+    ctx = context or _new_task_context(proxy_message, parsed, client_type="bot")
+    await _dispatch_with_priority(
+        client,
+        proxy_message,
+        parsed,
+        process_public_posts,
+        context=ctx.with_client_type("bot"),
+        role=role,
+    )
 
 
-async def _process_queued_bot(client: Client, user_id: int, parsed):
+async def _process_queued_bot(client: Client, user_id: int, parsed, context: Optional[TaskContext] = None, role=None):
     """Process queued bot chat download - reuses full interactive logic with proxy message"""
     from types import SimpleNamespace
     proxy_message = SimpleNamespace(
@@ -2224,7 +2459,15 @@ async def _process_queued_bot(client: Client, user_id: int, parsed):
         id=None,
         from_user=SimpleNamespace(id=user_id),
     )
-    await process_bot_posts(client, proxy_message, parsed)
+    ctx = context or _new_task_context(proxy_message, parsed, client_type="user_session")
+    await _dispatch_with_priority(
+        client,
+        proxy_message,
+        parsed,
+        process_bot_posts,
+        context=ctx.with_client_type("user_session"),
+        role=role,
+    )
 
 
 # ==================== SEQUENTIAL POST PROCESSING (SECTION B) ====================
@@ -2232,7 +2475,7 @@ async def _process_queued_bot(client: Client, user_id: int, parsed):
 
 # ==================== THREAD/COMMENT DOWNLOADER ====================
 
-async def process_thread_comments(client: Client, message: Message, parsed: ParsedURL):
+async def process_thread_comments(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process comment thread messages.
     
@@ -2244,7 +2487,8 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
         https://t.me/c/CHAT_ID/MSG_ID?thread=THREAD_ID&range=START-END
         https://t.me/c/CHAT_ID/MSG_ID?thread=THREAD_ID&rangeSTART-END
     """
-    user_id = message.chat.id
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
     status_msg = None
     
     try:
@@ -2260,7 +2504,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             
             session_string = user_data['session']
             thread_id = parsed.thread_id
-            channel_id = parsed.channel_id
+            channel_id = ctx.source_chat_id or parsed.channel_id
             
             # CRITICAL: Determine mode based on post_ids
             # - Single ID without range parameter = SINGLE COMMENT MODE
@@ -2287,6 +2531,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
+                await _resolve_peer_safe(acc, channel_id, ctx)
                 try:
                     comments = []
                     
@@ -2431,11 +2676,37 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                     album_msgs = await acc.get_media_group(channel_id, comment.id)
                                     albums_done.add(comment.media_group_id)
                                     
-                                    album_success = await process_album_messages(
-                                        client, acc, user_id, album_msgs, temp_dir, pipeline,
-                                        request_message=message,
-                                        session_string=session_string,
-                                    )
+                                    if not album_msgs:
+                                        album_success = await download_and_send_media(
+                                            client,
+                                            acc,
+                                            _make_reply_target_message(user_id, getattr(message, "id", None)),
+                                            comment,
+                                            get_message_type(comment),
+                                            temp_dir,
+                                            pipeline,
+                                            session_string=session_string,
+                                            context=ctx,
+                                        )
+                                    elif _is_photo_only_group(album_msgs):
+                                        album_success = await process_album_messages(
+                                            client, acc, user_id, album_msgs, temp_dir, pipeline,
+                                            request_message=message,
+                                            session_string=session_string,
+                                            context=ctx,
+                                        )
+                                    else:
+                                        album_success = await _process_media_group_sequential(
+                                            client,
+                                            acc,
+                                            user_id,
+                                            album_msgs,
+                                            temp_dir,
+                                            pipeline,
+                                            request_message=message,
+                                            session_string=session_string,
+                                            context=ctx,
+                                        )
                                     if album_success:
                                         processed += 1
                                     else:
@@ -2449,6 +2720,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                     client, acc, user_id, comment, temp_dir, pipeline,
                                     request_message=message,
                                     session_string=session_string,
+                                    context=ctx,
                                 )
                                 
                                 if success:
@@ -2526,6 +2798,7 @@ async def send_comment_to_user(
     pipeline: StopSafePipeline,
     request_message: Optional[Message] = None,
     session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
 ) -> bool:
     """
     Send a single comment to the user, preserving text, entities, and media.
@@ -2546,6 +2819,7 @@ async def send_comment_to_user(
                 ),
                 comment, msg_type, temp_dir, pipeline,
                 session_string=session_string,
+                context=context,
             )
         
         # Text-only comment - use MessageEntity (NO MARKDOWN)
@@ -2582,7 +2856,7 @@ async def send_comment_to_user(
 
 # ==================== TOPIC POST DOWNLOADER ====================
 
-async def process_topic_posts(client: Client, message: Message, parsed: ParsedURL):
+async def process_topic_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process messages from a specific topic in a forum group.
     
@@ -2593,10 +2867,16 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
         https://t.me/c/CHAT_ID/TOPIC_ID/MSG_ID
         https://t.me/c/CHAT_ID/TOPIC_ID/START-END
     """
-    user_id = message.chat.id
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
     status_msg = None
-    op_log("topic_download", user_id=user_id,
-           topic_id=parsed.topic_id, message_id=parsed.post_ids[0] if parsed.post_ids else 0)
+    op_log(
+        "topic_download",
+        user_id=user_id,
+        topic_id=parsed.topic_id,
+        message_id=parsed.post_ids[0] if parsed.post_ids else 0,
+        task_id=ctx.task_id,
+    )
     
     try:
         async with StopSafePipeline(user_id, task_manager) as pipeline:
@@ -2611,7 +2891,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
             
             session_string = user_data['session']
             topic_id = parsed.topic_id
-            channel_id = parsed.channel_id
+            channel_id = ctx.source_chat_id or parsed.channel_id
             post_ids = parsed.post_ids
             
             total_posts = len(post_ids)
@@ -2630,6 +2910,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
+                await _resolve_peer_safe(acc, channel_id, ctx)
                 # First, verify the topic exists (optional - for better error messages)
                 try:
                     chat = await acc.get_chat(channel_id)
@@ -2820,11 +3101,37 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 album_msgs = await acc.get_media_group(channel_id, post_id)
                                 albums_done.add(msg.media_group_id)
 
-                                album_success = await process_album_messages(
-                                    client, acc, user_id, album_msgs, temp_dir, pipeline,
-                                    request_message=message,
-                                    session_string=session_string,
-                                )
+                                if not album_msgs:
+                                    album_success = await download_and_send_media(
+                                        client,
+                                        acc,
+                                        _make_reply_target_message(user_id, getattr(message, "id", None)),
+                                        msg,
+                                        get_message_type(msg),
+                                        temp_dir,
+                                        pipeline,
+                                        session_string=session_string,
+                                        context=ctx,
+                                    )
+                                elif _is_photo_only_group(album_msgs):
+                                    album_success = await process_album_messages(
+                                        client, acc, user_id, album_msgs, temp_dir, pipeline,
+                                        request_message=message,
+                                        session_string=session_string,
+                                        context=ctx,
+                                    )
+                                else:
+                                    album_success = await _process_media_group_sequential(
+                                        client,
+                                        acc,
+                                        user_id,
+                                        album_msgs,
+                                        temp_dir,
+                                        pipeline,
+                                        request_message=message,
+                                        session_string=session_string,
+                                        context=ctx,
+                                    )
                                 if album_success:
                                     processed += 1
                                     if _t_batch:
@@ -2844,6 +3151,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 client, acc, user_id, msg, temp_dir, pipeline,
                                 request_message=message,
                                 session_string=session_string,
+                                context=ctx,
                             )
                             if success:
                                 processed += 1
@@ -2948,6 +3256,7 @@ async def process_single_topic_message(
     pipeline: StopSafePipeline,
     request_message: Optional[Message] = None,
     session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
 ) -> bool:
     """Process a single message from a topic."""
     try:
@@ -2963,6 +3272,7 @@ async def process_single_topic_message(
                 temp_dir,
                 pipeline,
                 session_string=session_string,
+                context=context,
             )
         if msg.text:
             from core.smart_renderer import from_message, SmartRenderer
@@ -2998,6 +3308,7 @@ async def process_album_messages(
     pipeline: StopSafePipeline,
     request_message: Optional[Message] = None,
     session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
 ) -> bool:
     """
     Process and send an album (media group) to the user.
@@ -3203,6 +3514,7 @@ async def process_album_messages(
                     temp_dir,
                     pipeline,
                     session_string=session_string,
+                    context=context,
                 )
                 if success:
                     processed_count += 1
@@ -3235,7 +3547,7 @@ def _cleanup_files(files: list):
 
 # ==================== PRIVATE POST PROCESSING ====================
 
-async def process_private_posts(client: Client, message: Message, parsed: ParsedURL):
+async def process_private_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process private channel posts with ALBUM-AWARE iteration.
     
@@ -3245,7 +3557,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
     - In-memory album tracking only (no MongoDB)
     - Deterministic timeouts on all Pyrogram calls
     """
-    user_id = message.chat.id
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
     status_msg = None
     
     try:
@@ -3299,6 +3612,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     session_string, user_id,
                     peers_to_resolve=[parsed.channel_id],
                 ) as acc:
+                    await _resolve_peer_safe(acc, parsed.channel_id, ctx)
                     while True:
                         # Check for cancellation
                         if await pipeline.check_cancelled():
@@ -3395,6 +3709,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                     parsed.channel_id, post_id,
                                     temp_dir, pipeline,
                                     session_string=session_string,
+                                    context=ctx,
                                 )
 
                                 if result == "deleted":
@@ -3541,9 +3856,10 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 pass
 
 
-async def process_public_posts(client: Client, message: Message, parsed: ParsedURL):
-    """Process public channel posts sequentially"""
-    user_id = message.chat.id
+async def process_public_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
+    """Process public channel posts sequentially (single client per task)"""
+    ctx = context or _new_task_context(message, parsed, client_type="bot")
+    user_id = ctx.user_id
     
     async with StopSafePipeline(user_id, task_manager) as pipeline:
         total_posts = len(parsed.post_ids)
@@ -3555,72 +3871,108 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
         processed = 0
         _p_batch = BatchController(user_id) if _THROTTLE_AVAILABLE else None
 
-        for idx, post_id in enumerate(parsed.post_ids):
-            if await pipeline.check_cancelled():
-                await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
-                break
+        user_data = await async_db.find_user(user_id)
+        use_user_session = bool(get(user_data, 'logged_in', False) and user_data.get('session'))
 
-            # Batch chunk pause
-            if _p_batch:
-                pause = _p_batch.check_pause(idx)
-                if pause > 0:
-                    await asyncio.sleep(pause)
+        if use_user_session:
+            session_string = user_data['session']
+            async with create_user_session(
+                session_string, user_id,
+                peers_to_resolve=[parsed.channel_id],
+            ) as acc:
+                await _resolve_peer_safe(acc, parsed.channel_id, ctx)
+                for idx, post_id in enumerate(parsed.post_ids):
+                    if await pipeline.check_cancelled():
+                        await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
+                        break
 
-            try:
-                msg = await client.get_messages(parsed.channel_id, post_id)
-                await client.copy_message(user_id, msg.chat.id, msg.id, **build_reply_kwargs_from_message(message))
-                processed += 1
-                if _p_batch:
-                    _p_batch.record_success()
-            except FloodWait as fw:
-                wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
-                logger.warning(f"FloodWait {wait_time}s at public post {post_id}")
-                if _p_batch:
-                    _p_batch.record_flood(wait_time)
-                if wait_time > 120:
+                    if _p_batch:
+                        pause = _p_batch.check_pause(idx)
+                        if pause > 0:
+                            await asyncio.sleep(pause)
+
                     try:
-                        await client.edit_message_text(
-                            user_id, status_msg.id,
-                            f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                            f"✅ {processed}/{total_posts} processed."
+                        await process_single_post(
+                            client, acc, message, parsed.channel_id, post_id, None, pipeline,
+                            session_string=session_string,
+                            context=ctx.with_client_type("user_session"),
                         )
-                    except Exception:
-                        pass
+                        processed += 1
+                        if _p_batch:
+                            _p_batch.record_success()
+                    except FloodWait as fw:
+                        wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
+                        logger.warning(f"FloodWait {wait_time}s at public post {post_id}")
+                        if _p_batch:
+                            _p_batch.record_flood(wait_time)
+                        if wait_time > 120:
+                            try:
+                                await client.edit_message_text(
+                                    user_id, status_msg.id,
+                                    f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
+                                    f"✅ {processed}/{total_posts} processed."
+                                )
+                            except Exception:
+                                pass
+                            break
+                        else:
+                            await asyncio.sleep(wait_time)
+                    except Exception as _pub_err:
+                        logger.debug("Public post process error: %s", _pub_err)
+                        if _p_batch:
+                            _p_batch.record_error()
+
+                    if _p_batch and _p_batch.should_stop():
+                        break
+
+                    await asyncio.sleep(2)
+        else:
+            for idx, post_id in enumerate(parsed.post_ids):
+                if await pipeline.check_cancelled():
+                    await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
                     break
-                else:
-                    await asyncio.sleep(wait_time)
-            except Exception:
-                # Try with user session
-                user_data = await async_db.find_user(user_id)
-                if get(user_data, 'logged_in', False) and user_data.get('session'):
-                    acc, _ = await create_client_session(user_data['session'])
-                    if acc:
+
+                if _p_batch:
+                    pause = _p_batch.check_pause(idx)
+                    if pause > 0:
+                        await asyncio.sleep(pause)
+
+                try:
+                    msg = await client.get_messages(parsed.channel_id, post_id)
+                    await client.copy_message(user_id, msg.chat.id, msg.id, **build_reply_kwargs_from_message(message))
+                    processed += 1
+                    if _p_batch:
+                        _p_batch.record_success()
+                except FloodWait as fw:
+                    wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
+                    logger.warning(f"FloodWait {wait_time}s at public post {post_id}")
+                    if _p_batch:
+                        _p_batch.record_flood(wait_time)
+                    if wait_time > 120:
                         try:
-                            await process_single_post(
-                                client, acc, message, parsed.channel_id, post_id, None, pipeline,
-                                session_string=user_data['session'],
+                            await client.edit_message_text(
+                                user_id, status_msg.id,
+                                f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
+                                f"✅ {processed}/{total_posts} processed."
                             )
-                            processed += 1
-                            if _p_batch:
-                                _p_batch.record_success()
-                        except Exception as _pub_err:
-                            logger.debug("Public post process error: %s", _pub_err)
-                            if _p_batch:
-                                _p_batch.record_error()
-                        finally:
-                            await safe_disconnect(acc)
+                        except Exception:
+                            pass
+                        break
+                    else:
+                        await asyncio.sleep(wait_time)
+                except Exception as _bot_err:
+                    logger.debug("Public post bot copy error: %s", _bot_err)
+                    if _p_batch:
+                        _p_batch.record_error()
 
-            # Consecutive error check
-            if _p_batch and _p_batch.should_stop():
-                break
+                if _p_batch and _p_batch.should_stop():
+                    break
 
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
 
-        # BatchController cleanup
         if _p_batch:
             _p_batch.finish()
         
-        # Final status - FIX: Distinguish success from "all failed"
         if processed == 0 and total_posts > 0:
             await client.edit_message_text(
                 user_id, status_msg.id,
@@ -3635,9 +3987,10 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
             await client.edit_message_text(user_id, status_msg.id, f"✅ **Completed**\nProcessed: {processed}/{total_posts}")
 
 
-async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL):
+async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """Process bot chat posts sequentially"""
-    user_id = message.chat.id
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
     
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
@@ -3657,6 +4010,7 @@ async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL)
                 await process_single_post(
                     client, acc, message, parsed.channel_id, post_id, None, pipeline,
                     session_string=user_data['session'],
+                    context=ctx,
                 )
                 await asyncio.sleep(2)
     finally:
@@ -3673,6 +4027,7 @@ async def process_single_post(
     pipeline: StopSafePipeline,
     target_user_id: int = None,
     session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
 ) -> bool:
     """
     Process a single NON-ALBUM post completely before returning.
@@ -3685,7 +4040,7 @@ async def process_single_post(
         message: Original user message (can be None for queued items)
         target_user_id: User ID to send to (used when message is None)
     """
-    user_id = target_user_id if target_user_id else (message.chat.id if message else None)
+    user_id = context.user_id if context else (target_user_id if target_user_id else (message.chat.id if message else None))
     if not user_id:
         logger.error("process_single_post: no user_id available")
         return False
@@ -3697,6 +4052,7 @@ async def process_single_post(
         
         # Get the message with timeout
         try:
+            await _resolve_peer_safe(acc, chat_id, context)
             msg = await asyncio.wait_for(
                 acc.get_messages(chat_id, post_id),
                 timeout=30.0
@@ -3801,6 +4157,7 @@ async def process_single_post(
         return await download_and_send_media(
             client, acc, message, msg, msg_type, temp_dir, pipeline,
             session_string=session_string,
+            context=context,
         )
         
     except asyncio.CancelledError:
@@ -4012,6 +4369,7 @@ async def download_and_send_media(
     temp_dir: Optional[str],
     pipeline: StopSafePipeline,
     session_string: Optional[str] = None,
+    context: Optional[TaskContext] = None,
 ) -> bool:
     """
     Download and send media file using core download engine.
@@ -4027,6 +4385,8 @@ async def download_and_send_media(
     file_path = None
     thumb_path = None
     status_msg = None
+    ctx_user_id = context.user_id if context else message.chat.id
+    ctx_target_chat_id = context.target_chat_id if context else message.chat.id
 
     try:
         # Check cancellation
@@ -4054,7 +4414,7 @@ async def download_and_send_media(
                 text, ents = strip_custom_emoji_entities(text, raw_entities)
                 ents = validate_entities(text, ents)
                 await client.send_message(
-                    message.chat.id,
+                    ctx_target_chat_id,
                     text=text,
                     entities=ents if ents else None,
                     parse_mode=ParseMode.DISABLED,
@@ -4068,7 +4428,7 @@ async def download_and_send_media(
         if show_progress:
             size_mb = file_size / 1024 / 1024
             status_msg = await client.send_message(
-                message.chat.id, 
+                ctx_target_chat_id, 
                 f"**Downloading**\n{size_mb:.1f} MB",
                 **build_reply_kwargs_from_message(message)
             )
@@ -4088,21 +4448,21 @@ async def download_and_send_media(
             message=msg,
             client=acc,
             status_message=status_msg if show_progress else None,
-            user_id=message.chat.id,
+            user_id=ctx_user_id,
             download_dir=download_path,
             bot_client=client  # Bot client for progress message editing
         )
         
         if not file_path or not os.path.exists(file_path):
             if status_msg:
-                await client.delete_messages(message.chat.id, [status_msg.id])
+                await client.delete_messages(ctx_target_chat_id, [status_msg.id])
             return False
         
         # Check cancellation before upload
         if await pipeline.check_cancelled():
             return False
 
-        split_target_chat_id = _get_user_session_target_chat_id(client, message.chat.id)
+        split_target_chat_id = _get_user_session_target_chat_id(client, ctx_target_chat_id)
         local_video_meta = None
         if msg_type == "Video" and is_video_file(file_path):
             local_video_meta, thumb_path = await _get_local_video_artifacts(file_path, msg)
@@ -4115,7 +4475,7 @@ async def download_and_send_media(
         caption, caption_entities = get_caption_with_entities(msg)
 
         # Early premium check — needed for caption limit and custom emoji decisions
-        user_id = message.chat.id
+        user_id = ctx_user_id
         _user_is_premium = False
         _premium_session_str = None
         try:
@@ -4161,7 +4521,7 @@ async def download_and_send_media(
                         split_msg = get_string(user_id, "splitting_binary")
                     await _safe_status_edit_message(
                         client,
-                        message.chat.id,
+                        ctx_target_chat_id,
                         status_msg.id,
                         get_string(user_id, "file_too_large", size=format_size(actual_file_size)) + f"\n{split_msg}",
                     )
@@ -4186,7 +4546,7 @@ async def download_and_send_media(
                         if status_msg:
                             await _safe_status_edit_message(
                                 client,
-                                message.chat.id,
+                                ctx_target_chat_id,
                                 status_msg.id,
                                 get_string(user_id, "uploading_part", part=part_num, total=total_parts, name=chunk_name, size=format_size(chunk_size)),
                             )
@@ -4244,7 +4604,7 @@ async def download_and_send_media(
                     if status_msg:
                         await _safe_status_edit_message(
                             client,
-                            message.chat.id,
+                            ctx_target_chat_id,
                             status_msg.id,
                             get_string(user_id, "split_complete", parts=total_parts),
                         )
@@ -4255,7 +4615,7 @@ async def download_and_send_media(
                     if status_msg:
                         await _safe_status_edit_message(
                             client,
-                            message.chat.id,
+                            ctx_target_chat_id,
                             status_msg.id,
                             get_string(user_id, "error_split", error=str(split_err)[:100]),
                         )
@@ -4265,9 +4625,9 @@ async def download_and_send_media(
             from TechVJ.lang import get_string
             await _safe_status_edit_message(
                 client,
-                message.chat.id,
+                ctx_target_chat_id,
                 status_msg.id,
-                get_string(message.chat.id, "uploading"),
+                get_string(ctx_user_id, "uploading"),
             )
         
         # caption and caption_entities already extracted above (before split check)
@@ -4360,7 +4720,7 @@ async def download_and_send_media(
 
             _target_chat_id = client.me.id
             _worker = await _wr.get_or_create(
-                user_id=message.chat.id,
+                user_id=ctx_user_id,
                 session_string=_premium_session_str,
                 bot_id=_target_chat_id,
                 bot_username=getattr(client.me, "username", None),
@@ -4382,11 +4742,11 @@ async def download_and_send_media(
             except Exception as _prem_direct_err:
                 logger.warning(
                     "Direct premium worker upload failed for user %d; falling back to split: %s",
-                    message.chat.id,
+                    ctx_user_id,
                     _prem_direct_err,
                 )
                 from TechVJ.lang import get_string as _gs
-                _uid = message.chat.id
+                _uid = ctx_user_id
                 if status_msg:
                     await _safe_status_edit_message(
                         client,
@@ -4485,7 +4845,16 @@ async def download_and_send_media(
 
             # target = bot's Telegram user ID as seen from acc's perspective
             _target_chat_id = client.me.id
-            _acc_user_id = message.chat.id  # key for per-user worker
+            _acc_user_id = ctx_user_id  # key for per-user worker
+
+            # VIP-only access to global premium pipeline (pool/SessionManager)
+            _allow_global_premium = True
+            if _GOVERNANCE_AVAILABLE:
+                try:
+                    _role = await _role_manager.get_role(_acc_user_id)
+                    _allow_global_premium = (_role == _UserRole.VIP_USER)
+                except Exception:
+                    _allow_global_premium = True
 
             # ── SessionManager path (additive — runs before legacy selection) ──
             # If the new session manager has any sessions registered and is
@@ -4494,7 +4863,7 @@ async def download_and_send_media(
             _sm_handled = False
             try:
                 from core.session_manager import session_manager as _sm_inst
-                if _sm_inst._initialized and _sm_inst.registry.get_all():
+                if _allow_global_premium and _sm_inst._initialized and _sm_inst.registry.get_all():
                     # Gather send_kwargs early so SM can use them
                     _sm_send_kwargs = dict(parse_mode=ParseMode.DISABLED, **reply_kwargs)
                     if reply_markup:
@@ -4571,7 +4940,7 @@ async def download_and_send_media(
             _used_pool_idx = None
 
             # Step 1: Try system premium pool first
-            if not _sm_handled:
+            if not _sm_handled and _allow_global_premium:
                 try:
                     from core.premium_relay import relay_uploader as _ru
                     if _ru.pool and _ru.pool.count > 0:
@@ -4905,7 +5274,7 @@ async def download_and_send_media(
             try:
                 from core.entity_rebuilder import validate_entities as _validate_ents
                 _ov_ents = _validate_ents(overflow_text, overflow_entities or [])
-                _ov_target = message.chat.id
+                _ov_target = ctx_target_chat_id
 
                 await client.send_message(
                     _ov_target,
@@ -4917,7 +5286,7 @@ async def download_and_send_media(
                 logger.warning(f"Failed to send overflow caption: {overflow_err}")
                 try:
                     await client.send_message(
-                        message.chat.id,
+                        ctx_target_chat_id,
                         text=overflow_text[:4000],
                         parse_mode=ParseMode.DISABLED,
                     )
@@ -4925,7 +5294,7 @@ async def download_and_send_media(
                     pass
         
         if status_msg:
-            await client.delete_messages(message.chat.id, [status_msg.id])
+            await client.delete_messages(ctx_target_chat_id, [status_msg.id])
         
         return True
 
@@ -4939,7 +5308,7 @@ async def download_and_send_media(
         logger.warning(f"download_and_send_media error (type={msg_type}): {type(e).__name__}: {e}")
         if status_msg:
             try:
-                await client.delete_messages(message.chat.id, [status_msg.id])
+                await client.delete_messages(ctx_target_chat_id, [status_msg.id])
             except Exception:
                 pass
         return False

@@ -861,7 +861,12 @@ async def post_command_handler(client: Client, message: Message):
     
     try:
         # Create task-scoped session
-        async with create_user_session(user_data['session'], user_id, timeout=RPC_TIMEOUT) as acc:
+        async with create_user_session(
+            user_data['session'],
+            user_id,
+            timeout=RPC_TIMEOUT,
+            peers_to_resolve=[parsed.chat_id],
+        ) as acc:
             # Get chat info first (for public channels)
             chat_info = {}
             try:

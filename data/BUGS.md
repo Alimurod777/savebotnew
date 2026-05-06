@@ -99,6 +99,60 @@ Natija: download hali ishlayotganda temp dir o'chirildi.
 
 ---
 
+## BUG-019: Audio-only media group yuborilmaydi
+**Sana:** 2026-05-06
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** Faqat audio (2+ item) bo'lgan media_group yuborilganda bot albomni aniqlaydi, lekin hech narsa yubormaydi.
+
+**Sabab:** `media_group_id` ko'rilishi bilan albom pipeline ishga tushardi. Non-photo guruhlar photo-albom logikasiga tushib qolardi va fallback to'g'ri ishlamasdi.
+
+**Yechim:**
+- Photo-only bo'lsa → albom pipeline ishlaydi
+- Non-photo bo'lsa → har bir xabar alohida single-send pipeline orqali yuboriladi
+- get_media_group bo'sh qaytsa → fallback sifatida o'sha xabarni alohida yuboradi
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`
+
+---
+
+## BUG-020: Noto'g'ri chat copy / cross-user leak
+**Sana:** 2026-05-06
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** Bir user link yuborganda boshqa chatdan post copy bo'lishi yoki bot API orqali noto'g'ri manba yuborilishi kuzatilgan.
+
+**Sabab:**
+- Peer resolve `access_hash=0` bilan va keshga bog'liq ishlardi
+- Public post oqimida bot va user session aralash ishlatilardi (bir task ichida)
+- Task konteksti (user/chat/message) qat'iy bog'lanmagan edi
+
+**Yechim:**
+- Peer resolve har taskda `resolve_peer()` orqali qayta qilinadi
+- Public post oqimi bir taskda bitta client bilan ishlaydi (user session bo'lsa u bilan, bo'lmasa bot bilan)
+- TaskContext qo'shildi: user_id/chat_id/message_id/task_id izolyatsiyasi
+
+**O'zgartirilgan fayllar:** `TechVJ/session_handler.py`, `TechVJ/save.py`
+
+---
+
+## BUG-021: Bot block recovery yo'q
+**Sana:** 2026-05-06
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** User botni block qilgan bo'lsa upload worker /start ni ko'r-ko'rona yuborib, xabar yuborilmas edi.
+
+**Sabab:** UserUploadWorker blokni aniqlagach recovery va retry qilmasdi.
+
+**Yechim:**
+- Dialog tekshiruvi qo'shildi (get_chat)
+- Block bo'lsa unblock + /start bir marta yuboriladi
+- Upload original send bir marta qayta urinadi
+
+**O'zgartirilgan fayllar:** `core/user_upload_worker.py`
+
+---
+
 ## BUG-007: Legacy pool sessiyalar < 2GB upload uchun ishlamaydi
 **Sana:** 2026-03-24
 **Holat:** ✅ Hal qilindi

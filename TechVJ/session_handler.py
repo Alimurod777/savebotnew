@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
-from pyrogram import Client, raw
+from pyrogram import Client
 from pyrogram.errors import (
     AuthKeyUnregistered,
     AuthKeyInvalid,
@@ -201,27 +201,17 @@ async def create_user_session(
         # Pre-resolve peers so their access_hash is cached in this in-memory session.
         # Without this, private channel IDs raise PEER_ID_INVALID on first use.
         # Strategy:
-        #   - int peer → channels.GetChannels(access_hash=0): server resolves from membership
-        #   - str peer → contacts.ResolveUsername: always works for public/accessible peers
+        #   - int peer → resolve_peer (server resolves access_hash from membership)
+        #   - str peer → get_chat (public/accessible peers)
         if peers_to_resolve:
             for peer in peers_to_resolve:
                 try:
-                    if isinstance(peer, int) and peer < 0:
-                        # Private channel or supergroup — use raw GetChannels with access_hash=0
-                        # Telegram fills access_hash from server-side membership record
-                        pure_id = abs(peer)
-                        if str(pure_id).startswith("100"):
-                            pure_id = int(str(pure_id)[3:])
-                        await client.invoke(
-                            raw.functions.channels.GetChannels(
-                                id=[raw.types.InputChannel(
-                                    channel_id=pure_id,
-                                    access_hash=0,
-                                )]
-                            )
-                        )
+                    if isinstance(peer, int):
+                        try:
+                            await client.resolve_peer(peer)
+                        except Exception:
+                            await client.get_chat(peer)
                     else:
-                        # Username string or positive user ID
                         await client.get_chat(peer)
                     logger.debug("Session peer resolved: %s", peer)
                 except Exception as e:

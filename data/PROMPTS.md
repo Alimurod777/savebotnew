@@ -154,3 +154,31 @@ Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
 - Login jarayonini yanada mustahkamlash (QR login fallback, session migration)
 - `priority_queue.py` integratsiyasi (hozir dead code)
 - Global upload concurrency semaphore qo'shish
+
+---
+
+## Sessiya 3 (2026-05-06) — Routing izolyatsiya + album/premium/blocked fixlar
+
+### So'rovlar ketma-ketligi:
+1. **Audio-only album yuborilmasligi** — media_group non-photo bo'lsa album pipeline noto'g'ri ishga tushadi
+2. **Noto'g'ri post yuborish** — bot va user session aralashuvi sababli noto'g'ri manbadan xabar kelishi
+3. **Cross-user leak** — peer/access_hash kesh bilan chat konteksti aralashishi
+4. **Bot blocked recovery** — USER_IS_BLOCKED holatida unblock + /start + retry
+5. **VIP rol** — yuqori navbat prioriteti va premium pipeline access
+
+### Natija:
+- **BUG-019**: Audio-only media grouplar endi album pipeline emas, single-send pipeline bilan yuboriladi
+- **BUG-020**: TaskContext + per-request resolve_peer; public oqimda single-client ishlaydi
+- **BUG-021**: UserUploadWorker blok holatini aniqlab unblock va retry qiladi
+- **PriorityQueue integratsiya**: VIP rolga prioritet scheduling qo'llandi
+
+---
+
+## UMUMIY YO'NALISH
+
+Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
+- **Stabilitiy:** race condition, crash, retry loop, cache invalidation buglarni topib hal qilish
+- **Routing izolyatsiya:** per-task context, peer resolve va client separation
+- **Premium upload:** VIP foydalanuvchilar uchun premium pipeline va prioritet
+- **Login tizimi:** Ishonchli autentifikatsiya — sessiya validatsiya, to'liq logout, OTP ishonchliligi
+- **Hujjatlashtirish:** Har bir o'zgartish CLAUDE.md, BUGS.md va PROMPTS.md ga yozilishi

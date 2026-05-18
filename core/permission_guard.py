@@ -36,7 +36,8 @@ class PermissionGuard:
         error_message is empty string when allowed.
         """
         if role in (UserRole.NEW_USER,):
-            if len(parsed_url.post_ids) > 1:
+            post_ids = getattr(parsed_url, "post_ids", None) or []
+            if len(post_ids) != 1:
                 return False, _NEW_USER_MSG
         return True, ""
 

@@ -147,6 +147,34 @@ Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
 - **Premium upload:** Pool sessiyalar orqali non-premium userlarga premium upload imkoniyati
 - **Login tizimi:** Ishonchli autentifikatsiya — sessiya validatsiya, to'liq logout, OTP ishonchliligi
 - **Hujjatlashtirish:** Har bir o'zgartish CLAUDE.md, BUGS.md va PROMPTS.md ga yozilishi
+
+---
+
+## Sessiya 4 (2026-05-18) - Governance va pool delivery bugfixlar
+
+### So'rovlar ketma-ketligi:
+1. **"juda ko'p buglar bor shularni top va to'g'irla"** - umumiy audit va yuqori ishonchli bugfixlar.
+
+### Natija:
+- **BUG-022**: `RateLimiter.check()` 0 limitda `IndexError` bermaydigan qilindi
+- **BUG-023**: `permission_guard` yangi user uchun aynan 1 post talab qiladi
+- **BUG-024**: `PriorityQueue` spill-over real ishlaydigan qilindi va worker capacity runtime limitlarga moslandi
+- **BUG-025**: Pool delivery `copy_message` manba chatini `from_user.id` orqali aniqlaydi; `SessionManager` copy failure'da success qaytarmaydi
+- Regression testlar qo'shildi: `test_governance_fixes.py`
+
+### Tekshiruv:
+- `python -m compileall -q core TechVJ test_governance_fixes.py`
+- `pytest -q` -> 17 passed
+
+---
+
+## UMUMIY YO'NALISH
+
+Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
+- **Governance qatlam:** rate limit, role guard va priority scheduling production holatiga yaqinlashtirilmoqda
+- **Premium/pool delivery:** copy/delete manba chatlari va failure propagation alohida tekshirilmoqda
+- **Regression testlar:** topilgan buglar qaytmasligi uchun kichik, network talab qilmaydigan testlar qo'shilmoqda
+- **Hujjatlashtirish:** Har bir bug `data/BUGS.md`, har bir sessiya `data/PROMPTS.md`ga yoziladi
 - **Kontekst saqlanishi:** Har sessiya oldingi sessiyaning ishlarini bilishi kerak
 
 ### Keyingi ehtimoliy yo'nalishlar (foydalanuvchi hali so'ramagan):

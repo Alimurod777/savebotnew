@@ -46,6 +46,16 @@ def op_log(
     """
     fields: Dict[str, Any] = {"op": operation}
     
+    # Auto-read from request context if available
+    try:
+        from core.request_context import get_request_context
+        rctx = get_request_context()
+        if rctx is not None:
+            ctx_dict = rctx.to_log_dict()
+            fields.update(ctx_dict)
+    except ImportError:
+        pass
+
     if operation_id:
         fields["op_id"] = operation_id
     if message_id is not None:

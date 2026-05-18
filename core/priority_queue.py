@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 from core.role_manager import UserRole
 
@@ -58,15 +58,28 @@ class PriorityQueue:
 
     def __init__(self) -> None:
         self._queues: Dict[UserRole, asyncio.Queue] = {}
-        self._semaphores: Dict[UserRole, asyncio.Semaphore] = {}
         self._limits: Dict[UserRole, int] = dict(_DEFAULT_LIMITS)
+        self._active: Dict[UserRole, int] = {role: 0 for role in _PRIORITY_ORDER}
+        self._lock = asyncio.Lock()
         self._started = False
         self._worker_tasks: list = []
 
     def _init_queues(self) -> None:
         for role in _PRIORITY_ORDER:
             self._queues[role] = asyncio.Queue()
-            self._semaphores[role] = asyncio.Semaphore(self._limits[role])
+            self._active.setdefault(role, 0)
+
+    def _total_capacity(self) -> int:
+        return sum(max(0, self._limits.get(role, 0)) for role in _PRIORITY_ORDER)
+
+    def _ensure_worker_capacity(self) -> None:
+        if not self._started:
+            return
+        self._worker_tasks = [task for task in self._worker_tasks if not task.done()]
+        desired = self._total_capacity()
+        current = len(self._worker_tasks)
+        for worker_id in range(current, desired):
+            self._worker_tasks.append(asyncio.create_task(self._worker(worker_id)))
 
     async def start(self) -> None:
         """Initialise queues and launch dispatcher workers."""
@@ -74,10 +87,8 @@ class PriorityQueue:
             return
         self._init_queues()
         self._started = True
-        total = sum(self._limits.values())
-        for i in range(total):
-            t = asyncio.create_task(self._worker(i))
-            self._worker_tasks.append(t)
+        total = self._total_capacity()
+        self._ensure_worker_capacity()
         logger.info("PriorityQueue: started %d workers", total)
 
     async def enqueue(self, job: PriorityJob) -> asyncio.Future:
@@ -104,8 +115,8 @@ class PriorityQueue:
         if n < 1:
             return
         self._limits[role] = n
-        # Rebuild semaphore with new limit
-        self._semaphores[role] = asyncio.Semaphore(n)
+        self._active.setdefault(role, 0)
+        self._ensure_worker_capacity()
         logger.info("PriorityQueue: set limit %s → %d", role.value, n)
 
     async def _worker(self, worker_id: int) -> None:
@@ -115,41 +126,55 @@ class PriorityQueue:
             if picked is None:
                 await asyncio.sleep(0.05)
                 continue
-            job, sem = picked
-            await self._run_job(job, sem)
+            job, role = picked
+            await self._run_job(job, role)
 
-    async def _pick_and_acquire(self):
+    async def _pick_and_acquire(self) -> Optional[Tuple[PriorityJob, UserRole]]:
         """
-        Try each priority bucket in order. For the first non-empty queue
-        whose semaphore can be acquired without blocking, dequeue a job
-        and return (job, sem) with the semaphore already acquired.
-        Falls back down priority levels if higher buckets are full.
+        Pick the next job while respecting reserved per-role capacity.
+
+        First pass uses a role's own reserved slots. If all queued roles have
+        exhausted their own slots but total capacity is still idle, the second
+        pass lets the highest-priority queued role borrow that idle slot.
         Returns None if no work is available right now.
         """
-        for role in _PRIORITY_ORDER:
-            q = self._queues.get(role)
-            if q is None or q.empty():
-                continue
-            sem = self._semaphores[role]
-            # Non-blocking acquire attempt
-            acquired = not sem.locked()  # fast pre-check
-            if not acquired:
-                continue
-            # Real acquire — non-blocking because _value > 0 and asyncio is
-            # single-threaded (no other coroutine can run between the check above
-            # and this await since there is no suspension point between them).
-            await sem.acquire()
-            # Semaphore acquired — now dequeue
-            try:
-                job = q.get_nowait()
-                return job, sem
-            except asyncio.QueueEmpty:
-                # Race: queue emptied between our check and now; release and try next
-                sem.release()
-                continue
+        async with self._lock:
+            if sum(self._active.values()) >= self._total_capacity():
+                return None
+
+            # Reserved capacity pass: prevents one busy role from consuming
+            # another role's guaranteed slot while that role has queued work.
+            for role in _PRIORITY_ORDER:
+                if self._queue_has_work(role) and self._active[role] < self._limits[role]:
+                    return self._dequeue_and_mark_active(role)
+
+            # Spill-over pass: borrow otherwise-idle capacity.
+            for role in _PRIORITY_ORDER:
+                if self._queue_has_work(role):
+                    return self._dequeue_and_mark_active(role)
+
         return None
 
-    async def _run_job(self, job: PriorityJob, sem: asyncio.Semaphore) -> None:
+    def _queue_has_work(self, role: UserRole) -> bool:
+        q = self._queues.get(role)
+        return bool(q is not None and not q.empty())
+
+    def _dequeue_and_mark_active(self, role: UserRole) -> Optional[Tuple[PriorityJob, UserRole]]:
+        q = self._queues.get(role)
+        if q is None:
+            return None
+        try:
+            job = q.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+        self._active[role] = self._active.get(role, 0) + 1
+        return job, role
+
+    async def _release_role(self, role: UserRole) -> None:
+        async with self._lock:
+            self._active[role] = max(0, self._active.get(role, 0) - 1)
+
+    async def _run_job(self, job: PriorityJob, role: UserRole) -> None:
         try:
             result = await job.handler(job.client, job.message, job.parsed_url)
             if job.future and not job.future.done():
@@ -161,7 +186,10 @@ class PriorityQueue:
             if job.future and not job.future.done():
                 job.future.set_exception(e)
         finally:
-            sem.release()
+            q = self._queues.get(role)
+            if q is not None:
+                q.task_done()
+            await self._release_role(role)
 
 
 # Module-level singleton

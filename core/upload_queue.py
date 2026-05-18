@@ -45,7 +45,51 @@ _MEMORY_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB
 _MAX_FLOOD_WAIT = 300      # seconds — cap for any single FloodWait
 _MAX_RETRIES = 3            # attempts per job before giving up
 _BASE_RETRY_DELAY = 1.0     # seconds before first retry
-_INTER_JOB_DELAY = 0.3      # seconds between consecutive jobs (anti-flood)
+_INTER_JOB_DELAY = 0.3      # base seconds between consecutive jobs (anti-flood)
+_INTER_JOB_DELAY_MAX = 2.0  # max adaptive inter-job delay under flood pressure
+_FLOOD_GLOBAL_PAUSE = 2.0   # seconds ALL sessions pause when any gets FloodWait > 30s
+_FLOOD_PRESSURE_THRESHOLD = 30  # FloodWait above this triggers global pause
+
+# Global flood signal — prevents cascade amplification across sessions.
+# When one session gets a long FloodWait, ALL sessions briefly pause to let
+# Telegram's rate limit window reset instead of piling on.
+import time as _time
+_global_flood_until: float = 0.0
+_recent_floods: int = 0
+_last_flood_reset: float = _time.monotonic()
+
+
+def _record_global_flood(wait_seconds: float) -> None:
+    """Record a flood event for global coordination."""
+    global _global_flood_until, _recent_floods
+    now = _time.monotonic()
+    if wait_seconds >= _FLOOD_PRESSURE_THRESHOLD:
+        # Significant FloodWait — signal ALL sessions to briefly pause
+        _global_flood_until = now + _FLOOD_GLOBAL_PAUSE
+        logger.warning(
+            "upload_queue: global flood pause %.1fs (trigger: %ds FloodWait)",
+            _FLOOD_GLOBAL_PAUSE, int(wait_seconds),
+        )
+    _recent_floods += 1
+
+
+def _adaptive_inter_job_delay() -> float:
+    """Return inter-job delay scaled by recent flood frequency."""
+    global _recent_floods, _last_flood_reset
+    now = _time.monotonic()
+
+    # Reset flood counter every 60 seconds
+    if now - _last_flood_reset > 60.0:
+        _recent_floods = max(0, _recent_floods - 2)  # gradual decay
+        _last_flood_reset = now
+
+    # Global flood pause: if active, wait for it
+    if _global_flood_until > now:
+        return max(_INTER_JOB_DELAY, _global_flood_until - now)
+
+    # Scale delay based on recent floods (0 floods = base, 5+ = max)
+    scale = min(1.0, _recent_floods / 5.0)
+    return _INTER_JOB_DELAY + scale * (_INTER_JOB_DELAY_MAX - _INTER_JOB_DELAY)
 
 
 @dataclass
@@ -96,7 +140,9 @@ class _SessionQueue:
                     break  # Sentinel: stop worker
                 await self._execute(job)
                 self._queue.task_done()
-                await asyncio.sleep(_INTER_JOB_DELAY)
+                # Adaptive inter-job delay: scales up with recent flood frequency
+                delay = _adaptive_inter_job_delay()
+                await asyncio.sleep(delay)
         except asyncio.TimeoutError:
             # No jobs for 60 s — let worker exit; will restart on next job
             pass
@@ -126,7 +172,11 @@ class _SessionQueue:
                 )
                 self._last_flood = time.monotonic()
                 self._consecutive_errors += 1
-                await asyncio.sleep(wait)
+                # Signal global flood if wait is significant
+                _record_global_flood(wait)
+                # Scaled backoff: each retry adds 50% more wait
+                scaled_wait = wait * (1.0 + 0.5 * attempt)
+                await asyncio.sleep(scaled_wait)
                 last_exc = fw
             except (asyncio.CancelledError, KeyboardInterrupt):
                 if not job.future.done():

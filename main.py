@@ -121,6 +121,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Install request-scoped structured logging (enriches every log line with request context)
+try:
+    from core.request_context import install_request_logging
+    install_request_logging()
+    logger.info("Request context logging installed")
+except ImportError:
+    logger.debug("Request context logging not available")
+
 # Set specific loggers
 logging.getLogger("TechVJ").setLevel(logging.INFO)
 logging.getLogger("core").setLevel(logging.INFO)

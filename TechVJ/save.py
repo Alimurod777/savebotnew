@@ -14,6 +14,7 @@ from pyrogram.types import (
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
 )
 from core.reply_compat import build_reply_kwargs_from_message, build_link_preview_kwargs
+from core.copy_utils import get_bot_copy_source_chat_id
 from core.safe_send import (
     safe_send_message as core_safe_send,
     safe_reply as core_safe_reply,
@@ -47,6 +48,17 @@ from TechVJ.file_splitter import (
 )
 from core.structured_log import op_log
 from TechVJ.task_manager import task_manager, StopSafePipeline, sanitize_filename
+
+# Request-scoped structured logging (contextvars-based)
+try:
+    from core.request_context import (
+        RequestContext as _ReqCtx,
+        set_request_context as _set_req_ctx,
+        clear_request_context as _clear_req_ctx,
+    )
+    _REQUEST_CONTEXT_AVAILABLE = True
+except ImportError:
+    _REQUEST_CONTEXT_AVAILABLE = False
 
 # User download queue (one active per user)
 from TechVJ.user_queue import user_queue, check_and_queue, format_queue_status
@@ -298,13 +310,19 @@ async def _enqueue_media_delivery(
     sent = await worker.enqueue(task_factory(send_fn=send_fn, is_media=True))
     if sent is None:
         return sent
+    copy_source_chat_id = get_bot_copy_source_chat_id(sent, getattr(getattr(sent, "chat", None), "id", None))
+    if copy_source_chat_id is None:
+        if is_pool_session:
+            raise PoolDeliveryError("Could not determine bot copy source chat")
+        logger.warning("copy_message skipped for non-pool session - source chat unknown")
+        return sent
 
     copy_ok = False
     for copy_try in range(3):
         try:
             await bot_client.copy_message(
                 chat_id=target_user_id,
-                from_chat_id=sent.chat.id,
+                from_chat_id=copy_source_chat_id,
                 message_id=sent.id,
                 **reply_kwargs_builder(request_message),
             )
@@ -325,7 +343,7 @@ async def _enqueue_media_delivery(
 
     if copy_ok:
         try:
-            await bot_client.delete_messages(sent.chat.id, [sent.id])
+            await bot_client.delete_messages(copy_source_chat_id, [sent.id])
         except Exception:
             pass
         return sent
@@ -334,7 +352,7 @@ async def _enqueue_media_delivery(
     if is_pool_session:
         logger.error(
             "copy_message failed after 3 attempts - keeping intermediate msg %d in chat %d",
-            sent.id, sent.chat.id,
+            sent.id, copy_source_chat_id,
         )
         raise PoolDeliveryError(
             f"Pool upload reached intermediate chat but delivery to user {target_user_id} failed"
@@ -2195,6 +2213,21 @@ async def save(client: Client, message: Message):
         user_id = message.from_user.id
         base_ctx = _new_task_context(message, parsed, client_type="bot")
         _gov_role = None
+
+        # ── Request-scoped structured logging ──────────────────────────────────
+        if _REQUEST_CONTEXT_AVAILABLE:
+            _set_req_ctx(_ReqCtx(
+                request_id=base_ctx.task_id[:12],
+                requester_user_id=user_id,
+                source_chat_id=getattr(parsed, "channel_id", None) if isinstance(getattr(parsed, "channel_id", None), int) else None,
+                target_chat_id=base_ctx.target_chat_id,
+                routing_mode=parsed.url_type,
+                topic_id=getattr(parsed, "topic_id", None),
+                message_thread_id=getattr(parsed, "thread_id", None),
+                source_message_id=getattr(message, "id", None),
+                sender_mode="bot",
+            ))
+
         logger.info(
             "Task start id=%s user=%d type=%s source=%s",
             base_ctx.task_id,
@@ -2310,14 +2343,21 @@ async def save(client: Client, message: Message):
                     **build_link_preview_kwargs(is_disabled=True)
                 )
                 await _process_queued_item(client, next_item)
+            # Clear request context to prevent leaking to next request
+            if _REQUEST_CONTEXT_AVAILABLE:
+                _clear_req_ctx()
             
     except asyncio.CancelledError:
+        if _REQUEST_CONTEXT_AVAILABLE:
+            _clear_req_ctx()
         try:
             await message.reply("Operation cancelled.")
         except Exception:
             pass
         # Don't call complete here - /stop already clears queue
     except Exception as e:
+        if _REQUEST_CONTEXT_AVAILABLE:
+            _clear_req_ctx()
         try:
             await message.reply(f"Error: {str(e)[:200]}")
         except Exception:
@@ -4951,16 +4991,42 @@ async def download_and_send_media(
                                 "Using system pool session #%d for user %d upload",
                                 _used_pool_idx + 1, _acc_user_id,
                             )
+                            # Update request context with pool session info
+                            if _REQUEST_CONTEXT_AVAILABLE:
+                                from core.request_context import get_request_context
+                                _rctx = get_request_context()
+                                if _rctx:
+                                    _set_req_ctx(_rctx.with_updates(
+                                        sender_mode="pool_session",
+                                        premium_session_id=f"pool_{_used_pool_idx}",
+                                        worker_id=f"pool_{_used_pool_idx}",
+                                    ))
                 except Exception as _pool_err:
                     logger.debug("System pool lookup failed: %s", _pool_err)
 
             # Step 2: User's own premium session (if pool unavailable)
             if not _session_string and _premium_session_str:
                 _session_string = _premium_session_str
+                if _REQUEST_CONTEXT_AVAILABLE:
+                    from core.request_context import get_request_context
+                    _rctx = get_request_context()
+                    if _rctx:
+                        _set_req_ctx(_rctx.with_updates(
+                            sender_mode="user_premium",
+                            uploader_session_id=_premium_session_str[:16] if _premium_session_str else None,
+                        ))
 
             # Step 3: User's regular session as last resort
             if not _session_string and not _sm_handled:
                 _session_string = session_string or await acc.export_session_string()
+                if _REQUEST_CONTEXT_AVAILABLE:
+                    from core.request_context import get_request_context
+                    _rctx = get_request_context()
+                    if _rctx:
+                        _set_req_ctx(_rctx.with_updates(
+                            sender_mode="user_session",
+                            uploader_session_id=_session_string[:16] if _session_string else None,
+                        ))
 
             # Create worker — if pool session has bot blocked, try next pool sessions
             _worker = None

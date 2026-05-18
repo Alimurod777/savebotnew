@@ -38,6 +38,9 @@ class RateLimiter:
             return False, 0
 
         max_req, window_sec = self._limits.get(role, (1, 10))
+        if max_req <= 0:
+            return False, max(1, window_sec)
+
         now = time.monotonic()
         cutoff = now - window_sec
 

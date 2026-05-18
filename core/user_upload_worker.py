@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
@@ -55,7 +56,7 @@ from config import API_ID, API_HASH, get_client_params
 
 logger = logging.getLogger(__name__)
 
-# ── Timing constants ─────────────────────────────────────────────────────────
+# ── Timing constants (base values — adaptive throttle scales these) ───────────
 TEXT_MIN_GAP   = 0.3   # seconds between text sends
 MEDIA_MIN_GAP  = 0.5   # seconds between media sends (reduced for speed)
 BATCH_SIZE     = 15    # messages per batch before pause
@@ -64,6 +65,116 @@ FLOOD_BUFFER   = 1.0   # extra seconds after FloodWait
 FLOOD_LONG_SEC = 60    # FloodWait >= this → surface to caller
 IDLE_TIMEOUT   = 600   # seconds of inactivity before worker is reaped (10 min)
 REAP_INTERVAL  = 120   # seconds between reaper sweeps (2 min)
+JITTER_MAX     = 0.3   # max random jitter added to each send (prevents burst sync)
+RECOVERY_BATCHES = 3   # consecutive clean batches to halve flood_scale
+
+# Global upload concurrency cap — prevents N workers from uploading simultaneously
+# Adaptive: starts at default, shrinks under flood pressure, grows back when clear
+_DEFAULT_UPLOAD_CONCURRENCY = 4
+_MIN_UPLOAD_CONCURRENCY = 2
+_upload_semaphore: Optional[asyncio.Semaphore] = None
+_upload_semaphore_size: int = _DEFAULT_UPLOAD_CONCURRENCY
+
+
+def _get_upload_semaphore() -> asyncio.Semaphore:
+    """Lazy-init global upload semaphore (must be called inside event loop)."""
+    global _upload_semaphore
+    if _upload_semaphore is None:
+        _upload_semaphore = asyncio.Semaphore(_DEFAULT_UPLOAD_CONCURRENCY)
+    return _upload_semaphore
+
+
+def _resize_upload_semaphore(new_size: int) -> None:
+    """Resize the global semaphore. Only shrinks capacity via tracking."""
+    global _upload_semaphore_size
+    _upload_semaphore_size = max(_MIN_UPLOAD_CONCURRENCY, new_size)
+
+
+# ── Adaptive throttle (per-worker) ────────────────────────────────────────────
+
+class _AdaptiveThrottle:
+    """Per-worker adaptive rate limiter that responds to FloodWait signals.
+
+    - Base gaps start at TEXT_MIN_GAP / MEDIA_MIN_GAP
+    - After FloodWait: scale doubles (gaps widen, batch shrinks)
+    - After RECOVERY_BATCHES clean batches: scale halves back toward 1.0
+    - Scale is clamped to [1.0, 8.0]
+    """
+
+    __slots__ = ('_flood_scale', '_batches_clean', '_last_send', '_batch_count')
+
+    def __init__(self) -> None:
+        self._flood_scale: float = 1.0
+        self._batches_clean: int = 0
+        self._last_send: float = 0.0
+        self._batch_count: int = 0
+
+    @property
+    def flood_pressure(self) -> float:
+        """0.0 = no pressure, 1.0 = max pressure (scale=8.0)."""
+        return min(1.0, (self._flood_scale - 1.0) / 7.0)
+
+    def effective_gap(self, is_media: bool) -> float:
+        base = MEDIA_MIN_GAP if is_media else TEXT_MIN_GAP
+        return base * self._flood_scale
+
+    def effective_batch_size(self) -> int:
+        return max(4, int(BATCH_SIZE / self._flood_scale))
+
+    def effective_batch_pause(self) -> float:
+        return min(15.0, BATCH_PAUSE * self._flood_scale)
+
+    async def wait_before_send(self, is_media: bool) -> None:
+        """Adaptive inter-send delay + random jitter."""
+        gap = self.effective_gap(is_media)
+        elapsed = time.monotonic() - self._last_send
+        if elapsed < gap:
+            await asyncio.sleep(gap - elapsed)
+        # Random jitter to desynchronize concurrent workers
+        jitter = random.uniform(0, JITTER_MAX * self._flood_scale)
+        if jitter > 0.01:
+            await asyncio.sleep(jitter)
+
+    async def check_batch_pause(self) -> None:
+        """Pause at batch boundaries."""
+        self._batch_count += 1
+        bs = self.effective_batch_size()
+        if self._batch_count >= bs:
+            self._batch_count = 0
+            self._batches_clean += 1
+            pause = self.effective_batch_pause()
+            logger.debug(
+                "AdaptiveThrottle: batch pause %.1fs (scale=%.1f, clean=%d)",
+                pause, self._flood_scale, self._batches_clean,
+            )
+            await asyncio.sleep(pause)
+            # Recovery check
+            if self._batches_clean >= RECOVERY_BATCHES and self._flood_scale > 1.0:
+                self._flood_scale = max(1.0, self._flood_scale / 2.0)
+                logger.info(
+                    "AdaptiveThrottle: scale recovered to %.1f after %d clean batches",
+                    self._flood_scale, self._batches_clean,
+                )
+                self._batches_clean = 0
+
+    def record_send(self) -> None:
+        self._last_send = time.monotonic()
+
+    def record_flood(self, wait_seconds: float) -> None:
+        """Escalate throttle after FloodWait."""
+        self._flood_scale = min(8.0, self._flood_scale * 2.0)
+        self._batches_clean = 0
+        logger.warning(
+            "AdaptiveThrottle: FloodWait %ds → scale escalated to %.1f",
+            int(wait_seconds), self._flood_scale,
+        )
+        # Signal global concurrency reduction
+        if self._flood_scale >= 4.0:
+            _resize_upload_semaphore(_MIN_UPLOAD_CONCURRENCY)
+        elif self._flood_scale >= 2.0:
+            _resize_upload_semaphore(3)
+        else:
+            _resize_upload_semaphore(_DEFAULT_UPLOAD_CONCURRENCY)
 
 
 class WorkerBotBlockedError(Exception):
@@ -77,14 +188,20 @@ class UploadTask:
     """
     One send operation to be executed by the per-session worker.
 
-    send_fn:  async callable(client) → None
-              Must call client.send_*(target_chat_id, ...) inside.
-    is_media: True → use MEDIA_MIN_GAP, False → TEXT_MIN_GAP
-    future:   set by the worker on completion / exception
+    send_fn:       async callable(client) → None
+                   Must call client.send_*(target_chat_id, ...) inside.
+    is_media:      True → use MEDIA_MIN_GAP, False → TEXT_MIN_GAP
+    future:        set by the worker on completion / exception
+    owner_user_id: The user who requested this upload — used for sender
+                   isolation validation. Workers verify this matches before
+                   executing to prevent cross-user contamination.
+    request_id:    Request-scoped ID for structured logging correlation.
     """
-    send_fn:  Callable[[Client], Any]
-    is_media: bool = True
-    future:   asyncio.Future = field(default=None)
+    send_fn:       Callable[[Client], Any]
+    is_media:      bool = True
+    future:        asyncio.Future = field(default=None)
+    owner_user_id: Optional[int] = None
+    request_id:    Optional[str] = None
 
 
 # ── Per-session worker ────────────────────────────────────────────────────────
@@ -118,6 +235,7 @@ class UserUploadWorker:
         self._last_activity = time.monotonic()  # for idle reaper
         self._batch_count = 0
         self._bot_prepared = False
+        self._throttle = _AdaptiveThrottle()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -306,22 +424,41 @@ class UserUploadWorker:
             self._queue.task_done()
 
     async def _run_task(self, task: UploadTask) -> None:
-        """Execute one upload task with rate-limiting and FloodWait handling."""
-        # Adaptive rate limit
-        gap = MEDIA_MIN_GAP if task.is_media else TEXT_MIN_GAP
-        elapsed = time.monotonic() - self._last_send_time
-        if elapsed < gap:
-            await asyncio.sleep(gap - elapsed)
+        """Execute one upload task with adaptive rate-limiting and FloodWait handling."""
+        # Sender isolation: verify task belongs to this worker's user
+        if task.owner_user_id is not None and task.owner_user_id != self._user_id:
+            logger.error(
+                "UserUploadWorker[%d] SENDER ISOLATION VIOLATION: task owner=%d != worker user=%d — rejecting",
+                self._user_id, task.owner_user_id, self._user_id,
+            )
+            if not task.future.done():
+                task.future.set_exception(
+                    RuntimeError(f"Sender isolation: task for user {task.owner_user_id} routed to worker for user {self._user_id}")
+                )
+            return
 
-        # Batch pause
-        self._batch_count += 1
-        if self._batch_count >= BATCH_SIZE:
-            self._batch_count = 0
-            logger.debug("UserUploadWorker[%d] batch pause %.1fs", self._user_id, BATCH_PAUSE)
-            await asyncio.sleep(BATCH_PAUSE)
+        # Adaptive rate limit (replaces static gap)
+        await self._throttle.wait_before_send(task.is_media)
 
+        # Adaptive batch pause
+        await self._throttle.check_batch_pause()
+
+        # Acquire global upload semaphore to prevent congestion
+        sem = _get_upload_semaphore()
         try:
-            result = await task.send_fn(self._client)
+            # Non-blocking check: if semaphore would block and we're under
+            # flood pressure, add extra stagger
+            if sem.locked() and self._throttle.flood_pressure > 0.3:
+                stagger = random.uniform(0.5, 2.0) * self._throttle.flood_pressure
+                logger.debug(
+                    "UserUploadWorker[%d] congestion stagger %.1fs (pressure=%.2f)",
+                    self._user_id, stagger, self._throttle.flood_pressure,
+                )
+                await asyncio.sleep(stagger)
+
+            async with sem:
+                result = await task.send_fn(self._client)
+            self._throttle.record_send()
             self._last_send_time = time.monotonic()
             self._last_activity = self._last_send_time
             if not task.future.done():
@@ -355,6 +492,7 @@ class UserUploadWorker:
 
         except FloodWait as e:
             wait = getattr(e, "value", getattr(e, "x", 30)) + FLOOD_BUFFER
+            self._throttle.record_flood(wait)
             if wait >= FLOOD_LONG_SEC:
                 # Long FloodWait — surface to caller; caller should try another session
                 logger.warning(
@@ -365,13 +503,16 @@ class UserUploadWorker:
                     task.future.set_exception(e)
                 return
             logger.warning(
-                "UserUploadWorker[%d] FloodWait %ds — sleeping then retry",
-                self._user_id, wait,
+                "UserUploadWorker[%d] FloodWait %ds — sleeping then retry (scale=%.1f)",
+                self._user_id, wait, self._throttle._flood_scale,
             )
             await asyncio.sleep(wait)
-            # Retry once after short flood wait
+            # Retry once after short flood wait (with adaptive stagger)
+            await self._throttle.wait_before_send(task.is_media)
             try:
-                result = await task.send_fn(self._client)
+                async with _get_upload_semaphore():
+                    result = await task.send_fn(self._client)
+                self._throttle.record_send()
                 self._last_send_time = time.monotonic()
                 if not task.future.done():
                     task.future.set_result(result)

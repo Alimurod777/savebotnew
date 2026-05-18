@@ -101,6 +101,12 @@ class BotThrottle:
         self._lock = asyncio.Lock()
         self.stats = ThrottleStats()
         self._cleanup_counter: int = 0
+        # Global rate tracking — prevents exceeding Telegram's ~30 req/s bot limit
+        self._global_sends: list = []           # timestamps of recent sends
+        self._global_flood_until: float = 0.0   # brief all-chat pause after any flood
+        self._GLOBAL_RATE_LIMIT: float = 25.0   # proactive slowdown threshold (req/s)
+        self._GLOBAL_RATE_WINDOW: float = 1.0   # sliding window for rate calc
+        self._GLOBAL_FLOOD_PAUSE: float = 2.0   # all-chat pause on any flood
 
     # ── acquire ──────────────────────────────────────────────────
 
@@ -108,7 +114,16 @@ class BotThrottle:
         """Wait until it's safe to make a Bot API call to this chat."""
         self.stats.total_calls += 1
 
-        # FloodWait kutish
+        # Global flood pause: if any chat recently triggered FloodWait,
+        # briefly delay ALL chats to prevent cascade amplification
+        now = time.monotonic()
+        if self._global_flood_until > now:
+            gw = self._global_flood_until - now
+            logger.debug("Throttle: global flood pause %.1fs", gw)
+            self.stats.throttled_waits += 1
+            await asyncio.sleep(gw)
+
+        # Per-chat FloodWait waiting
         flood_end = self._flood_until.get(chat_id, 0.0)
         now = time.monotonic()
         if flood_end > now:
@@ -117,15 +132,22 @@ class BotThrottle:
             self.stats.throttled_waits += 1
             await asyncio.sleep(wait)
 
-        # Token bucket
+        # Global rate check: proactive slowdown if approaching Telegram's limit
+        await self._check_global_rate()
+
+        # Per-chat token bucket
         bucket = await self._get_bucket(chat_id)
         await bucket.acquire()
 
-        # Periodic cleanup (har 100 chaqiruvda)
+        # Record this send for global rate tracking
+        self._global_sends.append(time.monotonic())
+
+        # Periodic cleanup (every 100 calls)
         self._cleanup_counter += 1
         if self._cleanup_counter >= 100:
             self._cleanup_counter = 0
             await self._cleanup_idle_buckets()
+            self._trim_global_sends()
 
     async def _get_bucket(self, chat_id: int) -> _TokenBucket:
         """Get or create token bucket for chat."""
@@ -172,6 +194,34 @@ class BotThrottle:
         self._flood_slowdown_until[chat_id] = now + wait_seconds + self.FLOOD_SLOWDOWN_DURATION
         self.stats.flood_waits += 1
         logger.warning("Throttle: chat %s FloodWait %ds recorded", chat_id, int(wait_seconds))
+        # FloodWait propagation guard: briefly slow ALL chats to prevent
+        # other concurrent requests from immediately hitting the same limit
+        self._global_flood_until = max(
+            self._global_flood_until,
+            now + self._GLOBAL_FLOOD_PAUSE,
+        )
+
+    async def _check_global_rate(self) -> None:
+        """Proactive slowdown if global send rate approaches Telegram's limit."""
+        now = time.monotonic()
+        cutoff = now - self._GLOBAL_RATE_WINDOW
+        # Count sends in the last window
+        recent = sum(1 for t in self._global_sends if t > cutoff)
+        if recent >= self._GLOBAL_RATE_LIMIT:
+            # We're close to Telegram's global limit — add delay
+            delay = 0.5 + (recent - self._GLOBAL_RATE_LIMIT) * 0.1
+            delay = min(delay, 3.0)
+            logger.debug(
+                "Throttle: global rate %.0f req/s >= %.0f — proactive delay %.1fs",
+                recent / self._GLOBAL_RATE_WINDOW, self._GLOBAL_RATE_LIMIT, delay,
+            )
+            self.stats.throttled_waits += 1
+            await asyncio.sleep(delay)
+
+    def _trim_global_sends(self) -> None:
+        """Remove old entries from global send timestamp list."""
+        cutoff = time.monotonic() - 10.0  # keep 10s of history
+        self._global_sends = [t for t in self._global_sends if t > cutoff]
 
     @property
     def active_floods(self) -> Dict[int, float]:

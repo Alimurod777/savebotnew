@@ -25,6 +25,8 @@ from typing import Any, Callable, List, Optional, Set, Tuple
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 
+from core.copy_utils import get_bot_copy_source_chat_id
+
 from .borrow_manager import borrow_manager
 from .flood_controller import flood_controller
 from .models import SessionRecord, SessionType
@@ -207,6 +209,13 @@ class SessionManager:
 
             # Pool sessions: copy from bot DM to user chat
             if is_pool and sent_msg is not None:
+                copy_source_chat_id = get_bot_copy_source_chat_id(sent_msg, upload_chat_id)
+                if copy_source_chat_id is None:
+                    logger.error(
+                        "SessionManager: cannot determine copy source for session %s",
+                        record.session_id[:8],
+                    )
+                    return None
                 _copy_ok = False
                 for _copy_try in range(3):
                     try:
@@ -215,7 +224,7 @@ class SessionManager:
                             _copy_kwargs["reply_to_message_id"] = _reply_to_id
                         await bot_client.copy_message(
                             chat_id=target_chat_id,
-                            from_chat_id=upload_chat_id,
+                            from_chat_id=copy_source_chat_id,
                             message_id=sent_msg.id,
                             **_copy_kwargs,
                         )
@@ -243,7 +252,7 @@ class SessionManager:
                 # ONLY delete intermediate message if copy succeeded
                 if _copy_ok:
                     try:
-                        await bot_client.delete_messages(upload_chat_id, [sent_msg.id])
+                        await bot_client.delete_messages(copy_source_chat_id, [sent_msg.id])
                     except Exception:
                         pass  # best-effort cleanup
                 else:
@@ -252,6 +261,7 @@ class SessionManager:
                         "keeping intermediate msg %d for user %d",
                         sent_msg.id, user_id,
                     )
+                    return None
 
             return sent_msg
 

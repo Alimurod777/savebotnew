@@ -153,6 +153,54 @@ Natija: download hali ishlayotganda temp dir o'chirildi.
 
 ---
 
+## BUG-022: Rate limiter 0 limitda `IndexError` chiqaradi
+**Sana:** 2026-05-18
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** `core/rate_limiter.py` da role limiti `0` bo'lsa, `check()` bo'sh deque bilan `dq[0]` ga murojaat qilib `IndexError` berishi mumkin edi. Bu ban yoki runtime nol-limit holatlarida middleware'ni yiqitardi.
+
+**Yechim:** `max_req <= 0` uchun erta `False` qaytarish qo'shildi.
+
+**O'zgartirilgan fayllar:** `core/rate_limiter.py`
+
+---
+
+## BUG-023: `permission_guard` yangi userga bo'sh `post_ids`ni o'tkazadi
+**Sana:** 2026-05-18
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** Yangi foydalanuvchi uchun guard faqat `len(post_ids) > 1` ni tekshirardi. `post_ids = []` bo'lsa ham ruxsat berib yuborardi, bu topic/thread yoki yaroqsiz parse yo'llarini chetlab o'tishga olib kelardi.
+
+**Yechim:** Yangi user uchun aniq `len(post_ids) == 1` talabi qo'yildi.
+
+**O'zgartirilgan fayllar:** `core/permission_guard.py`
+
+---
+
+## BUG-024: PriorityQueue spill-over amalda ishlamasdi
+**Sana:** 2026-05-18
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** `core/priority_queue.py` da hujjatlangan spill-over bor edi, lekin kod faqat o'z role semaforini tekshirardi. Bo'sh slotlar boshqa bucketga o'tmasdi va `set_limit()` worker sonini oshirilgan limitlarga moslamasdi.
+
+**Yechim:** Reserved capacity + spill-over skaneri qo'shildi, worker soni limitlarga moslanadigan qilindi.
+
+**O'zgartirilgan fayllar:** `core/priority_queue.py`
+
+---
+
+## BUG-025: Pool copy noto'g'ri chatdan o'qiydi va failure success bo'lib ketadi
+**Sana:** 2026-05-18
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** Pool upload'da bot `copy_message()` va `delete_messages()` uchun `sent.chat.id`ga ishonardi. User session yuborgan xabarlarda bu bot chat bo'lib qolishi mumkin edi, natijada noto'g'ri chatdan copy/delete qilinardi. Bundan tashqari, `SessionManager` copy 3 marta yiqilganda ham uploadni muvaffaqiyat deb qaytarardi.
+
+**Yechim:** Bot copy manbasi `from_user.id` orqali aniqlanadigan helper qo'shildi. `SessionManager` copy failure'da `None` qaytaradigan qilindi, success bo'lganda delete saqlandi.
+
+**O'zgartirilgan fayllar:** `core/copy_utils.py`, `TechVJ/save.py`, `core/session_manager/session_manager.py`
+
+---
+
 ## BUG-007: Legacy pool sessiyalar < 2GB upload uchun ishlamaydi
 **Sana:** 2026-03-24
 **Holat:** ✅ Hal qilindi

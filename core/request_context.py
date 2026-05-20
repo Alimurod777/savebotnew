@@ -122,10 +122,12 @@ class RequestContextFilter(logging.Filter):
     """
     Logging filter that injects request context fields into every log record.
 
-    Install once on the root logger:
-        logging.getLogger().addFilter(RequestContextFilter())
+    Must be installed on each HANDLER (not the logger), because Python's
+    logging propagation skips parent logger filters — only handler filters
+    run reliably for all log records.
 
-    Then the formatter can use %(request_prefix)s to include context.
+    The filter always sets request_prefix (empty string when no context),
+    so formatters that include %(request_prefix)s never crash.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -142,22 +144,29 @@ class RequestContextFilter(logging.Filter):
 
 def install_request_logging(fmt: Optional[str] = None) -> None:
     """
-    Install the request context filter on the root logger and
-    update the formatter to include request context.
+    Install the request context filter on ALL existing handlers.
+
+    IMPORTANT: Filter is added to handlers, NOT the root logger.
+    Python's logging propagation does NOT run parent logger filters,
+    so adding to the root logger would miss child logger messages.
+
+    The formatter is NOT changed by default — existing format strings
+    continue working. The filter just ensures request_prefix attribute
+    is always present on every LogRecord (empty string when no context).
 
     Call once at bot startup (main.py).
     """
     root = logging.getLogger()
+    ctx_filter = RequestContextFilter()
 
-    # Add filter (idempotent — check if already installed)
-    for f in root.filters:
-        if isinstance(f, RequestContextFilter):
-            return
-    root.addFilter(RequestContextFilter())
-
-    # Update all handler formatters to include %(request_prefix)s
-    if fmt is None:
-        fmt = "%(asctime)s - %(name)s - %(levelname)s - %(request_prefix)s%(message)s"
-    formatter = logging.Formatter(fmt)
     for handler in root.handlers:
-        handler.setFormatter(formatter)
+        # Idempotent — check if already installed on this handler
+        already = any(isinstance(f, RequestContextFilter) for f in handler.filters)
+        if not already:
+            handler.addFilter(ctx_filter)
+
+    # If caller explicitly wants %(request_prefix)s in format, apply it
+    if fmt is not None:
+        formatter = logging.Formatter(fmt)
+        for handler in root.handlers:
+            handler.setFormatter(formatter)

@@ -89,12 +89,17 @@ class SessionWorkerBridge:
         worker: UserUploadWorker,
         send_fn: Callable[[Client], Any],
         is_media: bool = True,
+        owner_user_id: Optional[int] = None,
     ) -> Any:
         """
         Enqueue *send_fn* on *worker* and return the result.
         FloodWait is re-raised so SessionManager can handle rotation.
         """
-        task = UploadTask(send_fn=send_fn, is_media=is_media)
+        task = UploadTask(
+            send_fn=send_fn,
+            is_media=is_media,
+            owner_user_id=owner_user_id,
+        )
         return await worker.enqueue(task)
 
     # ── Convenience ───────────────────────────────────────────────────────────

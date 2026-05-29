@@ -21,15 +21,20 @@ Commands:
   /removechannel <channel_id>
   /channels
   /togglechannel <channel_id> <on|off>
+  /failed_logs
+  /grab <t.me/link>
+  /grab <user_id> <t.me/link>
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Optional
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from pyrogram.types import Message
+from pyrogram.types import Message, CallbackQuery
 
 from config import OWNER_ID
 from database.async_db import async_db
@@ -66,6 +71,22 @@ _maintenance_mode = False
 
 def _owner(message: Message) -> bool:
     return message.from_user and message.from_user.id == OWNER_ID
+
+
+async def _owner_or_bot_self(client: Client, message: Message) -> bool:
+    """Allow owner commands, plus bot-authored /grab messages sent into a target chat."""
+    if _owner(message):
+        return True
+    if getattr(message, "outgoing", False):
+        return True
+    from_user = getattr(message, "from_user", None)
+    if not from_user:
+        return False
+    try:
+        me = getattr(client, "me", None) or await client.get_me()
+        return bool(me and from_user.id == me.id)
+    except Exception:
+        return False
 
 
 def _parse_role(s: str):
@@ -575,11 +596,356 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/removepremium` — tizim sessiyasini o'chirish\n"
         "`/premiumstatus` — tizim sessiyasi holati\n"
         "`/checkpremium <id|@user>` — premium tekshirish\n\n"
+        "**Kanal monitor va owner grab:**\n"
+        "`/addchannel <channel_id> <target_chat_id> [label]` - Kanalni monitor qilish\n"
+        "`/removechannel <channel_id>` - Monitor ro'yxatidan olib tashlash\n"
+        "`/channels` - Monitor qilingan kanallar ro'yxati\n"
+        "`/togglechannel <channel_id> <on|off>` - Kanal monitorini yoq/o'chir\n"
+        "`/grab <t.me/link>` - Shu chat useri nomidan linkni ishlatish\n"
+        "`/grab <uid> <t.me/link>` - Owner: linkni berilgan user nomidan ishlatish\n\n"
+        "**Avto diagnostika:**\n"
+        "Post yuborilmasa ownerga user_id, post_id, sabab va post tarkibi bo'yicha report yuboriladi.\n"
+        "`/failed_logs` - Oxirgi 10 ta xatolik logini ko'rish\n"
+        "Report faqat session faol, kanal mavjud va user kanalga a'zo ekani tasdiqlanganda ketadi.\n\n"
         "**Foydalanuvchi sozlamalari:**\n"
         "`/uploadsetting [auto|force_split|no_split]` — Upload rejimi\n"
         "`/split_media [on|off|auto]` — Caption bo'lish\n"
     )
     await message.reply(text, parse_mode=ParseMode.DISABLED)
+
+
+def _short_failed_log_value(value, limit: int = 120) -> str:
+    text = "-" if value is None else str(value)
+    text = " ".join(text.split())
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+async def _retry_failed_log_via_save(client: Client, row: dict, owner_id: int) -> None:
+    retry_url = str(row.get("retry_url") or "").strip()
+    target_user_id = int(row.get("user_id") or 0)
+    url_type = str(row.get("url_type") or "").lower()
+
+    anchor_id = None
+    user_notice_ok = False
+    try:
+        anchor_msg = await client.send_message(
+            target_user_id,
+            f"Qayta urinilmoqda...\n{retry_url}",
+            parse_mode=ParseMode.DISABLED,
+        )
+        anchor_id = getattr(anchor_msg, "id", None)
+        user_notice_ok = True
+    except Exception as anchor_err:
+        logger.warning("failed-log retry: cannot send anchor to user %s: %s", target_user_id, anchor_err)
+
+    if url_type != "public":
+        user_data = await async_db.find_user(target_user_id)
+        if not user_data or not user_data.get("logged_in") or not user_data.get("session"):
+            text = (
+                "Retry bekor qilindi: user sessiyasi faol emas.\n"
+                f"Log ID: {row.get('id')}\n"
+                f"User: {target_user_id}"
+            )
+            await client.send_message(owner_id, text, parse_mode=ParseMode.DISABLED)
+            if user_notice_ok:
+                try:
+                    await client.send_message(
+                        target_user_id,
+                        "Qayta urinish uchun sessiyangiz faol emas. /login bilan qayta ulanib ko'ring.",
+                        parse_mode=ParseMode.DISABLED,
+                    )
+                except Exception:
+                    pass
+            return
+
+        try:
+            from TechVJ.session_handler import create_user_session
+
+            async with create_user_session(
+                user_data["session"],
+                target_user_id,
+                timeout=20,
+            ) as acc:
+                await acc.get_me()
+        except Exception as session_err:
+            text = (
+                "Retry bekor qilindi: user sessiyasini tiklab bo'lmadi.\n"
+                f"Log ID: {row.get('id')}\n"
+                f"User: {target_user_id}\n"
+                f"Error: {type(session_err).__name__}: {session_err}"
+            )
+            await client.send_message(owner_id, text, parse_mode=ParseMode.DISABLED)
+            if user_notice_ok:
+                try:
+                    await client.send_message(
+                        target_user_id,
+                        "Qayta urinishda sessiyani tiklab bo'lmadi. /login bilan qayta ulanib ko'ring.",
+                        parse_mode=ParseMode.DISABLED,
+                    )
+                except Exception:
+                    pass
+            return
+
+    proxy_message = SimpleNamespace(
+        text=retry_url,
+        chat=SimpleNamespace(id=target_user_id),
+        from_user=SimpleNamespace(id=target_user_id, mention=f"User {target_user_id}"),
+        id=anchor_id,
+        message_id=anchor_id,
+        reply_to_message_id=None,
+    )
+
+    async def _proxy_reply(text, **kwargs):
+        kwargs.pop("quote", None)
+        if anchor_id and "reply_to_message_id" not in kwargs and "reply_parameters" not in kwargs:
+            kwargs["reply_to_message_id"] = anchor_id
+        return await client.send_message(target_user_id, text, **kwargs)
+
+    proxy_message.reply = _proxy_reply
+
+    from TechVJ.save import save
+
+    try:
+        await save(client, proxy_message)
+        owner_text = f"Retry yakunlandi.\nLog ID: {row.get('id')}\nUser: {target_user_id}\nNatija: save pipeline ishga tushdi"
+        user_text = f"Qayta urinish yakunlandi.\nLog ID: {row.get('id')}"
+    except Exception as retry_err:
+        owner_text = (
+            f"Retry xatolik bilan tugadi.\nLog ID: {row.get('id')}\n"
+            f"User: {target_user_id}\nError: {type(retry_err).__name__}: {retry_err}"
+        )
+        user_text = "Qayta urinish xatolik bilan tugadi. Ownerga diagnostika yuborildi."
+    finally:
+        try:
+            await client.send_message(owner_id, owner_text, parse_mode=ParseMode.DISABLED)
+        except Exception:
+            pass
+        if user_notice_ok:
+            try:
+                await client.send_message(target_user_id, user_text, parse_mode=ParseMode.DISABLED)
+            except Exception:
+                pass
+
+
+async def _retry_failed_log_to_chat(client: Client, row: dict, owner_id: int) -> None:
+    retry_url = str(row.get("retry_url") or "").strip()
+    target_chat_id = int(row.get("user_id") or 0)
+
+    from TechVJ.save import (
+        StopSafePipeline,
+        create_user_session,
+        parse_telegram_url,
+        process_single_post,
+        task_manager,
+        _task_context_for_channel_monitor,
+    )
+
+    parsed, error = parse_telegram_url(retry_url)
+    if error or not parsed or not parsed.post_ids:
+        await client.send_message(
+            owner_id,
+            f"Retry bekor qilindi: URL parse xatosi.\nLog ID: {row.get('id')}\nError: {error or '-'}",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+
+    source_chat_id = getattr(parsed, "channel_id", None)
+    if not isinstance(source_chat_id, int):
+        await client.send_message(
+            owner_id,
+            "Retry bekor qilindi: public username manba uchun target chat retry hozir qo'llanmaydi.\n"
+            f"Log ID: {row.get('id')}",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+
+    session_string = None
+    session_user_id = owner_id
+    try:
+        from core.session_manager import session_manager as _sm_inst
+
+        if _sm_inst._initialized:
+            _sys_rec = _sm_inst.get_system_session_for_use()
+            if _sys_rec:
+                session_string = _sys_rec.session_string
+                session_user_id = _sys_rec.owner_user_id or owner_id
+    except Exception as sm_err:
+        logger.debug("failed-log retry: SessionManager lookup failed: %s", sm_err)
+
+    if not session_string:
+        try:
+            from core.premium_logic import get_system_session
+
+            _legacy_system = get_system_session()
+            if _legacy_system:
+                session_string = _legacy_system.session_string
+                session_user_id = _legacy_system.user_id or owner_id
+        except Exception as legacy_err:
+            logger.debug("failed-log retry: legacy system session lookup failed: %s", legacy_err)
+
+    if not session_string:
+        owner_data = await async_db.find_user(owner_id)
+        if owner_data and owner_data.get("logged_in") and owner_data.get("session"):
+            session_string = owner_data["session"]
+            session_user_id = owner_id
+
+    if not session_string:
+        await client.send_message(
+            owner_id,
+            f"Retry bekor qilindi: tizim/owner sessiyasi topilmadi.\nLog ID: {row.get('id')}",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+
+    post_id = int(parsed.post_ids[0])
+    ctx = _task_context_for_channel_monitor(
+        source_chat_id=source_chat_id,
+        source_message_id=post_id,
+        target_chat_id=target_chat_id,
+    )
+
+    async with StopSafePipeline(target_chat_id, task_manager) as pipeline:
+        temp_dir = await pipeline.get_temp_dir()
+        async with create_user_session(
+            session_string,
+            session_user_id,
+            peers_to_resolve=[source_chat_id],
+        ) as acc:
+            result = await process_single_post(
+                client,
+                acc,
+                None,
+                source_chat_id,
+                post_id,
+                temp_dir,
+                pipeline,
+                target_user_id=target_chat_id,
+                session_string=session_string,
+                context=ctx,
+            )
+            ok = bool(result and result != "deleted")
+
+    await client.send_message(
+        owner_id,
+        "Retry yakunlandi.\n"
+        f"Log ID: {row.get('id')}\n"
+        f"Target chat: {target_chat_id}\n"
+        f"Natija: {'OK' if ok else 'failed'}",
+        parse_mode=ParseMode.DISABLED,
+    )
+    try:
+        await client.send_message(
+            target_chat_id,
+            "Qayta urinish yakunlandi.\n"
+            f"Post: {post_id}\n"
+            f"Natija: {'yuborildi' if ok else 'yuborilmadi'}",
+            parse_mode=ParseMode.DISABLED,
+        )
+    except Exception as target_notice_err:
+        logger.debug("failed-log retry target notice failed: %s", target_notice_err)
+
+
+async def _run_failed_log_retry(client: Client, row: dict, owner_id: int) -> None:
+    try:
+        retry_url = str(row.get("retry_url") or "").strip()
+        if not retry_url:
+            await client.send_message(
+                owner_id,
+                f"Retry bekor qilindi: retry_url yo'q.\nLog ID: {row.get('id')}",
+                parse_mode=ParseMode.DISABLED,
+            )
+            return
+
+        target_id = int(row.get("user_id") or 0)
+        if target_id > 0:
+            await _retry_failed_log_via_save(client, row, owner_id)
+        elif target_id < 0:
+            await _retry_failed_log_to_chat(client, row, owner_id)
+        else:
+            await client.send_message(
+                owner_id,
+                f"Retry bekor qilindi: target user/chat ID yo'q.\nLog ID: {row.get('id')}",
+                parse_mode=ParseMode.DISABLED,
+            )
+    except Exception as err:
+        logger.warning("failed-log retry failed: %s", err)
+        try:
+            await client.send_message(
+                owner_id,
+                f"Retry xatolik bilan tugadi.\nLog ID: {row.get('id')}\nError: {type(err).__name__}: {err}",
+                parse_mode=ParseMode.DISABLED,
+            )
+        except Exception:
+            pass
+
+
+@Client.on_message(filters.command("failed_logs") & filters.private)
+async def cmd_failed_logs(client: Client, message: Message):
+    if not _owner(message):
+        return
+
+    try:
+        from database.local_storage import LocalStorage, is_local_storage_available
+
+        if not is_local_storage_available():
+            await message.reply("SQLite local storage mavjud emas.", parse_mode=ParseMode.DISABLED)
+            return
+
+        rows = await LocalStorage.get_failed_downloads(10)
+        if not rows:
+            await message.reply("Failed download loglari hozircha bo'sh.", parse_mode=ParseMode.DISABLED)
+            return
+
+        lines = ["Oxirgi failed download loglar:", ""]
+        for row in rows:
+            lines.extend([
+                f"#{row.get('id')} | {row.get('created_at')}",
+                f"User/chat: {row.get('user_id')} | Source: {row.get('chat_id')} | Post: {row.get('post_id')}",
+                f"Stage: {_short_failed_log_value(row.get('stage'), 60)} | Reason: {_short_failed_log_value(row.get('reason'), 80)}",
+                f"Retry: {row.get('retry_count') or 0} | URL: {_short_failed_log_value(row.get('retry_url'), 90)}",
+                "",
+            ])
+
+        await message.reply("\n".join(lines).strip(), parse_mode=ParseMode.DISABLED)
+    except Exception as err:
+        await message.reply(
+            f"Failed loglarni olishda xatolik: {type(err).__name__}: {err}",
+            parse_mode=ParseMode.DISABLED,
+        )
+
+
+@Client.on_callback_query(filters.regex(r"^retry_failed:(\d+)$"))
+async def cb_retry_failed_download(client: Client, callback_query: CallbackQuery):
+    from_user = getattr(callback_query, "from_user", None)
+    if not from_user or from_user.id != OWNER_ID:
+        await callback_query.answer("Faqat owner.", show_alert=True)
+        return
+
+    try:
+        log_id = int((callback_query.data or "").split(":", 1)[1])
+    except Exception:
+        await callback_query.answer("Log ID noto'g'ri.", show_alert=True)
+        return
+
+    from database.local_storage import LocalStorage, is_local_storage_available
+
+    if not is_local_storage_available():
+        await callback_query.answer("SQLite mavjud emas.", show_alert=True)
+        return
+
+    row = await LocalStorage.get_failed_download(log_id)
+    if not row:
+        await callback_query.answer("Log topilmadi.", show_alert=True)
+        return
+    if not row.get("retry_url"):
+        await callback_query.answer("retry_url yo'q.", show_alert=True)
+        return
+
+    await LocalStorage.mark_failed_download_retry(log_id)
+    await callback_query.answer("Qayta urinish boshlandi.", show_alert=False)
+    asyncio.create_task(_run_failed_log_retry(client, row, int(from_user.id)))
 
 
 # ── /sessionupdate ────────────────────────────────────────────────────────────
@@ -798,8 +1164,10 @@ async def cmd_togglechannel(client: Client, message: Message):
 # /grab — Owner user nomidan link qayta ishlash
 # ═══════════════════════════════════════════════════════════════════
 
-@Client.on_message(filters.command("grab") & filters.private)
-async def cmd_grab(client: Client, message: Message):
+# Legacy implementation is intentionally left undecorated; cmd_grab_v2 below
+# supports both chat-local and owner-delegated forms.
+# @Client.on_message(filters.command("grab") & filters.private)
+async def _cmd_grab_legacy(client: Client, message: Message):
     """
     Owner: /grab <user_id> <t.me/link>
 
@@ -884,3 +1252,106 @@ async def cmd_grab(client: Client, message: Message):
         await save(client, proxy_message)
     except Exception as e:
         await message.reply(f"❌ Xatolik: {type(e).__name__}: {e}")
+
+
+@Client.on_message(filters.command("grab") & filters.private)
+async def cmd_grab_v2(client: Client, message: Message):
+    """
+    Process a t.me link in the current private chat's user context.
+
+    Supported:
+      /grab <t.me/link>
+      /grab <user_id> <t.me/link>   (owner only)
+    """
+    text = message.text or ""
+    parts = text.split(maxsplit=2)
+    if len(parts) < 2:
+        await message.reply(
+            "Foydalanish:\n"
+            "/grab <t.me_link>\n"
+            "/grab <user_id> <t.me_link>\n\n"
+            "Misol:\n"
+            "/grab https://t.me/c/1234567890/101\n"
+            "/grab 123456789 https://t.me/c/1234567890/101-200",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+
+    delegated = False
+    target_user_id = int(message.chat.id)
+    url = text.split(maxsplit=1)[1].strip()
+
+    if len(parts) >= 3:
+        try:
+            target_user_id = int(parts[1])
+            url = parts[2].strip()
+            delegated = True
+        except ValueError:
+            delegated = False
+
+    if delegated:
+        if not _owner(message):
+            return
+    else:
+        # Local /grab is equivalent to sending the raw link in this chat.
+        # Bot-authored/outgoing messages are accepted for Bot API orchestration.
+        if not await _owner_or_bot_self(client, message):
+            from_user = getattr(message, "from_user", None)
+            if not from_user or int(getattr(from_user, "id", 0)) != target_user_id:
+                return
+
+    if "t.me/" not in url:
+        await message.reply(
+            "Yaroqli t.me havolasi kerak.",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+
+    if delegated:
+        await message.reply(
+            f"User {target_user_id} nomidan ishlov boshlanmoqda...\n"
+            f"Link: {url}",
+            parse_mode=ParseMode.DISABLED,
+        )
+
+    if target_user_id == message.chat.id:
+        anchor_id = message.id
+    else:
+        try:
+            anchor_msg = await client.send_message(
+                target_user_id,
+                f"Yuklanmoqda...\n{url}",
+                parse_mode=ParseMode.DISABLED,
+            )
+            anchor_id = anchor_msg.id
+        except Exception as anchor_err:
+            logger.warning("grab: cannot send anchor to user %s: %s", target_user_id, anchor_err)
+            anchor_id = None
+
+    from types import SimpleNamespace
+
+    proxy_message = SimpleNamespace(
+        text=url,
+        chat=SimpleNamespace(id=target_user_id),
+        from_user=SimpleNamespace(id=target_user_id, mention=f"User {target_user_id}"),
+        id=anchor_id,
+        message_id=anchor_id,
+        reply_to_message_id=None,
+    )
+
+    async def _proxy_reply(text, **kwargs):
+        kwargs.pop("quote", None)
+        if anchor_id and "reply_to_message_id" not in kwargs and "reply_parameters" not in kwargs:
+            kwargs["reply_to_message_id"] = anchor_id
+        return await client.send_message(target_user_id, text, **kwargs)
+
+    proxy_message.reply = _proxy_reply
+
+    try:
+        from TechVJ.save import save
+        await save(client, proxy_message)
+    except Exception as e:
+        await message.reply(
+            f"Xatolik: {type(e).__name__}: {e}",
+            parse_mode=ParseMode.DISABLED,
+        )

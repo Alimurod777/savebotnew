@@ -28,6 +28,7 @@ Usage in handlers:
 import asyncio
 import functools
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, Callable, Any
 
 from pyrogram import Client
@@ -49,6 +50,40 @@ except ImportError:
     logger.warning("InactivityManager not available - activity tracking disabled")
 
 
+def _extract_user_id(value: Any) -> Optional[int]:
+    """Best-effort user id extraction from real or lightweight message objects."""
+    if value is None:
+        return None
+
+    if isinstance(value, Client):
+        return None
+
+    if isinstance(value, CallbackQuery):
+        user = getattr(value, "from_user", None)
+        return getattr(user, "id", None)
+
+    if isinstance(value, Message):
+        user = getattr(value, "from_user", None)
+        if user and getattr(user, "id", None):
+            return user.id
+        chat = getattr(value, "chat", None)
+        return getattr(chat, "id", None)
+
+    direct = getattr(value, "user_id", None)
+    if direct:
+        return direct
+
+    user = getattr(value, "from_user", None)
+    if user and getattr(user, "id", None):
+        return user.id
+
+    chat = getattr(value, "chat", None)
+    if chat and getattr(chat, "id", None):
+        return chat.id
+
+    return None
+
+
 def track_activity(func: Callable) -> Callable:
     """
     Decorator that tracks user activity for inactivity management.
@@ -66,17 +101,27 @@ def track_activity(func: Callable) -> Callable:
     async def wrapper(*args, **kwargs):
         # Extract user_id from message or callback
         user_id = None
-        
-        for arg in args:
-            if isinstance(arg, Message):
-                if arg.from_user:
-                    user_id = arg.from_user.id
-                break
-            elif isinstance(arg, CallbackQuery):
-                if arg.from_user:
-                    user_id = arg.from_user.id
-                break
-        
+
+        for key in ("context", "target_user_id", "user_id"):
+            if key in kwargs:
+                user_id = _extract_user_id(kwargs[key]) or kwargs[key]
+                if user_id:
+                    break
+
+        if not user_id:
+            for arg in args:
+                user_id = _extract_user_id(arg)
+                if user_id:
+                    break
+
+        try:
+            user_id = int(user_id) if user_id is not None else None
+        except (TypeError, ValueError):
+            user_id = None
+
+        if user_id is not None and user_id <= 0:
+            user_id = None
+
         # Touch activity before handler
         if user_id and INACTIVITY_AVAILABLE:
             try:
@@ -99,6 +144,7 @@ def track_activity(func: Callable) -> Callable:
     return wrapper
 
 
+@asynccontextmanager
 async def with_user_session(
     user_id: int,
     session_string: Optional[str] = None,
@@ -218,6 +264,21 @@ async def on_user_activity(user_id: int) -> None:
             await touch_user_session(user_id)
         except Exception:
             pass
+
+
+async def ping_activity(user_id: Optional[int]) -> None:
+    """Lightweight explicit keep-alive for long-running per-post loops."""
+    try:
+        uid = int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        uid = None
+    if not uid or uid <= 0:
+        return
+    if INACTIVITY_AVAILABLE:
+        try:
+            await touch_user_session(uid)
+        except Exception as e:
+            logger.debug(f"Activity ping error: {e}")
 
 
 async def get_managed_client(

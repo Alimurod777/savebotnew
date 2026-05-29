@@ -14,7 +14,13 @@ from pyrogram.types import (
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
 )
 from core.reply_compat import build_reply_kwargs_from_message, build_link_preview_kwargs
-from core.copy_utils import get_bot_copy_source_chat_id
+from core.copy_utils import (
+    BotMessageResolutionError,
+    get_bot_copy_source_chat_id,
+    get_bot_latest_message_id,
+    get_bot_real_message_id,
+)
+from core.restricted_channel_guard import validate_restricted_channel_id
 from core.safe_send import (
     safe_send_message as core_safe_send,
     safe_reply as core_safe_reply,
@@ -22,6 +28,7 @@ from core.safe_send import (
 )
 from core.message_utils import (
     split_caption as split_caption_tuple,
+    split_message as split_message_chunks,
     normalize_poll_to_text,
     MAX_MESSAGE_LENGTH,
     MAX_CAPTION_LENGTH,
@@ -48,6 +55,14 @@ from TechVJ.file_splitter import (
 )
 from core.structured_log import op_log
 from TechVJ.task_manager import task_manager, StopSafePipeline, sanitize_filename
+
+try:
+    from TechVJ.activity_tracker import ping_activity, track_activity
+except ImportError:
+    def track_activity(func):
+        return func
+    async def ping_activity(user_id):
+        return None
 
 # Request-scoped structured logging (contextvars-based)
 try:
@@ -163,6 +178,23 @@ def _task_context_from_queue(item, parsed=None, client_type: str = "bot") -> Tas
     )
 
 
+def _task_context_for_channel_monitor(
+    *,
+    source_chat_id: int,
+    source_message_id: int,
+    target_chat_id: int,
+    client_type: str = "user_session",
+) -> TaskContext:
+    return TaskContext(
+        task_id=uuid.uuid4().hex,
+        user_id=int(target_chat_id),
+        source_chat_id=int(source_chat_id),
+        message_id=int(source_message_id),
+        target_chat_id=int(target_chat_id),
+        client_type=client_type,
+    )
+
+
 async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] = None) -> None:
     """Resolve peer per request to avoid stale access_hash caches."""
     try:
@@ -174,6 +206,37 @@ async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] =
             peer_id,
             e,
         )
+
+
+async def _validate_restricted_channel_request(
+    client: Client,
+    parsed,
+    user_id: int,
+) -> Tuple[bool, str]:
+    """Block non-owner requests for enabled /addchannel sources before queueing."""
+    source_ref = getattr(parsed, "channel_id", None)
+    source_id: Optional[int] = source_ref if isinstance(source_ref, int) else None
+
+    if source_id is None and isinstance(source_ref, str):
+        url_type = getattr(parsed, "url_type", "")
+        if url_type in {"public", "topic"}:
+            try:
+                chat = await client.get_chat(source_ref)
+                resolved_id = getattr(chat, "id", None)
+                if isinstance(resolved_id, int):
+                    source_id = resolved_id
+            except Exception as err:
+                logger.debug(
+                    "Restricted channel public resolve skipped source=%s: %s",
+                    source_ref,
+                    err,
+                )
+
+    return validate_restricted_channel_id(
+        source_id,
+        user_id=user_id,
+        owner_id=OWNER_ID,
+    )
 
 
 def _is_photo_only_group(messages: list) -> bool:
@@ -303,19 +366,63 @@ async def _enqueue_media_delivery(
     """
     Enqueue upload task and copy the result to the user with reply context.
 
-    ALL uploads go to bot_user_id (intermediate chat), then copy_message
-    delivers to the user with the correct reply_to_message_id.
-    This ensures media always replies to the user's original link message.
+    Pool sessions: upload → bot DM of pool account → resolve real message ID
+    → copy_message to user → delete intermediate.
+
+    Non-pool sessions: upload → user's own bot DM → message is directly
+    visible to the user, no copy needed.
     """
-    sent = await worker.enqueue(task_factory(send_fn=send_fn, is_media=True))
+    # ── Pre-upload watermark (pool only) ──────────────────────────────────
+    copy_source_chat_id = None
+    pre_upload_latest_id = None
+
+    if is_pool_session:
+        expected_source_chat_id = getattr(worker, "session_user_id", None)
+        if expected_source_chat_id is None:
+            raise PoolDeliveryError("Could not determine uploader account before upload")
+        copy_source_chat_id = int(expected_source_chat_id)
+        pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
+        if pre_upload_latest_id is None:
+            raise PoolDeliveryError("Could not read bot-side upload watermark")
+
+    # ── Enqueue upload ────────────────────────────────────────────────────
+    upload_task = task_factory(send_fn=send_fn, is_media=True, owner_user_id=int(target_user_id))
+    sent = await worker.enqueue(upload_task)
     if sent is None:
         return sent
-    copy_source_chat_id = get_bot_copy_source_chat_id(sent, getattr(getattr(sent, "chat", None), "id", None))
-    if copy_source_chat_id is None:
-        if is_pool_session:
-            raise PoolDeliveryError("Could not determine bot copy source chat")
-        logger.warning("copy_message skipped for non-pool session - source chat unknown")
+
+    # ── Non-pool: message already visible in user's bot DM ────────────────
+    if not is_pool_session:
         return sent
+
+    # ── Pool: copy from pool↔bot DM to user chat ─────────────────────────
+    detected_source_chat_id = get_bot_copy_source_chat_id(
+        sent, getattr(getattr(sent, "chat", None), "id", None)
+    )
+    if detected_source_chat_id is not None and int(detected_source_chat_id) != int(copy_source_chat_id):
+        logger.error(
+            "copy source mismatch: expected=%s detected=%s sent_id=%s",
+            copy_source_chat_id,
+            detected_source_chat_id,
+            getattr(sent, "id", None),
+        )
+        raise PoolDeliveryError("Bot copy source mismatch")
+
+    try:
+        real_msg_id = await get_bot_real_message_id(
+            bot_client,
+            copy_source_chat_id,
+            sent,
+            min_message_id=pre_upload_latest_id,
+        )
+    except BotMessageResolutionError as resolve_err:
+        logger.error(
+            "copy_message blocked: could not resolve bot-side message id chat=%s sent_id=%s: %s",
+            copy_source_chat_id,
+            getattr(sent, "id", None),
+            resolve_err,
+        )
+        raise PoolDeliveryError(str(resolve_err)) from resolve_err
 
     copy_ok = False
     for copy_try in range(3):
@@ -323,7 +430,7 @@ async def _enqueue_media_delivery(
             await bot_client.copy_message(
                 chat_id=target_user_id,
                 from_chat_id=copy_source_chat_id,
-                message_id=sent.id,
+                message_id=real_msg_id,
                 **reply_kwargs_builder(request_message),
             )
             copy_ok = True
@@ -343,28 +450,19 @@ async def _enqueue_media_delivery(
 
     if copy_ok:
         try:
-            await bot_client.delete_messages(copy_source_chat_id, [sent.id])
+            await bot_client.delete_messages(copy_source_chat_id, [real_msg_id])
         except Exception:
             pass
         return sent
 
-    # copy failed — for pool sessions raise, for non-pool keep intermediate msg
-    if is_pool_session:
-        logger.error(
-            "copy_message failed after 3 attempts - keeping intermediate msg %d in chat %d",
-            sent.id, copy_source_chat_id,
-        )
-        raise PoolDeliveryError(
-            f"Pool upload reached intermediate chat but delivery to user {target_user_id} failed"
-        )
-    else:
-        # Non-pool: intermediate msg is already visible to user in bot DM
-        # (less ideal but not lost)
-        logger.warning(
-            "copy_message failed for non-pool session — intermediate msg %d visible in bot DM",
-            sent.id,
-        )
-        return sent
+    # copy failed — keep intermediate msg for recovery, raise error
+    logger.error(
+        "copy_message failed after 3 attempts - keeping intermediate msg %d in chat %d",
+        real_msg_id, copy_source_chat_id,
+    )
+    raise PoolDeliveryError(
+        f"Pool upload reached intermediate chat but delivery to user {target_user_id} failed"
+    )
 
 
 def _get_user_session_target_chat_id(bot_client: Client, fallback_chat_id: int) -> int:
@@ -500,13 +598,15 @@ class ParsedURL:
         post_ids: List[int], 
         url_type: str = "private",
         topic_id: int = None,
-        thread_id: int = None
+        thread_id: int = None,
+        topic_range_anchor: Optional[Tuple[int, int]] = None,
     ):
         self.channel_id = channel_id
         self.post_ids = post_ids
         self.url_type = url_type  # "private", "public", "bot", "topic", "thread"
         self.topic_id = topic_id  # For topic links: https://t.me/c/CHAT/TOPIC/MSG
         self.thread_id = thread_id  # For thread links: ?thread=ID
+        self.topic_range_anchor = topic_range_anchor
     
     @property
     def is_topic(self) -> bool:
@@ -522,6 +622,8 @@ class ParsedURL:
             extra = f", topic_id={self.topic_id}"
         if self.thread_id:
             extra = f", thread_id={self.thread_id}"
+        if self.topic_range_anchor:
+            extra += f", topic_range_anchor={self.topic_range_anchor}"
         return f"ParsedURL(channel_id={self.channel_id}, post_ids={self.post_ids}, type={self.url_type}{extra})"
 
 
@@ -552,12 +654,13 @@ def parse_topic_url(url: str) -> Optional[ParsedURL]:
         from_id = int(topic_range.group(3))
         to_id = int(topic_range.group(4))
 
-        if from_id <= to_id:
-            post_ids = list(range(from_id, to_id + 1))
-        else:
-            post_ids = list(range(from_id, to_id - 1, -1))
-
-        return ParsedURL(channel_id, post_ids, "topic", topic_id=topic_id)
+        return ParsedURL(
+            channel_id,
+            [from_id, to_id],
+            "topic",
+            topic_id=topic_id,
+            topic_range_anchor=(from_id, to_id),
+        )
 
     # Topic with comma-separated: /c/CHAT/TOPIC/ID1,ID2,ID3
     topic_multi = re.match(r'^https?://t\.me/c/(\d+)/(\d+)/(\d+(?:,\d+)+)$', url)
@@ -585,8 +688,13 @@ def parse_topic_url(url: str) -> Optional[ParsedURL]:
         topic_id = int(pub_range.group(2))
         from_id = int(pub_range.group(3))
         to_id = int(pub_range.group(4))
-        post_ids = list(range(from_id, to_id + 1)) if from_id <= to_id else list(range(from_id, to_id - 1, -1))
-        return ParsedURL(username, post_ids, "public", topic_id=topic_id)
+        return ParsedURL(
+            username,
+            [from_id, to_id],
+            "topic",
+            topic_id=topic_id,
+            topic_range_anchor=(from_id, to_id),
+        )
 
     # Public topic with comma-separated: /username/TOPIC/ID1,ID2,ID3
     pub_multi = re.match(r'^https?://t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})/(\d+)/(\d+(?:,\d+)+)$', url)
@@ -594,7 +702,7 @@ def parse_topic_url(url: str) -> Optional[ParsedURL]:
         username = pub_multi.group(1)
         topic_id = int(pub_multi.group(2))
         post_ids = [int(pid.strip()) for pid in pub_multi.group(3).split(',')]
-        return ParsedURL(username, post_ids, "public", topic_id=topic_id)
+        return ParsedURL(username, post_ids, "topic", topic_id=topic_id)
 
     # Public topic single: /username/TOPIC/MSG
     pub_single = re.match(r'^https?://t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})/(\d+)/(\d+)$', url)
@@ -602,7 +710,7 @@ def parse_topic_url(url: str) -> Optional[ParsedURL]:
         username = pub_single.group(1)
         topic_id = int(pub_single.group(2))
         post_id = int(pub_single.group(3))
-        return ParsedURL(username, [post_id], "public", topic_id=topic_id)
+        return ParsedURL(username, [post_id], "topic", topic_id=topic_id)
 
     return None
 
@@ -874,6 +982,555 @@ def get(obj, key, default=None):
         return obj[key]
     except (KeyError, TypeError, IndexError):
         return default
+
+
+def _owner_diag_truncate(value: Any, limit: int = 1200) -> str:
+    """Return a compact plain-text field for owner diagnostics."""
+    if value is None:
+        return "-"
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 20)] + f"\n...[truncated {len(text) - limit} chars]"
+
+
+def _owner_diag_error(error: Any) -> str:
+    if not error:
+        return "-"
+    return f"{type(error).__name__}: {_owner_diag_truncate(error, 700)}"
+
+
+def _owner_diag_user_line(request_message: Optional[Message], user_id: int) -> str:
+    user = getattr(request_message, "from_user", None) if request_message else None
+    if not user:
+        return f"id={user_id}"
+    name_parts = [
+        getattr(user, "first_name", None),
+        getattr(user, "last_name", None),
+    ]
+    name = " ".join(p for p in name_parts if p) or "-"
+    username = getattr(user, "username", None)
+    phone = getattr(user, "phone_number", None)
+    parts = [f"id={user_id}", f"name={name}"]
+    if username:
+        parts.append(f"username=@{username}")
+    if phone:
+        parts.append(f"phone={phone}")
+    return " | ".join(parts)
+
+
+def _owner_diag_chat_lines(chat: Any) -> List[str]:
+    if not chat:
+        return ["Chat: -"]
+    title = getattr(chat, "title", None) or getattr(chat, "first_name", None) or "-"
+    username = getattr(chat, "username", None)
+    chat_type = getattr(getattr(chat, "type", None), "value", None) or getattr(chat, "type", None) or "-"
+    members = getattr(chat, "members_count", None)
+    lines = [
+        f"Chat: {title}",
+        f"Chat ID: {getattr(chat, 'id', '-')}",
+        f"Chat type: {chat_type}",
+    ]
+    if username:
+        lines.append(f"Chat username: @{username}")
+    if members is not None:
+        lines.append(f"Members: {members}")
+    return lines
+
+
+def _owner_diag_media_lines(msg: Any) -> List[str]:
+    lines: List[str] = []
+    msg_type = get_message_type(msg) if msg else "Unknown"
+    lines.append(f"Post type: {msg_type}")
+    if not msg:
+        return lines
+
+    if getattr(msg, "media_group_id", None):
+        lines.append(f"Media group ID: {msg.media_group_id}")
+    if getattr(msg, "has_protected_content", None):
+        lines.append("Protected content: yes")
+    if getattr(msg, "reply_markup", None):
+        lines.append("Reply markup: yes")
+
+    poll = getattr(msg, "poll", None)
+    if poll:
+        options = getattr(poll, "options", None) or []
+        lines.append(f"Poll question: {_owner_diag_truncate(getattr(poll, 'question', '-'), 250)}")
+        lines.append(f"Poll options: {len(options)}")
+        for idx, opt in enumerate(options[:10], start=1):
+            lines.append(f"  {idx}. {_owner_diag_truncate(getattr(opt, 'text', '-'), 120)}")
+
+    media_attrs = (
+        "photo",
+        "video",
+        "document",
+        "audio",
+        "voice",
+        "video_note",
+        "animation",
+        "sticker",
+    )
+    for attr in media_attrs:
+        media = getattr(msg, attr, None)
+        if not media:
+            continue
+        size = getattr(media, "file_size", None)
+        if size:
+            lines.append(f"Media size: {format_size(size)} ({size} bytes)")
+        file_name = getattr(media, "file_name", None)
+        if file_name:
+            lines.append(f"File name: {_owner_diag_truncate(file_name, 250)}")
+        mime_type = getattr(media, "mime_type", None)
+        if mime_type:
+            lines.append(f"Mime type: {mime_type}")
+        duration = getattr(media, "duration", None)
+        if duration:
+            lines.append(f"Duration: {duration}s")
+        width = getattr(media, "width", None)
+        height = getattr(media, "height", None)
+        if width and height:
+            lines.append(f"Dimensions: {width}x{height}")
+        file_unique_id = getattr(media, "file_unique_id", None)
+        if file_unique_id:
+            lines.append(f"File unique ID: {file_unique_id}")
+        break
+
+    text = None
+    entities = None
+    limit_kind = "message"
+    if getattr(msg, "text", None):
+        text = str(msg.text)
+        entities = list(getattr(msg, "entities", None) or [])
+    elif getattr(msg, "caption", None):
+        text = str(msg.caption)
+        entities = list(getattr(msg, "caption_entities", None) or [])
+        limit_kind = "caption"
+
+    if text:
+        try:
+            from core.entity_validator import utf16_length as _utf16_length
+            utf16_len = _utf16_length(text)
+        except Exception:
+            utf16_len = len(text)
+        lines.append(f"{limit_kind.title()} length: {len(text)} chars / {utf16_len} UTF-16")
+        lines.append(f"Entities: {len(entities)}")
+        lines.append("Text preview:")
+        lines.append(_owner_diag_truncate(text, 1500))
+    else:
+        lines.append("Text/caption: none")
+
+    return lines
+
+
+def _owner_diag_post_link(chat_id: Any, post_id: int, chat: Any = None) -> str:
+    username = getattr(chat, "username", None) if chat else None
+    if username:
+        return f"https://t.me/{username}/{post_id}"
+    if isinstance(chat_id, int) and str(chat_id).startswith("-100"):
+        return f"https://t.me/c/{str(chat_id)[4:]}/{post_id}"
+    return "-"
+
+
+def _owner_diag_retry_url(
+    chat_id: Any,
+    post_id: int,
+    parsed: Optional[ParsedURL] = None,
+    chat: Any = None,
+) -> Optional[str]:
+    username = getattr(chat, "username", None) if chat else None
+    topic_id = getattr(parsed, "topic_id", None) if parsed else None
+    thread_id = getattr(parsed, "thread_id", None) if parsed else None
+
+    if username:
+        if topic_id:
+            base = f"https://t.me/{username}/{topic_id}/{post_id}"
+        else:
+            base = f"https://t.me/{username}/{post_id}"
+    elif isinstance(chat_id, int) and str(chat_id).startswith("-100"):
+        short_id = str(chat_id)[4:]
+        if topic_id:
+            base = f"https://t.me/c/{short_id}/{topic_id}/{post_id}"
+        else:
+            base = f"https://t.me/c/{short_id}/{post_id}"
+    else:
+        return None
+
+    if thread_id and not topic_id:
+        return f"{base}?thread={thread_id}"
+    return base
+
+
+async def _log_failed_download_local(
+    *,
+    user_id: int,
+    chat_id: Any,
+    post_id: int,
+    stage: str,
+    reason: str,
+    error: Any = None,
+    parsed: Optional[ParsedURL] = None,
+    retry_url: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> Optional[int]:
+    try:
+        from database.local_storage import LocalStorage, is_local_storage_available
+
+        if not is_local_storage_available():
+            return None
+
+        return await LocalStorage.log_failed_download(
+            user_id=user_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            url_type=getattr(parsed, "url_type", None),
+            topic_id=getattr(parsed, "topic_id", None),
+            thread_id=getattr(parsed, "thread_id", None),
+            stage=stage,
+            reason=reason,
+            error=_owner_diag_error(error),
+            retry_url=retry_url,
+            details=details,
+        )
+    except Exception as e:
+        logger.debug("Failed download log skipped: %s", e)
+        return None
+
+
+async def _owner_diag_verified_context(acc, chat_id: Any) -> Tuple[bool, dict]:
+    """Verify session, channel existence, and membership before notifying owner."""
+    info = {
+        "me": None,
+        "chat": None,
+        "member_status": "-",
+        "skip_reason": "",
+    }
+    try:
+        info["me"] = await asyncio.wait_for(acc.get_me(), timeout=10.0)
+    except Exception as e:
+        info["skip_reason"] = f"session_inactive: {_owner_diag_error(e)}"
+        return False, info
+
+    try:
+        info["chat"] = await asyncio.wait_for(acc.get_chat(chat_id), timeout=10.0)
+    except Exception as e:
+        info["skip_reason"] = f"channel_unavailable: {_owner_diag_error(e)}"
+        return False, info
+
+    try:
+        member = await asyncio.wait_for(acc.get_chat_member(chat_id, "me"), timeout=10.0)
+        status = str(getattr(member, "status", "-"))
+        info["member_status"] = status
+        status_upper = status.upper()
+        if any(marker in status_upper for marker in ("LEFT", "BANNED", "KICKED")):
+            info["skip_reason"] = f"not_member: {status}"
+            return False, info
+    except Exception as e:
+        # For private numeric chats, successful get_chat through the user
+        # session is already a strong membership signal. Public usernames are
+        # not enough because get_chat can work without joining.
+        if isinstance(chat_id, int) and chat_id < 0:
+            info["member_status"] = (
+                "verified_by_get_chat; get_chat_member failed: "
+                f"{_owner_diag_error(e)}"
+            )
+        else:
+            info["skip_reason"] = f"membership_unverified: {_owner_diag_error(e)}"
+            return False, info
+
+    return True, info
+
+
+async def _notify_owner_channel_post_failure(
+    client: Client,
+    acc,
+    *,
+    user_id: int,
+    chat_id: Any,
+    post_id: int,
+    stage: str,
+    reason: str,
+    error: Any = None,
+    source_msg: Any = None,
+    request_message: Optional[Message] = None,
+    context: Optional[TaskContext] = None,
+    parsed: Optional[ParsedURL] = None,
+    requested_total: Optional[int] = None,
+) -> None:
+    """
+    Send a precise owner-only diagnostic when an existing user/session/channel
+    context fails to deliver one post. Text is sent only by the bot client.
+    """
+    if not OWNER_ID:
+        return
+
+    try:
+        verified, verify_info = await _owner_diag_verified_context(acc, chat_id)
+        if not verified:
+            logger.debug(
+                "Skipping owner post-failure diagnostic for user=%s chat=%s post=%s: %s",
+                user_id,
+                chat_id,
+                post_id,
+                verify_info.get("skip_reason"),
+            )
+            return
+
+        fetched_for_report = False
+        source_fetch_error = None
+        if source_msg is None:
+            try:
+                source_msg = await asyncio.wait_for(
+                    acc.get_messages(chat_id, post_id),
+                    timeout=15.0,
+                )
+                fetched_for_report = True
+            except Exception as e:
+                source_fetch_error = e
+
+        post_exists = bool(source_msg and not getattr(source_msg, "empty", False))
+        me = verify_info.get("me")
+        chat = verify_info.get("chat")
+
+        lines = [
+            "Post delivery failure report",
+            "",
+            "User:",
+            _owner_diag_user_line(request_message, user_id),
+            "",
+            "Request:",
+            f"Task ID: {getattr(context, 'task_id', '-')}",
+            f"URL type: {getattr(parsed, 'url_type', '-')}",
+            f"Source chat: {chat_id}",
+            f"Post ID: {post_id}",
+            "Scope: this report is for this one failed post ID",
+            f"Post link: {_owner_diag_post_link(chat_id, post_id, chat)}",
+            f"Requested total: {requested_total if requested_total is not None else '-'}",
+            f"Topic ID: {getattr(parsed, 'topic_id', '-')}",
+            f"Thread ID: {getattr(parsed, 'thread_id', '-')}",
+            "",
+            "Failure:",
+            f"Stage: {stage}",
+            f"Reason: {reason}",
+            f"Error: {_owner_diag_error(error)}",
+            "",
+            "Verified before notify:",
+            f"Session user: id={getattr(me, 'id', '-')} username=@{getattr(me, 'username', '-')}",
+            f"Member status: {verify_info.get('member_status', '-')}",
+        ]
+        lines.extend(_owner_diag_chat_lines(chat))
+        lines.extend([
+            "",
+            "Post:",
+            f"Exists/readable now: {'yes' if post_exists else 'no'}",
+            f"Fetched for report: {'yes' if fetched_for_report else 'no'}",
+        ])
+
+        if source_fetch_error:
+            lines.append(f"Fetch-for-report error: {_owner_diag_error(source_fetch_error)}")
+
+        if post_exists:
+            lines.extend([
+                f"Message ID: {getattr(source_msg, 'id', '-')}",
+                f"Date: {getattr(source_msg, 'date', '-')}",
+                f"Edit date: {getattr(source_msg, 'edit_date', '-')}",
+            ])
+            lines.extend(_owner_diag_media_lines(source_msg))
+
+        retry_url = _owner_diag_retry_url(chat_id, post_id, parsed, chat)
+        log_id = await _log_failed_download_local(
+            user_id=user_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            stage=stage,
+            reason=reason,
+            error=error,
+            parsed=parsed,
+            retry_url=retry_url,
+            details={
+                "task_id": getattr(context, "task_id", None),
+                "requested_total": requested_total,
+                "post_exists": post_exists,
+                "post_link": _owner_diag_post_link(chat_id, post_id, chat),
+                "source_fetch_error": _owner_diag_error(source_fetch_error),
+            },
+        )
+
+        report = "\n".join(lines)
+        chunks = split_message_chunks(report)
+        for index, chunk in enumerate(chunks):
+            reply_markup = None
+            if log_id and retry_url and index == len(chunks) - 1:
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Qayta urinish", callback_data=f"retry_failed:{log_id}")]
+                ])
+            await client.send_message(
+                OWNER_ID,
+                chunk,
+                parse_mode=ParseMode.DISABLED,
+                reply_markup=reply_markup,
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+    except Exception as e:
+        logger.warning("Could not send owner post-failure diagnostic: %s", e)
+
+
+def _user_failure_text(stage: str, reason: str, post_id: int, error: Any = None) -> str:
+    reason_text = str(reason or "").strip()
+    error_text = _owner_diag_error(error)
+    joined = f"{stage} {reason_text} {error_text}".upper()
+
+    if "FLOODWAIT" in joined or "FLOOD" in joined:
+        short = "Telegram vaqtinchalik kutishni talab qildi."
+    elif "DELETED" in joined or "EMPTY" in joined or "MSG_ID_INVALID" in joined:
+        short = "Post o'chirilgan yoki mavjud emas."
+    elif "RESTRICT" in joined or "PROTECTED" in joined or "FORBIDDEN" in joined:
+        short = "Post cheklangan yoki yuborishga ruxsat yo'q."
+    elif "TIMEOUT" in joined:
+        short = "Postni olish vaqti tugadi."
+    else:
+        short = "Postni olish yoki yuborishda xatolik yuz berdi."
+
+    return (
+        "Post o'tkazib yuborildi.\n"
+        f"Post ID: {post_id}\n"
+        f"Sabab: {short}\n"
+        "Keyingi postga o'tyapman."
+    )
+
+
+async def _notify_realtime_post_failure(
+    client: Client,
+    acc,
+    *,
+    user_id: int,
+    chat_id: Any,
+    post_id: int,
+    stage: str,
+    reason: str,
+    error: Any = None,
+    source_msg: Any = None,
+    request_message: Optional[Message] = None,
+    context: Optional[TaskContext] = None,
+    parsed: Optional[ParsedURL] = None,
+    requested_total: Optional[int] = None,
+    notify_user: bool = True,
+) -> None:
+    await ping_activity(user_id)
+
+    await _notify_owner_channel_post_failure(
+        client,
+        acc,
+        user_id=user_id,
+        chat_id=chat_id,
+        post_id=post_id,
+        stage=stage,
+        reason=reason,
+        error=error,
+        source_msg=source_msg,
+        request_message=request_message,
+        context=context,
+        parsed=parsed,
+        requested_total=requested_total,
+    )
+
+    if notify_user and user_id:
+        try:
+            await client.send_message(
+                user_id,
+                _user_failure_text(stage, reason, post_id, error),
+                parse_mode=ParseMode.DISABLED,
+                **build_reply_kwargs_from_message(request_message),
+            )
+        except Exception as user_notify_err:
+            logger.debug(
+                "Realtime user failure notify skipped user=%s post=%s: %s",
+                user_id,
+                post_id,
+                user_notify_err,
+            )
+
+    await ping_activity(user_id)
+
+
+async def _notify_bot_only_post_failure(
+    client: Client,
+    *,
+    user_id: int,
+    chat_id: Any,
+    post_id: int,
+    stage: str,
+    reason: str,
+    error: Any = None,
+    request_message: Optional[Message] = None,
+    parsed: Optional[ParsedURL] = None,
+    requested_total: Optional[int] = None,
+) -> None:
+    """Bot-only realtime diagnostic for flows that do not have a user session."""
+    await ping_activity(user_id)
+
+    retry_url = _owner_diag_retry_url(chat_id, post_id, parsed)
+    log_id = await _log_failed_download_local(
+        user_id=user_id,
+        chat_id=chat_id,
+        post_id=post_id,
+        stage=stage,
+        reason=reason,
+        error=error,
+        parsed=parsed,
+        retry_url=retry_url,
+        details={"requested_total": requested_total},
+    )
+
+    if OWNER_ID:
+        try:
+            lines = [
+                "Post delivery failure report",
+                "",
+                "User:",
+                _owner_diag_user_line(request_message, user_id),
+                "",
+                "Request:",
+                f"URL type: {getattr(parsed, 'url_type', '-')}",
+                f"Source chat: {chat_id}",
+                f"Post ID: {post_id}",
+                f"Post link: {_owner_diag_post_link(chat_id, post_id)}",
+                f"Requested total: {requested_total if requested_total is not None else '-'}",
+                "",
+                "Failure:",
+                f"Stage: {stage}",
+                f"Reason: {reason}",
+                f"Error: {_owner_diag_error(error)}",
+                "",
+                "Verified before notify:",
+                "No user session was available in this bot-only path.",
+                f"SQLite log ID: {log_id if log_id else '-'}",
+            ]
+            reply_markup = None
+            if log_id and retry_url:
+                reply_markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Qayta urinish", callback_data=f"retry_failed:{log_id}")
+                ]])
+            await client.send_message(
+                OWNER_ID,
+                "\n".join(lines),
+                parse_mode=ParseMode.DISABLED,
+                reply_markup=reply_markup,
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+        except Exception as owner_err:
+            logger.debug("Bot-only owner failure notify skipped: %s", owner_err)
+
+    try:
+        await client.send_message(
+            user_id,
+            _user_failure_text(stage, reason, post_id, error),
+            parse_mode=ParseMode.DISABLED,
+            **build_reply_kwargs_from_message(request_message),
+        )
+    except Exception as user_err:
+        logger.debug("Bot-only user failure notify skipped user=%s post=%s: %s", user_id, post_id, user_err)
+
+    await ping_activity(user_id)
 
 
 def sanitize_html(content):
@@ -1768,10 +2425,395 @@ async def ban_list_command(client: Client, message: Message):
     await message.reply(text)
 
 
+# ==================== CHANNEL MONITOR ====================
+
+_channel_monitor_locks = {}
+_channel_monitor_access_failures = {}
+_CHANNEL_MONITOR_ACCESS_FAIL_LIMIT = 3
+
+
+class ChannelMonitorAccessLost(Exception):
+    """Raised when the system session no longer has access to a monitored channel."""
+
+
+def _is_channel_monitor_access_error(error: Any) -> bool:
+    text = f"{type(error).__name__}: {error}".upper()
+    markers = (
+        "USER_BANNED_IN_CHANNEL",
+        "CHANNEL_PRIVATE",
+        "CHAT_ADMIN_REQUIRED",
+        "CHATADMINREQUIRED",
+        "USER_NOT_PARTICIPANT",
+        "PEER_ID_INVALID",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _record_channel_monitor_success(channel_id: int) -> None:
+    _channel_monitor_access_failures.pop(int(channel_id), None)
+
+
+async def _record_channel_monitor_access_failure(
+    client: Client,
+    channel_monitor,
+    channel_id: int,
+    target_chat_id: int,
+    error: Any,
+) -> None:
+    channel_id = int(channel_id)
+    count = int(_channel_monitor_access_failures.get(channel_id, 0)) + 1
+    _channel_monitor_access_failures[channel_id] = count
+
+    logger.warning(
+        "ChannelMonitor: access failure %s/%s for channel=%s target=%s: %s",
+        count,
+        _CHANNEL_MONITOR_ACCESS_FAIL_LIMIT,
+        channel_id,
+        target_chat_id,
+        error,
+    )
+
+    if count > _CHANNEL_MONITOR_ACCESS_FAIL_LIMIT:
+        return
+
+    if count < _CHANNEL_MONITOR_ACCESS_FAIL_LIMIT:
+        return
+
+    disabled = False
+    try:
+        disabled = bool(await channel_monitor.toggle_channel(channel_id, False))
+    except Exception as toggle_err:
+        logger.warning(
+            "ChannelMonitor: auto-disable failed for channel=%s: %s",
+            channel_id,
+            toggle_err,
+        )
+
+    if disabled:
+        _channel_monitor_access_failures.pop(channel_id, None)
+
+    if OWNER_ID:
+        try:
+            await client.send_message(
+                OWNER_ID,
+                "Kanalga kirish taqiqlandi, monitor avtomatik o'chirildi.\n"
+                f"Channel ID: {channel_id}\n"
+                f"Target chat: {target_chat_id}\n"
+                f"Ketma-ket xatolik: {count}\n"
+                f"Sabab: {_owner_diag_error(error)}",
+                parse_mode=ParseMode.DISABLED,
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+        except Exception as notify_err:
+            logger.debug("ChannelMonitor: owner auto-disable notify failed: %s", notify_err)
+
+
+def _channel_monitor_lock(key) -> asyncio.Lock:
+    lock = _channel_monitor_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _channel_monitor_locks[key] = lock
+    return lock
+
+
+async def _send_monitored_text_message(
+    client: Client,
+    target_chat_id: int,
+    source_msg: Message,
+) -> bool:
+    text, entities = get_text_with_entities(source_msg)
+    if not text:
+        text, entities = get_caption_with_entities(source_msg)
+    if not text:
+        return True
+
+    try:
+        from core.text_renderer import extract_to_renderer
+
+        renderer = extract_to_renderer(text, entities or [])
+        chunks = renderer.render_chunks(TELEGRAM_MESSAGE_LIMIT)
+        reply_markup = getattr(source_msg, "reply_markup", None)
+
+        for index, (chunk_text, chunk_entities) in enumerate(chunks):
+            if not chunk_text:
+                continue
+            await client.send_message(
+                chat_id=target_chat_id,
+                text=chunk_text,
+                entities=chunk_entities if chunk_entities else None,
+                parse_mode=ParseMode.DISABLED,
+                reply_markup=reply_markup if index == len(chunks) - 1 else None,
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+            if len(chunks) > 1:
+                await asyncio.sleep(0.5)
+        return True
+    except FloodWait:
+        raise
+    except Exception as err:
+        logger.warning("ChannelMonitor: text delivery failed: %s", err)
+        return False
+
+
+async def _process_monitored_channel_message(
+    client: Client,
+    monitor_entry,
+    source_message: Message,
+) -> bool:
+    """
+    Process a new post from a monitored protected channel.
+
+    Media is fetched with a MTProto session and text is delivered by the bot,
+    preserving the project's send-routing rule.
+    """
+    source_chat_id = int(monitor_entry.channel_id)
+    target_chat_id = int(monitor_entry.target_chat_id)
+    source_message_id = int(source_message.id)
+
+    async def _handle_access_lost(error: Any) -> None:
+        try:
+            from core.channel_monitor import channel_monitor as _cm
+            await _record_channel_monitor_access_failure(
+                client,
+                _cm,
+                source_chat_id,
+                target_chat_id,
+                error,
+            )
+        except Exception as disable_err:
+            logger.warning(
+                "ChannelMonitor: access lost handling failed channel=%s: %s",
+                source_chat_id,
+                disable_err,
+            )
+
+    ctx = _task_context_for_channel_monitor(
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        target_chat_id=target_chat_id,
+    )
+
+    if _REQUEST_CONTEXT_AVAILABLE:
+        _set_req_ctx(_ReqCtx(
+            request_id=ctx.task_id[:12],
+            requester_user_id=OWNER_ID,
+            source_chat_id=source_chat_id,
+            target_chat_id=target_chat_id,
+            routing_mode="channel_monitor",
+            source_message_id=source_message_id,
+            sender_mode="user_session",
+        ))
+
+    try:
+        from core.media_classifier import has_downloadable_media
+
+        if not has_downloadable_media(source_message) and not getattr(source_message, "poll", None):
+            return await _send_monitored_text_message(client, target_chat_id, source_message)
+
+        session_string = None
+        session_user_id = target_chat_id
+        try:
+            from core.session_manager import session_manager as _sm_inst
+            if _sm_inst._initialized:
+                _sys_rec = _sm_inst.get_system_session_for_use()
+                if _sys_rec:
+                    session_string = _sys_rec.session_string
+                    session_user_id = _sys_rec.owner_user_id or OWNER_ID
+        except Exception as _sm_lookup_err:
+            logger.debug("ChannelMonitor: system session lookup failed: %s", _sm_lookup_err)
+
+        if not session_string:
+            try:
+                from core.premium_logic import get_system_session
+                _legacy_system = get_system_session()
+                if _legacy_system:
+                    session_string = _legacy_system.session_string
+                    session_user_id = _legacy_system.user_id or OWNER_ID
+            except Exception as _legacy_lookup_err:
+                logger.debug("ChannelMonitor: legacy system session lookup failed: %s", _legacy_lookup_err)
+
+        if not session_string:
+            owner_data = await async_db.find_user(OWNER_ID)
+            if owner_data and owner_data.get("logged_in") and owner_data.get("session"):
+                session_string = owner_data["session"]
+                session_user_id = OWNER_ID
+
+        if not session_string:
+            logger.warning(
+                "ChannelMonitor: no MTProto session available for channel %s post %s",
+                source_chat_id, source_message_id,
+            )
+            return False
+
+        async with StopSafePipeline(target_chat_id, task_manager) as pipeline:
+            temp_dir = await pipeline.get_temp_dir()
+            async with create_user_session(
+                session_string,
+                session_user_id,
+                peers_to_resolve=[source_chat_id],
+            ) as acc:
+                await _resolve_peer_safe(acc, source_chat_id, ctx)
+                try:
+                    probe_msg = await asyncio.wait_for(
+                        acc.get_messages(source_chat_id, source_message_id),
+                        timeout=15.0,
+                    )
+                    if not probe_msg or getattr(probe_msg, "empty", False):
+                        logger.info(
+                            "ChannelMonitor: source message missing channel=%s post=%s",
+                            source_chat_id,
+                            source_message_id,
+                        )
+                        return False
+                except Exception as access_err:
+                    if _is_channel_monitor_access_error(access_err):
+                        raise ChannelMonitorAccessLost(str(access_err)) from access_err
+                    raise
+
+                try:
+                    if getattr(source_message, "media_group_id", None):
+                        album_msgs = await acc.get_media_group(source_chat_id, source_message_id)
+                        if album_msgs:
+                            album_msgs = sorted(list(album_msgs), key=lambda m: m.id)
+                            if all(getattr(m, "photo", None) for m in album_msgs) and len(album_msgs) >= 2:
+                                album_last_id = album_msgs[-1].id
+                                success, status, _ = await process_album_with_session(
+                                    bot_client=client,
+                                    user_session=acc,
+                                    user_id=target_chat_id,
+                                    target_chat_id=target_chat_id,
+                                    source_chat_id=source_chat_id,
+                                    message_id=source_message_id,
+                                    reply_to_message_id=None,
+                                    check_cancelled=pipeline.check_cancelled,
+                                    sent_albums=None,
+                                )
+                                if success or status == "already_sent":
+                                    try:
+                                        from core.channel_monitor import channel_monitor as _cm
+                                        await _cm.update_last_forwarded(source_chat_id, album_last_id)
+                                    except Exception:
+                                        pass
+                                    return True
+                            else:
+                                processed_any = False
+                                album_last_id = source_message_id
+                                for album_msg in album_msgs:
+                                    if await process_single_post(
+                                        client,
+                                        acc,
+                                        None,
+                                        source_chat_id,
+                                        album_msg.id,
+                                        temp_dir,
+                                        pipeline,
+                                        target_user_id=target_chat_id,
+                                        session_string=session_string,
+                                        context=ctx,
+                                    ):
+                                        processed_any = True
+                                    album_last_id = max(album_last_id, int(getattr(album_msg, "id", album_last_id)))
+                                if processed_any:
+                                    try:
+                                        from core.channel_monitor import channel_monitor as _cm
+                                        await _cm.update_last_forwarded(source_chat_id, album_last_id)
+                                    except Exception:
+                                        pass
+                                return processed_any
+                except Exception as album_err:
+                    if _is_channel_monitor_access_error(album_err):
+                        raise ChannelMonitorAccessLost(str(album_err)) from album_err
+                    logger.debug("ChannelMonitor: album fallback to single post: %s", album_err)
+
+                return bool(await process_single_post(
+                    client,
+                    acc,
+                    None,
+                    source_chat_id,
+                    source_message_id,
+                    temp_dir,
+                    pipeline,
+                    target_user_id=target_chat_id,
+                    session_string=session_string,
+                    context=ctx,
+                ))
+
+    except FloodWait as wait_err:
+        wait_seconds = getattr(wait_err, "value", getattr(wait_err, "x", 30))
+        logger.warning(
+            "ChannelMonitor: FloodWait %ss on channel %s post %s",
+            wait_seconds, source_chat_id, source_message_id,
+        )
+        await asyncio.sleep(min(wait_seconds, 60))
+        return False
+    except ChannelMonitorAccessLost as access_lost:
+        await _handle_access_lost(access_lost)
+        raise
+    except Exception as err:
+        if _is_channel_monitor_access_error(err):
+            await _handle_access_lost(err)
+            raise ChannelMonitorAccessLost(str(err)) from err
+        logger.warning(
+            "ChannelMonitor: failed channel=%s post=%s target=%s: %s",
+            source_chat_id, source_message_id, target_chat_id, err,
+        )
+        return False
+    finally:
+        if _REQUEST_CONTEXT_AVAILABLE:
+            _clear_req_ctx()
+
+
+@Client.on_message(filters.channel)
+@track_activity
+async def monitored_channel_handler(client: Client, message: Message):
+    """Deliver posts from owner-configured protected channels."""
+    try:
+        from core.channel_monitor import channel_monitor
+    except Exception:
+        return
+
+    if getattr(message, "outgoing", False):
+        return
+
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if chat_id is None:
+        return
+
+    monitor_entry = channel_monitor.get_channel(int(chat_id))
+    if not monitor_entry or not monitor_entry.enabled:
+        return
+
+    message_id = getattr(message, "id", None)
+    if not message_id or message_id <= getattr(monitor_entry, "last_forwarded_id", 0):
+        return
+
+    lock_key = (int(chat_id), getattr(message, "media_group_id", None) or int(message_id))
+    async with _channel_monitor_lock(lock_key):
+        latest = channel_monitor.get_channel(int(chat_id))
+        if not latest or not latest.enabled:
+            return
+        if int(message_id) <= latest.last_forwarded_id:
+            return
+
+        logger.info(
+            "ChannelMonitor: processing channel=%s post=%s target=%s",
+            chat_id, message_id, latest.target_chat_id,
+        )
+        try:
+            ok = await _process_monitored_channel_message(client, latest, message)
+        except ChannelMonitorAccessLost as err:
+            logger.warning("ChannelMonitor: auto-disabled/access-lost channel=%s: %s", chat_id, err)
+            return
+        if ok:
+            _record_channel_monitor_success(int(chat_id))
+            await channel_monitor.update_last_forwarded(int(chat_id), int(message_id))
+
+
 # ==================== STOP COMMAND (SECTION C) ====================
 
 @Client.on_message(filters.command(["stop"]))
 @check_banned
+@track_activity
 async def stop_command(client: Client, message: Message):
     """
     Cancel ALL ongoing operations for the user.
@@ -1819,6 +2861,7 @@ async def stop_command(client: Client, message: Message):
 
 @Client.on_message(filters.command(["queue"]))
 @check_banned
+@track_activity
 async def queue_status_command(client: Client, message: Message):
     """Show user's queue status"""
     user_id = message.from_user.id
@@ -1830,6 +2873,7 @@ async def queue_status_command(client: Client, message: Message):
 
 @Client.on_message(filters.command(["start"]))
 @check_banned
+@track_activity
 async def send_start(client: Client, message: Message):
     user_id = message.from_user.id
     user_data = await async_db.find_user(user_id)
@@ -1868,6 +2912,7 @@ async def send_start(client: Client, message: Message):
 
 @Client.on_message(filters.command(["help"]))
 @check_banned
+@track_activity
 async def send_help(client: Client, message: Message):
     from TechVJ.strings import HELP_TXT
     await client.send_message(message.chat.id, HELP_TXT)
@@ -1875,6 +2920,7 @@ async def send_help(client: Client, message: Message):
 
 @Client.on_message(filters.command(["status"]))
 @check_banned
+@track_activity
 async def send_status(client: Client, message: Message):
     """Foydalanuvchiga o'z holatini — rol, sessiya, limitlarni ko'rsatadigan buyruq."""
     user_id = message.from_user.id
@@ -1947,6 +2993,7 @@ async def send_status(client: Client, message: Message):
 
 @Client.on_message(filters.command(["cancel"]))
 @check_banned
+@track_activity
 async def cancel_command(client: Client, message: Message):
     """Redirect to /stop - cancels all operations"""
     user_id = message.chat.id
@@ -1973,6 +3020,7 @@ async def cancel_command(client: Client, message: Message):
 
 @Client.on_message(filters.command(["comment", "comments"]))
 @check_banned
+@track_activity
 async def comment_analyzer_command(client: Client, message: Message):
     """
     Analyze comment section of a post.
@@ -2173,7 +3221,7 @@ async def _dispatch_with_priority(
 
 # ==================== MAIN MESSAGE HANDLER ====================
 
-@Client.on_message(filters.text & filters.private & ~filters.command([
+@Client.on_message(filters.text & filters.private & ~filters.me & ~filters.command([
     "start", "help", "cancel", "stop", "info", "ban", "unban", "banlist",
     "login", "logout", "qrlogin", "status", "chatinfo", "msgstats", "members",
     "comment", "comments", "session", "post", "group", "queue", "lang", "clean", "cleanstatus",
@@ -2182,10 +3230,12 @@ async def _dispatch_with_priority(
     "enable_global_sessions", "disable_global_sessions",
     "premium", "setpremium", "removepremium", "premiumstatus", "checkpremium",
     "add_premium_session", "remove_premium_session",
+    "addchannel", "removechannel", "channels", "togglechannel", "grab", "failed_logs",
     "uploadsetting", "split_media",
 ]))
 
 @check_banned
+@track_activity
 async def save(client: Client, message: Message):
     """Main handler for Telegram URLs with queue support"""
     try:
@@ -2211,6 +3261,19 @@ async def save(client: Client, message: Message):
             return
         
         user_id = message.from_user.id
+        _restricted_ok, _restricted_msg = await _validate_restricted_channel_request(
+            client,
+            parsed,
+            user_id,
+        )
+        if not _restricted_ok:
+            await message.reply(
+                _restricted_msg,
+                parse_mode=ParseMode.DISABLED,
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+            return
+
         base_ctx = _new_task_context(message, parsed, client_type="bot")
         _gov_role = None
 
@@ -2515,6 +3578,7 @@ async def _process_queued_bot(client: Client, user_id: int, parsed, context: Opt
 
 # ==================== THREAD/COMMENT DOWNLOADER ====================
 
+@track_activity
 async def process_thread_comments(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process comment thread messages.
@@ -2896,6 +3960,7 @@ async def send_comment_to_user(
 
 # ==================== TOPIC POST DOWNLOADER ====================
 
+@track_activity
 async def process_topic_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process messages from a specific topic in a forum group.
@@ -2933,14 +3998,23 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
             topic_id = parsed.topic_id
             channel_id = ctx.source_chat_id or parsed.channel_id
             post_ids = parsed.post_ids
+            topic_range_anchor = getattr(parsed, "topic_range_anchor", None)
             
             total_posts = len(post_ids)
-            is_range = total_posts > 1
+            is_range = bool(topic_range_anchor) or total_posts > 1
+            if topic_range_anchor:
+                status_detail = f"Anchors: {topic_range_anchor[0]} -> {topic_range_anchor[1]}"
+            elif is_range:
+                status_detail = f"IDs: {', '.join(str(pid) for pid in post_ids[:10])}"
+                if total_posts > 10:
+                    status_detail += f" ... +{total_posts - 10}"
+            else:
+                status_detail = f"Message ID: {post_ids[0]}"
             
             status_msg = await client.send_message(
                 user_id,
                 f"Processing {'range' if is_range else 'message'} from topic {topic_id}...\n"
-                f"{'Range: ' + str(min(post_ids)) + '-' + str(max(post_ids)) if is_range else 'Message ID: ' + str(post_ids[0])}",
+                f"{status_detail}",
                 **build_reply_kwargs_from_message(message)
             )
             
@@ -3015,9 +4089,10 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     _t_batch = None
 
                 # ── Full topic extract path ────────────────────────────────────
-                # When post_ids is empty, use TopicExtractor to bulk-fetch
-                # the entire topic in chronological order via get_chat_history.
-                if not post_ids and _TOPIC_EXTRACTOR_AVAILABLE:
+                # When post_ids is empty or range anchors are present, use
+                # TopicExtractor to preserve real topic chronology. Topic
+                # message IDs are not guaranteed to be monotonic inside a topic.
+                if (topic_range_anchor or not post_ids) and _TOPIC_EXTRACTOR_AVAILABLE:
                     try:
                         extractor = TopicExtractor(
                             acc,
@@ -3028,7 +4103,10 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 inter_page_delay=0.3,
                             ),
                         )
-                        topic_msgs = await extractor.extract_all()
+                        if topic_range_anchor:
+                            topic_msgs = await extractor.extract_between(*topic_range_anchor)
+                        else:
+                            topic_msgs = await extractor.extract_all()
                         post_ids = [m.id for m in topic_msgs]
                         total_posts = len(post_ids)
                         is_range = total_posts > 1
@@ -3036,7 +4114,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         try:
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"Topic fetched: {total_posts} messages found. Processing...",
+                                f"Topic fetched: {total_posts} messages found in topic order. Processing...",
                             )
                         except Exception:
                             pass
@@ -3045,11 +4123,22 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     except TopicExtractionError as _te:
                         logger.warning("TopicExtractor failed, falling back to per-ID: %s", _te)
                         _topic_msg_cache = {}
+                        if topic_range_anchor:
+                            try:
+                                await client.edit_message_text(
+                                    user_id,
+                                    status_msg.id,
+                                    f"Could not resolve topic range anchors: {_te}",
+                                )
+                            except Exception:
+                                pass
+                            return
                 else:
                     _topic_msg_cache = {}
                 # ── End full topic extract path ────────────────────────────────
 
                 for idx, post_id in enumerate(post_ids):
+                    await ping_activity(user_id)
                     if await pipeline.check_cancelled():
                         if _t_status:
                             await _t_status.finish(
@@ -3100,10 +4189,37 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         except asyncio.TimeoutError:
                             logger.warning(f"Timeout fetching message {post_id}")
                             failed += 1
+                            await _notify_realtime_post_failure(
+                                client,
+                                acc,
+                                user_id=user_id,
+                                chat_id=channel_id,
+                                post_id=post_id,
+                                stage="topic_fetch",
+                                reason="get_messages timed out",
+                                request_message=message,
+                                context=ctx,
+                                parsed=parsed,
+                                requested_total=total_posts,
+                            )
                             continue
                         
                         if not msg or msg.empty:
                             skipped += 1
+                            await _notify_realtime_post_failure(
+                                client,
+                                acc,
+                                user_id=user_id,
+                                chat_id=channel_id,
+                                post_id=post_id,
+                                stage="topic_fetch",
+                                reason="post is deleted or inaccessible",
+                                source_msg=msg,
+                                request_message=message,
+                                context=ctx,
+                                parsed=parsed,
+                                requested_total=total_posts,
+                            )
                             continue
                         
                         # Check if message belongs to our topic
@@ -3178,11 +4294,40 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                         _t_batch.record_success()
                                 else:
                                     failed += 1
+                                    await _notify_realtime_post_failure(
+                                        client,
+                                        acc,
+                                        user_id=user_id,
+                                        chat_id=channel_id,
+                                        post_id=post_id,
+                                        stage="topic_album",
+                                        reason="album processing returned False",
+                                        source_msg=msg,
+                                        request_message=message,
+                                        context=ctx,
+                                        parsed=parsed,
+                                        requested_total=total_posts,
+                                    )
                                     if _t_batch:
                                         _t_batch.record_error()
                             except Exception as album_err:
                                 logger.warning(f"Album error for message {post_id}: {album_err}")
                                 failed += 1
+                                await _notify_realtime_post_failure(
+                                    client,
+                                    acc,
+                                    user_id=user_id,
+                                    chat_id=channel_id,
+                                    post_id=post_id,
+                                    stage="topic_album",
+                                    reason="album processing raised exception",
+                                    error=album_err,
+                                    source_msg=msg,
+                                    request_message=message,
+                                    context=ctx,
+                                    parsed=parsed,
+                                    requested_total=total_posts,
+                                )
                                 if _t_batch:
                                     _t_batch.record_error()
                         else:
@@ -3218,6 +4363,20 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     except FloodWait as fw:
                         wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
                         logger.warning(f"FloodWait {wait_time}s at message {post_id}")
+                        await _notify_realtime_post_failure(
+                            client,
+                            acc,
+                            user_id=user_id,
+                            chat_id=channel_id,
+                            post_id=post_id,
+                            stage="topic_floodwait",
+                            reason=f"FloodWait {wait_time}s",
+                            error=fw,
+                            request_message=message,
+                            context=ctx,
+                            parsed=parsed,
+                            requested_total=total_posts,
+                        )
                         if _t_batch:
                             _t_batch.record_flood(wait_time)
                         if wait_time > 120:
@@ -3248,6 +4407,20 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         else:
                             logger.warning(f"Failed to process topic message {post_id}: {e}")
                             failed += 1
+                            await _notify_realtime_post_failure(
+                                client,
+                                acc,
+                                user_id=user_id,
+                                chat_id=channel_id,
+                                post_id=post_id,
+                                stage="topic_process",
+                                reason="topic message processing raised exception",
+                                error=e,
+                                request_message=message,
+                                context=ctx,
+                                parsed=parsed,
+                                requested_total=total_posts,
+                            )
                             if _t_batch:
                                 _t_batch.record_error()
                         continue
@@ -3301,9 +4474,31 @@ async def process_single_topic_message(
     """Process a single message from a topic."""
     try:
         msg_type = get_message_type(msg)
+        source_chat_id = (
+            getattr(getattr(msg, "chat", None), "id", None)
+            or (context.source_chat_id if context else None)
+        )
+        source_post_id = getattr(msg, "id", None) or 0
+
+        async def _notify_topic_failure(stage: str, reason: str, error: Any = None) -> None:
+            if source_chat_id and source_post_id:
+                await _notify_realtime_post_failure(
+                    client,
+                    acc,
+                    user_id=user_id,
+                    chat_id=source_chat_id,
+                    post_id=source_post_id,
+                    stage=stage,
+                    reason=reason,
+                    error=error,
+                    source_msg=msg,
+                    request_message=request_message,
+                    context=context,
+                    parsed=None,
+                )
         
         if msg_type and msg_type not in ("Text", "Unknown"):
-            return await download_and_send_media(
+            result = await download_and_send_media(
                 client,
                 acc,
                 _make_reply_target_message(user_id, getattr(request_message, "id", None)),
@@ -3314,6 +4509,9 @@ async def process_single_topic_message(
                 session_string=session_string,
                 context=context,
             )
+            if not result:
+                await _notify_topic_failure("topic_send_media", "download_and_send_media returned False")
+            return result
         if msg.text:
             from core.smart_renderer import from_message, SmartRenderer
 
@@ -3336,6 +4534,29 @@ async def process_single_topic_message(
         raise
     except Exception as e:
         logger.warning(f"process_single_topic_message error: {e}")
+        try:
+            source_chat_id = (
+                getattr(getattr(msg, "chat", None), "id", None)
+                or (context.source_chat_id if context else None)
+            )
+            source_post_id = getattr(msg, "id", None) or 0
+            if source_chat_id and source_post_id:
+                await _notify_realtime_post_failure(
+                    client,
+                    acc,
+                    user_id=user_id,
+                    chat_id=source_chat_id,
+                    post_id=source_post_id,
+                    stage="topic_single_message",
+                    reason="process_single_topic_message raised exception",
+                    error=e,
+                    source_msg=msg,
+                    request_message=request_message,
+                    context=context,
+                    parsed=None,
+                )
+        except Exception:
+            pass
         return False
 
 
@@ -3587,6 +4808,7 @@ def _cleanup_files(files: list):
 
 # ==================== PRIVATE POST PROCESSING ====================
 
+@track_activity
 async def process_private_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """
     Process private channel posts with ALBUM-AWARE iteration.
@@ -3671,6 +4893,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                         post_id = iterator.next()
                         if post_id is None:
                             break  # Done
+                        await ping_activity(user_id)
 
                         try:
                             # Batch chunk pause
@@ -3737,6 +4960,19 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                 else:
                                     failed += 1
                                     failed_ids.append(post_id)
+                                    await _notify_realtime_post_failure(
+                                        client,
+                                        acc,
+                                        user_id=user_id,
+                                        chat_id=parsed.channel_id,
+                                        post_id=post_id,
+                                        stage="private_album",
+                                        reason=f"album processing returned status={status}",
+                                        request_message=message,
+                                        context=ctx,
+                                        parsed=parsed,
+                                        requested_total=total_posts,
+                                    )
                                     if _batch:
                                         _batch.record_error()
 
@@ -3782,6 +5018,20 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                         except FloodWait as fw:
                             wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
                             logger.warning(f"FloodWait {wait_time}s at post {post_id}")
+                            await _notify_realtime_post_failure(
+                                client,
+                                acc,
+                                user_id=user_id,
+                                chat_id=parsed.channel_id,
+                                post_id=post_id,
+                                stage="private_floodwait",
+                                reason=f"FloodWait {wait_time}s",
+                                error=fw,
+                                request_message=message,
+                                context=ctx,
+                                parsed=parsed,
+                                requested_total=total_posts,
+                            )
                             if _batch:
                                 _batch.record_flood(wait_time)
                             if wait_time > 120:
@@ -3810,6 +5060,20 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             logger.warning(f"Error processing post {post_id}: {e}")
                             failed += 1
                             failed_ids.append(post_id)
+                            await _notify_realtime_post_failure(
+                                client,
+                                acc,
+                                user_id=user_id,
+                                chat_id=parsed.channel_id,
+                                post_id=post_id,
+                                stage="private_loop",
+                                reason="private post loop raised exception",
+                                error=e,
+                                request_message=message,
+                                context=ctx,
+                                parsed=parsed,
+                                requested_total=total_posts,
+                            )
                             if _batch:
                                 _batch.record_error()
                             continue
@@ -3896,6 +5160,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 pass
 
 
+@track_activity
 async def process_public_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """Process public channel posts sequentially (single client per task)"""
     ctx = context or _new_task_context(message, parsed, client_type="bot")
@@ -3922,6 +5187,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
             ) as acc:
                 await _resolve_peer_safe(acc, parsed.channel_id, ctx)
                 for idx, post_id in enumerate(parsed.post_ids):
+                    await ping_activity(user_id)
                     if await pipeline.check_cancelled():
                         await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
                         break
@@ -3932,17 +5198,35 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                             await asyncio.sleep(pause)
 
                     try:
-                        await process_single_post(
+                        result = await process_single_post(
                             client, acc, message, parsed.channel_id, post_id, None, pipeline,
                             session_string=session_string,
                             context=ctx.with_client_type("user_session"),
                         )
-                        processed += 1
-                        if _p_batch:
-                            _p_batch.record_success()
+                        if result and result != "deleted":
+                            processed += 1
+                            if _p_batch:
+                                _p_batch.record_success()
+                        else:
+                            if _p_batch:
+                                _p_batch.record_error()
                     except FloodWait as fw:
                         wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
                         logger.warning(f"FloodWait {wait_time}s at public post {post_id}")
+                        await _notify_realtime_post_failure(
+                            client,
+                            acc,
+                            user_id=user_id,
+                            chat_id=parsed.channel_id,
+                            post_id=post_id,
+                            stage="public_floodwait",
+                            reason=f"FloodWait {wait_time}s",
+                            error=fw,
+                            request_message=message,
+                            context=ctx,
+                            parsed=parsed,
+                            requested_total=total_posts,
+                        )
                         if _p_batch:
                             _p_batch.record_flood(wait_time)
                         if wait_time > 120:
@@ -3959,6 +5243,20 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                             await asyncio.sleep(wait_time)
                     except Exception as _pub_err:
                         logger.debug("Public post process error: %s", _pub_err)
+                        await _notify_realtime_post_failure(
+                            client,
+                            acc,
+                            user_id=user_id,
+                            chat_id=parsed.channel_id,
+                            post_id=post_id,
+                            stage="public_user_session",
+                            reason="public post processing raised exception",
+                            error=_pub_err,
+                            request_message=message,
+                            context=ctx,
+                            parsed=parsed,
+                            requested_total=total_posts,
+                        )
                         if _p_batch:
                             _p_batch.record_error()
 
@@ -3968,6 +5266,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                     await asyncio.sleep(2)
         else:
             for idx, post_id in enumerate(parsed.post_ids):
+                await ping_activity(user_id)
                 if await pipeline.check_cancelled():
                     await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
                     break
@@ -3986,6 +5285,18 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                 except FloodWait as fw:
                     wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
                     logger.warning(f"FloodWait {wait_time}s at public post {post_id}")
+                    await _notify_bot_only_post_failure(
+                        client,
+                        user_id=user_id,
+                        chat_id=parsed.channel_id,
+                        post_id=post_id,
+                        stage="public_bot_floodwait",
+                        reason=f"FloodWait {wait_time}s",
+                        error=fw,
+                        request_message=message,
+                        parsed=parsed,
+                        requested_total=total_posts,
+                    )
                     if _p_batch:
                         _p_batch.record_flood(wait_time)
                     if wait_time > 120:
@@ -4002,6 +5313,18 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                         await asyncio.sleep(wait_time)
                 except Exception as _bot_err:
                     logger.debug("Public post bot copy error: %s", _bot_err)
+                    await _notify_bot_only_post_failure(
+                        client,
+                        user_id=user_id,
+                        chat_id=parsed.channel_id,
+                        post_id=post_id,
+                        stage="public_bot_copy",
+                        reason="public bot copy raised exception",
+                        error=_bot_err,
+                        request_message=message,
+                        parsed=parsed,
+                        requested_total=total_posts,
+                    )
                     if _p_batch:
                         _p_batch.record_error()
 
@@ -4027,6 +5350,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
             await client.edit_message_text(user_id, status_msg.id, f"✅ **Completed**\nProcessed: {processed}/{total_posts}")
 
 
+@track_activity
 async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL, context: Optional[TaskContext] = None):
     """Process bot chat posts sequentially"""
     ctx = context or _new_task_context(message, parsed, client_type="user_session")
@@ -4057,6 +5381,7 @@ async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL,
         await safe_disconnect(acc)
 
 
+@track_activity
 async def process_single_post(
     client: Client,
     acc,
@@ -4084,6 +5409,26 @@ async def process_single_post(
     if not user_id:
         logger.error("process_single_post: no user_id available")
         return False
+
+    async def _notify_failure(stage: str, reason: str, error: Any = None, source_msg: Any = None) -> None:
+        try:
+            if await pipeline.check_cancelled():
+                return
+        except Exception:
+            pass
+        await _notify_realtime_post_failure(
+            client,
+            acc,
+            user_id=user_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            stage=stage,
+            reason=reason,
+            error=error,
+            source_msg=source_msg,
+            request_message=message,
+            context=context,
+        )
     
     try:
         # Check cancellation
@@ -4099,9 +5444,11 @@ async def process_single_post(
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching message {post_id}")
+            await _notify_failure("fetch", "get_messages timed out")
             return False
         
         if not msg or msg.empty:
+            await _notify_failure("fetch", "post is deleted or inaccessible", source_msg=msg)
             return "deleted"
         
         msg_type = get_message_type(msg)
@@ -4141,6 +5488,7 @@ async def process_single_post(
                 return True
             except Exception as e:
                 logger.warning(f"send_location error: {e}")
+                await _notify_failure("send_location", "location send/copy failed", e, msg)
                 return False
 
         # Handle venue messages
@@ -4170,6 +5518,7 @@ async def process_single_post(
                 return True
             except Exception as e:
                 logger.warning(f"send_venue error: {e}")
+                await _notify_failure("send_venue", "venue send/copy failed", e, msg)
                 return False
 
         # Handle text messages
@@ -4179,26 +5528,38 @@ async def process_single_post(
                 quizbot_links = extract_quizbot_links(msg.reply_markup)
                 if quizbot_links:
                     # QuizBot post - handle separately, DO NOT also send as text
-                    return await handle_quizbot_post(client, message, msg)
+                    result = await handle_quizbot_post(client, message, msg)
+                    if not result:
+                        await _notify_failure("send_quizbot", "QuizBot post handler returned False", source_msg=msg)
+                    return result
             # Regular text message (no QuizBot)
-            return await send_text_message(client, message, msg)
+            result = await send_text_message(client, message, msg)
+            if not result:
+                await _notify_failure("send_text", "text send returned False", source_msg=msg)
+            return result
         
         # Handle polls with auto-vote
         if msg_type == "Poll":
-            return await handle_poll(
+            result = await handle_poll(
                 client, message, msg.poll, 
                 source_msg=msg, 
                 user_session=acc,  # Pass user session for auto-voting
                 auto_vote=True
             )
+            if not result:
+                await _notify_failure("send_poll", "poll handler returned False", source_msg=msg)
+            return result
         
         # Handle single media (photos without album, videos, documents, etc.)
         # NOTE: Album photos are handled by process_album_pipeline before reaching here
-        return await download_and_send_media(
+        result = await download_and_send_media(
             client, acc, message, msg, msg_type, temp_dir, pipeline,
             session_string=session_string,
             context=context,
         )
+        if not result:
+            await _notify_failure("send_media", "download_and_send_media returned False", source_msg=msg)
+        return result
         
     except asyncio.CancelledError:
         raise
@@ -4207,6 +5568,7 @@ async def process_single_post(
         raise
     except Exception as e:
         logger.warning(f"Error processing post {post_id}: {e}")
+        await _notify_failure("process_single_post", "unexpected exception", e)
         return False
 
 
@@ -4400,6 +5762,7 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
         return False
 
 
+@track_activity
 async def download_and_send_media(
     client: Client,
     acc,

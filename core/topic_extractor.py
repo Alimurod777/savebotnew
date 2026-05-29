@@ -30,6 +30,7 @@ class TopicExtractorConfig:
     fetch_batch_size: int = 200      # MTProto max is 200
     inter_page_delay: float = 0.3    # seconds between pages
     flood_backoff_cap: float = 120.0 # max extra sleep added on top of FloodWait
+    max_scan_pages: int = 1000       # fallback cap when server-side topic filter is unavailable
 
 
 class TopicExtractionError(Exception):
@@ -55,6 +56,7 @@ class TopicExtractor:
         # client is a Pyrogram/Pyrofork Client (user session, not bot)
         self._client = client
         self._cfg = config
+        self._thread_filter_supported: Optional[bool] = None
 
     # ── Low-level fetch ────────────────────────────────────────────────────────
 
@@ -69,14 +71,7 @@ class TopicExtractor:
         attempt = 0
         while True:
             try:
-                msgs: List[Message] = []
-                async for msg in self._client.get_chat_history(
-                    self._cfg.chat_id,
-                    limit=self._cfg.fetch_batch_size,
-                    offset_id=offset_id,
-                    message_thread_id=self._cfg.topic_id,
-                ):
-                    msgs.append(msg)
+                msgs = await self._fetch_history_page(offset_id)
                 logger.debug(
                     "TopicExtractor: page offset_id=%d returned %d msgs",
                     offset_id, len(msgs),
@@ -97,6 +92,39 @@ class TopicExtractor:
             except Exception as e:
                 logger.error("TopicExtractor: fatal fetch error: %s", e)
                 raise TopicExtractionError(f"fetch failed: {e}") from e
+
+    async def _fetch_history_page(self, offset_id: int) -> List[Message]:
+        kwargs = {
+            "limit": self._cfg.fetch_batch_size,
+            "offset_id": offset_id,
+        }
+        if self._thread_filter_supported is not False:
+            try:
+                msgs: List[Message] = []
+                async for msg in self._client.get_chat_history(
+                    self._cfg.chat_id,
+                    message_thread_id=self._cfg.topic_id,
+                    **kwargs,
+                ):
+                    msgs.append(msg)
+                self._thread_filter_supported = True
+                return msgs
+            except TypeError as e:
+                if "message_thread_id" not in str(e):
+                    raise
+                self._thread_filter_supported = False
+                logger.info(
+                    "TopicExtractor: get_chat_history has no message_thread_id support; "
+                    "falling back to chat-history scan"
+                )
+
+        msgs = []
+        async for msg in self._client.get_chat_history(
+            self._cfg.chat_id,
+            **kwargs,
+        ):
+            msgs.append(msg)
+        return msgs
 
     # ── Topic membership filter ────────────────────────────────────────────────
 
@@ -157,8 +185,10 @@ class TopicExtractor:
         pages: List[List[Message]] = []
         offset_id = 0
 
+        scanned_pages = 0
         while True:
             page = await self._fetch_page(offset_id=offset_id)
+            scanned_pages += 1
 
             if not page:
                 break
@@ -180,6 +210,17 @@ class TopicExtractor:
 
             if len(page) < self._cfg.fetch_batch_size:
                 break  # Last page
+
+            if (
+                self._thread_filter_supported is False
+                and scanned_pages >= self._cfg.max_scan_pages
+            ):
+                logger.warning(
+                    "TopicExtractor: stopped fallback scan at %d pages for topic=%d",
+                    scanned_pages,
+                    self._cfg.topic_id,
+                )
+                break
 
             offset_id = page[-1].id
             await asyncio.sleep(self._cfg.inter_page_delay)
@@ -222,3 +263,29 @@ class TopicExtractor:
         Use stream() for very large topics to avoid keeping everything in RAM.
         """
         return await self._collect_all()
+
+    async def extract_between(self, start_id: int, end_id: int) -> List[Message]:
+        """
+        Return the chronological topic slice between two anchor message IDs.
+
+        Topic message IDs can be non-monotonic relative to topic order, so this
+        intentionally uses the collected oldest-first topic order instead of a
+        numeric ID range.
+        """
+        all_msgs = await self._collect_all()
+        positions = {m.id: idx for idx, m in enumerate(all_msgs)}
+        if start_id not in positions or end_id not in positions:
+            missing = [
+                str(mid)
+                for mid in (start_id, end_id)
+                if mid not in positions
+            ]
+            raise TopicExtractionError(
+                "topic range anchor not found: " + ", ".join(missing)
+            )
+
+        start_pos = positions[start_id]
+        end_pos = positions[end_id]
+        if start_pos <= end_pos:
+            return all_msgs[start_pos:end_pos + 1]
+        return all_msgs[end_pos:start_pos + 1]

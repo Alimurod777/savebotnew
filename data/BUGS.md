@@ -5,6 +5,24 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-033: Sender isolation pool upload'larda noto'g'ri owner_user_id bilan qayta ishlangan
+**Sana:** 2026-05-29
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** BUG-032 fix dan keyin `_enqueue_media_delivery` (save.py) va `upload_with_session` (session_manager.py) `owner_user_id` parametrini `enqueue_task` ga umuman uzatmasdi. Buning sababi: avvalgi tahrir `session_user_id` (pool akkaunt ID) ni `owner_user_id` sifatida uzatardi, lekin `UserUploadWorker._run_task` da sender isolation `task.owner_user_id == self._user_id` ni tekshiradi va `_user_id` — bu so'rov yuborayotgan user (pool akkaunt EMAS), shuning uchun har bir pool task RUN qilinmasdan REJECT qilinardi. Vaqtinchalik fix `owner_user_id` ni umuman uzatmaslik bo'ldi, bu sender isolationni o'chirib qo'ydi.
+
+**Sabab:** Logika xato — `owner_user_id` semantikasi "kim so'rov yuborgan" (worker `_user_id` bilan mos), pool akkaunt ID emas.
+
+**Yechim:**
+1. `_enqueue_media_delivery` (save.py) endi `owner_user_id=int(target_user_id)` uzatadi — bu so'rov yuborgan user.
+2. `upload_with_session` (session_manager.py) endi `owner_user_id=user_id` uzatadi — bu ham so'rov yuborgan user.
+3. Sender isolation endi to'g'ri ishlaydi: `task.owner_user_id == worker._user_id` har doim mos keladi, va boshqa userdan kelgan task tasodifan o'tib ketmaydi.
+4. `test_governance_fixes.py` testlari ham yangi semantikaga moslashtirildi (assert `owner_user_id == 123` — requesting user, not 222/333 — pool account).
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/session_manager/session_manager.py`, `test_governance_fixes.py`
+
+---
+
 ## BUG-001: /stop cancellation race condition
 **Sana:** 2026-03-23
 **Holat:** ✅ Hal qilindi
@@ -96,6 +114,111 @@ Natija: download hali ishlayotganda temp dir o'chirildi.
 **Yechim:** Barchasini `asyncio.get_running_loop()` ga almashtirildi.
 
 **O'zgartirilgan fayllar:** `TechVJ/save.py`
+
+---
+
+## BUG-027: Post yuborilmaganida ownerga aniq diagnostika ketmaydi
+**Sana:** 2026-05-25
+**Holat:** Hal qilindi
+
+**Muammo:** User kanal postini ola olmasa yoki post yuborilmasa, owner faqat userdan kelgan umumiy shikoyat orqali bilardi. Qaysi user, qaysi kanal/post ID, qaysi bosqichda xato bo'lgani va post tarkibi haqida avtomatik ma'lumot yo'q edi.
+
+**Yechim:**
+1. `save.py`ga owner diagnostika helperlari qo'shildi.
+2. Report faqat session faol (`get_me`), kanal mavjud (`get_chat`) va user kanalga a'zoligi (`get_chat_member` yoki private numeric chat access) tasdiqlangandan keyin yuboriladi.
+3. Report bot client orqali owner chatiga yuboriladi: user_id, post_id, post linki, URL turi, xato bosqichi, xato sababi, kanal ma'lumoti, post turi, media hajmi/fayl nomi, caption/text preview, poll va album flaglari.
+4. Private, topic, album va user-session public post xatolik yo'llariga ulab qo'yildi.
+5. `/ownerhelp`ga kanal monitor/grab komandlari va avto diagnostika izohi qo'shildi.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `TechVJ/owner_commands.py`
+
+---
+
+## BUG-028: `/grab <link>` chat-local emas va topic range ID tartibiga bog'langan
+**Sana:** 2026-05-26
+**Holat:** Hal qilindi
+
+**Muammo:** `/grab` faqat ownerning `/grab <uid> <t.me/link>` formatida ishlardi. Bot API orqali biror user chatiga `/grab <link>` yuborilganda link shu chatdagi user yuborgandek hisoblanmasdi. Forum topic range uchun esa `FROM-TO` numeric message ID range sifatida kengaytirilardi; topic ichidagi message IDlar real joylangan vaqt tartibiga doim mos kelmaydi.
+
+**Yechim:**
+1. `/grab <t.me/link>` joriy private chat useri nomidan proxy message yaratadigan qilindi; owner uchun eski `/grab <uid> <t.me/link>` formati saqlandi.
+2. Bot-authored/outgoing `/grab` xabarlari Bot API orchestration uchun qabul qilinadi, lekin arbitrary userga delegated grab faqat ownerga ruxsat.
+3. Topic `FROM-TO` endi numeric range emas, ikkita anchor ID sifatida saqlanadi.
+4. `TopicExtractor.extract_between()` topic xabarlarini xronologik `(date, id)` tartibda yig'ib, anchorlar orasini shu tartib bo'yicha kesadi.
+5. Pyrofork `get_chat_history(message_thread_id=...)` qo'llamasa, extractor chat history scan + topic membership filter fallback ishlatadi.
+6. Public forum topic linklari ham `topic` routerga o'tkazildi.
+
+**O'zgartirilgan fayllar:** `TechVJ/owner_commands.py`, `TechVJ/save.py`, `core/topic_extractor.py`, `test_governance_fixes.py`
+
+---
+
+## BUG-029: Owner diagnostika retry/logsiz, monitor access loop va session activity kuzatuvi yetarli emas
+**Sana:** 2026-05-26
+**Holat:** Hal qilindi
+
+**Muammo:** Owner diagnostika xabarlari chatda yuqoriga chiqib ketardi va qayta urinish uchun kontekst saqlanmasdi. `/addchannel` monitor qilingan protected kanalga tizim sessiyasi kira olmay qolsa, handler xatoni qayta-qayta ishlab loop/spam xavfini tug'dirardi. User session activity tracker esa asosiy save oqimlariga ulanmagan edi.
+
+**Yechim:**
+1. `failed_downloads` SQLite jadvali qo'shildi; oxirgi 1000 yozuv saqlanadi.
+2. Owner diagnostika reportlari SQLite log ID bilan yoziladi va oxirgi chunkga `Qayta urinish` inline tugmasi qo'shildi.
+3. `retry_failed:<id>` callback owner-only qilindi; private user loglari `save()` proxy orqali, kanal monitor target chat loglari tizim/owner sessiyasi bilan bitta post retry qiladi.
+4. `/failed_logs` owner komandasi oxirgi 10 xatolikni qisqa ko'rsatadi.
+5. Channel monitor access xatolari (`USER_BANNED_IN_CHANNEL`, `CHANNEL_PRIVATE`, `CHAT_ADMIN_REQUIRED`, va boshqalar) ketma-ket 3 marta bo'lsa kanal `enabled=False` qilinadi va ownerga xabar yuboriladi.
+6. `track_activity` asosiy save, command, topic/private/public/bot, single-post va download/upload oqimlariga ulandi.
+7. Batch/range looplarda deleted/restricted/flood xatolar darhol owner va userga yuboriladigan real-time analizga ulandi.
+
+**O'zgartirilgan fayllar:** `TechVJ/activity_tracker.py`, `TechVJ/save.py`, `TechVJ/owner_commands.py`, `database/local_storage.py`, `main.py`
+
+---
+
+## BUG-030: Batch xatolari kech tahlil qilinadi va failed log jadvali limit/sessiya retry talabi yetarli emas
+**Sana:** 2026-05-27
+**Holat:** Hal qilindi
+
+**Muammo:** Range/topic/private/public batchlarda ayrim deleted/restricted/FloodWait xatolari post aniqlangan zahoti userga ko'rinmasdi. Retry paytida user sessiyasi allaqachon uzilgan bo'lishi mumkin edi. Failed loglar MongoDBga tushmasligi va SQLite jadvali 1000 yozuvdan oshmasligi qat'iy kafolatlanishi kerak edi.
+
+**Yechim:**
+1. `failed_downloads` jadvali asosiy failed log jadvali qilindi; har insertdan keyin eng yangi 1000 yozuv qoldiriladi.
+2. Eski `failed_downloads_log`dan bir martalik best-effort migration qo'shildi, lekin yangi yozuvlar faqat `failed_downloads`ga ketadi.
+3. `_notify_realtime_post_failure()` va `_notify_bot_only_post_failure()` qo'shilib, batch looplarda xato post aniqlanishi bilan owner va userga bot client orqali xabar yuboriladi.
+4. `ping_activity()` uzun looplarda har postdan oldin va real-time notify atrofida chaqiriladi.
+5. `/addchannel` access xatolari `_process_monitored_channel_message()` ichida sanaladi; 3 marta ketma-ket bo'lsa kanal auto-disable qilinadi.
+6. Retry callback private/protected loglar uchun user sessiyasini yangi `create_user_session()` context manager bilan qayta tiklab tekshiradi; public loglar bot-only qayta ishlanishi mumkin.
+
+**O'zgartirilgan fayllar:** `TechVJ/activity_tracker.py`, `TechVJ/save.py`, `TechVJ/owner_commands.py`, `database/local_storage.py`
+
+---
+
+## BUG-031: /addchannel ro'yxati user yuborgan havolalarni bloklamaydi
+**Sana:** 2026-05-27
+**Holat:** Hal qilindi
+
+**Muammo:** `/addchannel` bilan qo'shilgan "yuklab taqiqlangan" kanal faqat monitoring handlerida ishlardi. User shu kanaldan `/c/...` yoki public havola yuborsa, `save()` darhol "olish taqiqlangan" deb qaytarmay, oddiy download queue/pipelinega kirib ketishi mumkin edi.
+
+**Yechim:**
+1. `core/restricted_channel_guard.py` qo'shildi: enabled `channel_monitor` manbalarini non-owner userlar uchun rad qiladi.
+2. `save()` URL parse va post_id validatsiyasidan keyin, queue/download boshlanishidan oldin restricted channel guard chaqiradi.
+3. Public username linklarda bot `get_chat()` orqali numeric channel IDni resolve qilib, `/addchannel` ro'yxati bilan solishtiradi.
+4. Rad javobi bot client orqali yuboriladi; media/user session yo'liga umuman kirmaydi.
+
+**O'zgartirilgan fayllar:** `core/restricted_channel_guard.py`, `TechVJ/save.py`, `test_governance_fixes.py`
+
+---
+
+## BUG-032: Private DM message_id desync fixida sender-side ID fallback xavfli
+**Sana:** 2026-05-27
+**Holat:** Hal qilindi
+
+**Muammo:** Relay'siz uploadda user/pool sessiya bot DM ga media yuborganda Telegram sender-side va bot-side `message_id`lari farq qiladi. `file_unique_id` orqali bot-side ID topish qo'shilgan edi, lekin topa olmasa `sent_msg.id`ga fallback bor edi. Bu fallback eski cross-chat leakage muammosini qayta keltirishi mumkin edi. Bundan tashqari bir xil fayl qayta yuborilganda oxirgi historydan eski dublikat xabar tanlanishi xavfi bor edi.
+
+**Yechim:**
+1. Bot DMdan uploaddan oldingi high-watermark (`get_bot_latest_message_id`) olinadi.
+2. Copy/delete uchun bot-side xabar faqat shu watermarkdan keyingi xabarlar ichidan media fingerprint (`file_unique_id`, media type, size, file name, caption) bilan topiladi.
+3. Bot-side ID topilmasa endi `sent_msg.id`ga fallback qilinmaydi; copy/delete bloklanadi va pool yo'lida retry/rotation ishlaydi.
+4. Worker sessiyaning haqiqiy account IDsi `get_me()` bilan saqlanadi va bot copy source shu ID bilan tekshiriladi.
+5. SessionManager va legacy `_enqueue_media_delivery()` owner/session isolation uchun `UploadTask.owner_user_id`ni to'ldiradi.
+
+**O'zgartirilgan fayllar:** `core/copy_utils.py`, `core/user_upload_worker.py`, `core/session_manager/premium_worker.py`, `core/session_manager/session_manager.py`, `TechVJ/save.py`, `test_governance_fixes.py`
 
 ---
 
@@ -198,6 +321,27 @@ Natija: download hali ishlayotganda temp dir o'chirildi.
 **Yechim:** Bot copy manbasi `from_user.id` orqali aniqlanadigan helper qo'shildi. `SessionManager` copy failure'da `None` qaytaradigan qilindi, success bo'lganda delete saqlandi.
 
 **O'zgartirilgan fayllar:** `core/copy_utils.py`, `TechVJ/save.py`, `core/session_manager/session_manager.py`
+
+---
+
+## BUG-026: Owner commandlar link handlerga tushib ketadi va kanal monitor ishlamaydi
+**Sana:** 2026-05-24
+**Holat:** ✅ Hal qilindi
+
+**Muammo:** Ayrim owner commandlar, ayniqsa `/grab <uid> <t.me/link>` va kanal monitor komandlari, asosiy `save()` text handleri tomonidan ham ushlanishi mumkin edi. Bundan tashqari `/addchannel` faqat kanalni JSONga yozardi, lekin kanal postlarini tinglaydigan `filters.channel` handler yo'q edi.
+
+**Sabab:**
+1. `save()` command exclude ro'yxatida `/grab`, `/addchannel`, `/removechannel`, `/channels`, `/togglechannel` yo'q edi.
+2. `core/channel_monitor.py` storage va owner komandalar bor edi, ammo runtime integratsiya yo'q edi.
+3. Background/channel monitor upload targeti oddiy user requestidan farq qiladi: uploader sessiya egasi target recipient bilan bir xil bo'lishi shart emas.
+
+**Yechim:**
+1. `save()` handler exclude ro'yxatiga owner kanal komandlari va `/grab` qo'shildi.
+2. `TechVJ/save.py`ga `monitored_channel_handler` qo'shildi: monitored kanal postlarini ushlaydi, textni bot orqali, media/poll/albumni MTProto session orqali yuboradi.
+3. Channel monitor system session tanlash tartibi qo'shildi: SessionManager GLOBAL/BORROWABLE → legacy system premium → owner DB session.
+4. `SessionManager`ga background/system upload uchun `get_system_session_for_use()` va `upload_with_system_session()` qo'shildi.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/session_manager/session_manager.py`
 
 ---
 

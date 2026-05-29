@@ -327,6 +327,13 @@ class Bot(Client):
                 except Exception as e:
                     logger.warning("SyncManager init warning (bot continues): %s", e)
 
+                try:
+                    from database.local_storage import init_tables as _init_local_tables
+                    await _init_local_tables()
+                    logger.info("LocalStorage: tables ready")
+                except Exception as e:
+                    logger.warning("LocalStorage init warning (bot continues): %s", e)
+
                 # Load channel monitor (non-critical)
                 try:
                     from core.channel_monitor import channel_monitor as _ch_monitor

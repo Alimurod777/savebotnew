@@ -5,6 +5,110 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 11 (2026-05-29) - Audit: barcha qilingan ishlarni ko'rib chiqish va xatolarni to'g'irlash
+
+### So'rov:
+"barcha qilingan ishlarni ko'rib chiq va xatoliklar bo'lsa to'g'irla maksimal yondash yaxshiroq va ishlaydigan yo'l bo'lsa amalga oshir"
+
+### Topilgan asosiy xato:
+- **BUG-033** — BUG-032 fix dan keyin `_enqueue_media_delivery` (save.py) va `upload_with_session` (session_manager.py) `owner_user_id` parametrini umuman uzatmasdi. Avvalgi tahrir `session_user_id` (pool akkaunt ID) ni `owner_user_id` sifatida uzatardi, bu `_run_task` da sender isolation tekshiruvi bilan har doim REJECT qilinardi. Vaqtinchalik fix `owner_user_id` ni umuman uzatmaslik bo'ldi — sender isolation o'chib qoldi.
+- 2 ta regression testlari ham bu xato semantikasiga moslangan edi (`assert owner_user_id == 222/333` — pool akkaunt).
+
+### Yechim:
+1. `_enqueue_media_delivery` endi `owner_user_id=int(target_user_id)` uzatadi — so'rov yuborgan user.
+2. `upload_with_session` endi `owner_user_id=user_id` uzatadi.
+3. Endi `task.owner_user_id == worker._user_id` har doim mos keladi — sender isolation real ishlaydi.
+4. Testlar to'g'ri semantikaga moslandi (`assert owner_user_id == 123`).
+5. Stray `diff.txt`, `diff_utf8.txt` fayllari (avvalgi diff inspection qoldiqlari) o'chirildi.
+
+### Tekshiruv:
+- `python -m compileall -q TechVJ core database main.py test_governance_fixes.py` — ✅
+- 13 ta test PASS, 0 FAIL
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `core/session_manager/session_manager.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## Sessiya 10 (2026-05-27) - /addchannel restricted link guard
+
+### So'rovlar ketma-ketligi:
+1. Owner tomonidan taqiqlangan kanaldan user havola yuborsa, bot "olish taqiqlangan" deb qaytaryaptimi yoki yo'qligini tekshirish.
+
+### Natija:
+- **BUG-031**: `save()` ichida `/addchannel` enabled kanal ro'yxati bo'yicha non-owner user linklari queue/downloaddan oldin bloklanadi.
+- Private `/c/...` linklar numeric channel ID bilan tekshiriladi.
+- Public username linklar imkon qadar bot `get_chat()` orqali numeric IDga resolve qilinib tekshiriladi.
+- Javob faqat bot client orqali yuboriladi: "Bu kanaldan kontent olish owner tomonidan taqiqlangan."
+- **BUG-032**: Private DM sender/bot `message_id` desync fixi kuchaytirildi; endi bot-side ID topilmasa `sent_msg.id`ga fallback qilinmaydi, uploaddan oldingi watermarkdan keyingi fingerprint-mos xabar copy/delete qilinadi.
+
+### Tekshiruv:
+- `test_governance_fixes.py` ga restricted channel guard regression testlari qo'shildi.
+- Private DM copy uchun real bot-side ID va unresolved holatda copy qilmaslik regression testlari qo'shildi.
+
+---
+
+## Sessiya 9 (2026-05-27) - User session lifecycle va real-time failed analysis
+
+### So'rovlar ketma-ketligi:
+1. **Immediate error handling** - batch/range looplarda deleted/restricted/FloodWait postlar oxirida emas, darhol tahlil qilinishi kerak.
+2. **MongoDB limit himoyasi** - failed loglar MongoDBga yozilmasin; SQLite `failed_downloads` jadvali maksimal 1000 yozuv saqlasin.
+3. **/addchannel auto-disable** - access xatolari `_process_monitored_channel_message()` ichida ushlanib, kanal 3 marta xatodan keyin o'chirilsin.
+4. **Retry lifecycle** - retry paytida user sessiyasi uzilgan bo'lsa yangi context manager bilan tiklanishi tekshirilsin va natija user/ownerga aniq yuborilsin.
+
+### Natija:
+- **BUG-030**: real-time failure helpers qo'shildi; topic/private/public looplarda xato post aniqlanishi bilan user+owner xabardor qilinadi.
+- Failed loglar faqat SQLite `failed_downloads` jadvaliga yoziladi, insertdan keyin 1000 yozuvdan ortig'i prune qilinadi.
+- Channel monitor access-failure sanog'i `_process_monitored_channel_message()` ichiga ko'chirildi.
+- Retry callback private/protected loglarda user sessionni yangi `create_user_session()` bilan tekshiradi; public bot-only retry sessiyasiz davom eta oladi.
+
+### Tekshiruv:
+- `.\venv\Scripts\python.exe -m compileall -q TechVJ core database main.py test_governance_fixes.py`
+- `pytest -q` -> 18 passed
+- SQLite schema/read smoke -> `sqlite_failed_downloads_ok True`
+
+---
+
+## Sessiya 7 (2026-05-26) - `/grab <link>` chat-local va topic chronological range
+
+### So'rovlar ketma-ketligi:
+1. **Bot API orqali `/grab <link>`** - qaysi private chatga yuborilsa, link o'sha chatdagi user yuborgandek ishlashi kerak.
+2. **Bitta topic xabarlarini olish** - topicdagi message IDlar oshib borishiga tayanmaslik; range ketma-ketligi topicga joylangan vaqt tartibiga qarab bo'lishi kerak.
+
+### Natija:
+- **BUG-028**: `/grab <t.me/link>` joriy chat user contextida `save()` pipelinega proxy qilinadi.
+- Owner uchun eski `/grab <uid> <t.me/link>` delegated formati saqlandi.
+- Topic range `FROM-TO` numeric ID range emas, anchor IDlar sifatida talqin qilinadi.
+- `TopicExtractor.extract_between()` anchorlar orasini xronologik topic order bo'yicha kesadi.
+- Public forum topic linklari ham topic extractor yo'liga ulandi.
+- Regression test qo'shildi: non-monotonic IDlar bilan chronological range.
+
+---
+
+## Sessiya 8 (2026-05-26) - Activity tracker, retry diagnostika, auto-disable va failed logs
+
+### So'rovlar ketma-ketligi:
+1. **Activity Tracker integratsiyasi** - `TechVJ/activity_tracker.py`dan foydalanib asosiy handler va download/upload oqimlarida user session activity kuzatish.
+2. **Owner diagnostika retry** - post failure reportida `Qayta urinish` inline tugmasi bo'lishi va callback orqali postni majburiy retry qilish.
+3. **/addchannel auto-disable** - tizim sessiyasi protected kanalga kira olmay qolsa, ketma-ket 3 access xatosidan keyin monitorni avtomatik o'chirish.
+4. **Failed logs** - MongoDB M0 limitlarini tejash uchun xatoliklarni SQLite `local_db/bot_storage.db` ichida saqlash va `/failed_logs` komandasi bilan ko'rsatish.
+
+### Natija:
+- **BUG-029**: `failed_downloads` SQLite jadvali, log pruning (1000), `/failed_logs`, owner-only retry callback qo'shildi.
+- Owner diagnostika reportlari retry URL/log ID yaratadi va oxirgi report chunkga inline retry tugmasini qo'shadi.
+- Channel monitor access xatolari ketma-ket 3 marta yuz bersa `enabled=False` qilinadi va ownerga bot client orqali xabar yuboriladi.
+- `track_activity` `save`, `stop`, `comment`, monitor handlerlari hamda private/topic/public/bot/single-post/download oqimlariga ulandi.
+- Batch/range xatolari endi tsikl oxirida emas, post aniqlangan zahoti userga va ownerga yuboriladi.
+
+### Tekshiruv:
+- `.\venv\Scripts\python.exe -m compileall -q TechVJ core database main.py test_governance_fixes.py`
+- `pytest -q` -> 18 passed
+
+---
+
 ## Sessiya 1 (2026-03-23) — Bug fixlar: cancellation, reply, pool cleanup
 
 ### So'rovlar ketma-ketligi:
@@ -147,6 +251,51 @@ Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
 - **Premium upload:** Pool sessiyalar orqali non-premium userlarga premium upload imkoniyati
 - **Login tizimi:** Ishonchli autentifikatsiya — sessiya validatsiya, to'liq logout, OTP ishonchliligi
 - **Hujjatlashtirish:** Har bir o'zgartish CLAUDE.md, BUGS.md va PROMPTS.md ga yozilishi
+
+---
+
+## Sessiya 6 (2026-05-25) - Owner diagnostika va ownerhelp yangilash
+
+### So'rovlar ketma-ketligi:
+1. **Ownerhelp tekshiruvi** - kanal monitor/grab komandlari `/ownerhelp`da chiqyaptimi tekshirish.
+2. **User post xatolari ownerga ketsin** - user kanal contentini ola olmasa/yubora olmasa, ownerga user_id, post_id, xato sababi va post tarkibi haqida aniq report yuborish.
+3. **Shovqinni kamaytirish** - report faqat session faol, kanal mavjud va user kanalga a'zo ekani tasdiqlanganda yuborilishi kerak.
+
+### Natija:
+- **BUG-027**: `save.py`ga verified owner diagnostic report qo'shildi.
+- Report bot client orqali yuboriladi; user session text yubormaydi.
+- Private/topic/album/user-session public xatolik yo'llari diagnostikaga ulandi.
+- `/ownerhelp`ga `/addchannel`, `/removechannel`, `/channels`, `/togglechannel`, `/grab` va avto diagnostika izohi qo'shildi.
+
+### Tekshiruv:
+- `python -m compileall -q TechVJ/save.py TechVJ/owner_commands.py`
+
+---
+
+## Sessiya 5 (2026-05-24) - Owner command va kanal monitor integratsiyasi
+
+### So'rovlar ketma-ketligi:
+1. **Owner commandlar ishlamayapti** - ayrim owner buyruqlar, xususan t.me linkli buyruqlar asosiy save handlerga aralashmoqda.
+2. **Telegram kanal kontent olish taqiqlangan ishlamayapti** - `/addchannel` bilan qo'shilgan protected kanal runtime'da postlarni olib targetga yubormayapti.
+3. **Owner user nomidan havola yuborsa** - owner tomonidan user uchun yuborilgan link o'sha user yuborgandek qabul qilinishi kerak.
+
+### Natija:
+- **BUG-026**: `save()` command exclude ro'yxatiga `/grab`, `/addchannel`, `/removechannel`, `/channels`, `/togglechannel` qo'shildi.
+- Channel monitor uchun `filters.channel` handler qo'shildi: monitored kanal postlari text/media/poll/album bo'yicha mavjud pipeline orqali target chatga yuboriladi.
+- Protected media uchun session tanlash tartibi: SessionManager GLOBAL/BORROWABLE, legacy system premium, keyin owner DB session.
+- SessionManagerga background/system upload helperlari qo'shildi.
+
+### Tekshiruv:
+- `python -m compileall -q TechVJ core`
+
+---
+
+## UMUMIY YO'NALISH
+
+Foydalanuvchi owner boshqaruv qatlamini production holatiga yaqinlashtirmoqda:
+- **Owner command routing:** commandlar asosiy link handler bilan urishmasligi kerak
+- **Protected channel monitor:** kanal postlari runtime handler orqali real yuborilishi kerak
+- **User-nomidan ishlash:** owner orchestration user context/session bilan ishlashi kerak
 
 ---
 

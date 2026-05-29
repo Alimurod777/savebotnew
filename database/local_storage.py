@@ -19,7 +19,7 @@ import os
 import json
 import logging
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -113,13 +113,54 @@ async def init_tables():
                     sent_at TEXT,
                     UNIQUE(user_id, media_group_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS failed_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    user_id INTEGER,
+                    chat_id TEXT,
+                    post_id INTEGER,
+                    url_type TEXT,
+                    topic_id INTEGER,
+                    thread_id INTEGER,
+                    stage TEXT,
+                    reason TEXT,
+                    error TEXT,
+                    retry_url TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    last_retry_at TEXT,
+                    details_json TEXT DEFAULT '{}'
+                );
                 
                 CREATE INDEX IF NOT EXISTS idx_sent_albums_user 
                     ON sent_albums(user_id);
                 CREATE INDEX IF NOT EXISTS idx_sessions_logged_in 
                     ON sessions(logged_in);
+                CREATE INDEX IF NOT EXISTS idx_failed_downloads_created
+                    ON failed_downloads(created_at);
+                CREATE INDEX IF NOT EXISTS idx_failed_downloads_user
+                    ON failed_downloads(user_id);
+                CREATE INDEX IF NOT EXISTS idx_failed_downloads_v2_created
+                    ON failed_downloads(created_at);
+                CREATE INDEX IF NOT EXISTS idx_failed_downloads_v2_user
+                    ON failed_downloads(user_id);
             """)
             await db.commit()
+
+            try:
+                await db.execute(
+                    """INSERT OR IGNORE INTO failed_downloads
+                       (id, created_at, user_id, chat_id, post_id, url_type, topic_id,
+                        thread_id, stage, reason, error, retry_url, retry_count,
+                        last_retry_at, details_json)
+                       SELECT id, created_at, user_id, chat_id, post_id, url_type,
+                              topic_id, thread_id, stage, reason, error, retry_url,
+                              retry_count, last_retry_at, details_json
+                       FROM failed_downloads_log"""
+                )
+                await db.commit()
+            except Exception:
+                pass
 
             # Migration: add role column if missing (for existing DBs)
             try:
@@ -554,6 +595,127 @@ class LocalStorage:
             await db.commit()
         except Exception as e:
             logger.warning(f"SQLite clear_user_sent_albums failed: {e}")
+        finally:
+            await db.close()
+
+    # ==================== Failed Download Logs ====================
+
+    @staticmethod
+    async def log_failed_download(
+        *,
+        user_id: Optional[int],
+        chat_id: Any,
+        post_id: Optional[int],
+        url_type: Optional[str] = None,
+        topic_id: Optional[int] = None,
+        thread_id: Optional[int] = None,
+        stage: Optional[str] = None,
+        reason: Optional[str] = None,
+        error: Optional[str] = None,
+        retry_url: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        await init_tables()
+        db = await _get_db()
+        if db is None:
+            return None
+        try:
+            now = datetime.utcnow().isoformat()
+            details_json = json.dumps(details or {}, ensure_ascii=False, default=str)
+            cursor = await db.execute(
+                """INSERT INTO failed_downloads
+                   (created_at, user_id, chat_id, post_id, url_type, topic_id,
+                    thread_id, stage, reason, error, retry_url, details_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now,
+                    user_id,
+                    str(chat_id) if chat_id is not None else None,
+                    post_id,
+                    url_type,
+                    topic_id,
+                    thread_id,
+                    stage,
+                    reason,
+                    error,
+                    retry_url,
+                    details_json,
+                ),
+            )
+            log_id = cursor.lastrowid
+            await db.execute(
+                """DELETE FROM failed_downloads
+                   WHERE id NOT IN (
+                       SELECT id FROM failed_downloads
+                       ORDER BY id DESC LIMIT 1000
+                   )"""
+            )
+            await db.commit()
+            return int(log_id) if log_id is not None else None
+        except Exception as e:
+            logger.warning(f"SQLite log_failed_download failed: {e}")
+            return None
+        finally:
+            await db.close()
+
+    @staticmethod
+    async def get_failed_downloads(limit: int = 10) -> list:
+        await init_tables()
+        db = await _get_db()
+        if db is None:
+            return []
+        try:
+            safe_limit = max(1, min(int(limit), 50))
+            async with db.execute(
+                """SELECT * FROM failed_downloads
+                   ORDER BY id DESC LIMIT ?""",
+                (safe_limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.warning(f"SQLite get_failed_downloads failed: {e}")
+            return []
+        finally:
+            await db.close()
+
+    @staticmethod
+    async def get_failed_download(log_id: int) -> Optional[dict]:
+        await init_tables()
+        db = await _get_db()
+        if db is None:
+            return None
+        try:
+            async with db.execute(
+                "SELECT * FROM failed_downloads WHERE id = ?",
+                (int(log_id),),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.warning(f"SQLite get_failed_download failed: {e}")
+            return None
+        finally:
+            await db.close()
+
+    @staticmethod
+    async def mark_failed_download_retry(log_id: int) -> None:
+        await init_tables()
+        db = await _get_db()
+        if db is None:
+            return
+        try:
+            now = datetime.utcnow().isoformat()
+            await db.execute(
+                """UPDATE failed_downloads
+                   SET retry_count = COALESCE(retry_count, 0) + 1,
+                       last_retry_at = ?
+                   WHERE id = ?""",
+                (now, int(log_id)),
+            )
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"SQLite mark_failed_download_retry failed: {e}")
         finally:
             await db.close()
 

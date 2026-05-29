@@ -230,6 +230,7 @@ class UserUploadWorker:
         self._queue: asyncio.Queue[Optional[UploadTask]] = asyncio.Queue()
         self._client: Optional[Client] = None
         self._task:   Optional[asyncio.Task] = None
+        self._session_user_id: Optional[int] = None
         self._running = False
         self._last_send_time = 0.0
         self._last_activity = time.monotonic()  # for idle reaper
@@ -260,6 +261,10 @@ class UserUploadWorker:
                 self._task.cancel()
         await self._disconnect()
         logger.info("UserUploadWorker[%d] stopped", self._user_id)
+
+    @property
+    def session_user_id(self) -> Optional[int]:
+        return self._session_user_id
 
     async def enqueue(self, task: UploadTask) -> Any:
         """
@@ -292,6 +297,13 @@ class UserUploadWorker:
             lang_code=fp["lang_code"],
         )
         await self._client.start()
+        try:
+            me = await self._client.get_me()
+            me_id = getattr(me, "id", None)
+            if me_id is not None:
+                self._session_user_id = int(me_id)
+        except Exception as err:
+            logger.warning("UserUploadWorker[%d] get_me failed: %s", self._user_id, err)
 
         # Pre-resolve bot peer (PEER_ID_INVALID prevention for fresh in_memory sessions)
         resolved = False

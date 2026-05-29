@@ -25,7 +25,12 @@ from typing import Any, Callable, List, Optional, Set, Tuple
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 
-from core.copy_utils import get_bot_copy_source_chat_id
+from core.copy_utils import (
+    BotMessageResolutionError,
+    get_bot_copy_source_chat_id,
+    get_bot_latest_message_id,
+    get_bot_real_message_id,
+)
 
 from .borrow_manager import borrow_manager
 from .flood_controller import flood_controller
@@ -95,6 +100,23 @@ class SessionManager:
 
         return None
 
+    def get_system_session_for_use(self) -> Optional[SessionRecord]:
+        """
+        Return any available system-style session for owner/background tasks.
+
+        Channel monitor jobs are not initiated by the target recipient, so they
+        need a neutral uploader: GLOBAL first, then BORROWABLE sessions.
+        """
+        for rec in self._registry.get_global():
+            if borrow_manager.is_session_available(rec):
+                return rec
+
+        for rec in self._registry.get_borrowable(exclude_owner=0):
+            if borrow_manager.is_session_available(rec):
+                return rec
+
+        return None
+
     def _select_excluding(
         self, user_id: int, tried_ids: Set[str]
     ) -> Optional[SessionRecord]:
@@ -118,6 +140,18 @@ class SessionManager:
 
         # 4. GLOBAL
         for rec in self._registry.get_global():
+            if rec.session_id not in tried_ids and borrow_manager.is_session_available(rec):
+                return rec
+
+        return None
+
+    def _select_system_excluding(self, tried_ids: Set[str]) -> Optional[SessionRecord]:
+        """System-session selector for background jobs, skipping tried IDs."""
+        for rec in self._registry.get_global():
+            if rec.session_id not in tried_ids and borrow_manager.is_session_available(rec):
+                return rec
+
+        for rec in self._registry.get_borrowable(exclude_owner=0):
             if rec.session_id not in tried_ids and borrow_manager.is_session_available(rec):
                 return rec
 
@@ -149,6 +183,7 @@ class SessionManager:
         progress_cb=None,
         bot_user_id: Optional[int] = None,
         doc_file_name: Optional[str] = None,
+        force_copy: bool = False,
     ) -> Optional[Any]:
         """
         Attempt to upload via *record*.
@@ -171,7 +206,7 @@ class SessionManager:
             if bridge is None:
                 return None
 
-            is_pool = self._is_pool_session(record, user_id)
+            is_pool = force_copy or self._is_pool_session(record, user_id)
 
             # CRITICAL: ALL sessions upload to bot_user_id (bot's Telegram user ID).
             # - Pool session → pool_user↔bot chat → copy_message to user
@@ -205,17 +240,70 @@ class SessionManager:
             if worker is None:
                 return None
 
-            sent_msg = await bridge.enqueue_task(worker, send_fn, is_media=True)
+            expected_source_chat_id = getattr(worker, "session_user_id", None)
+            copy_source_chat_id = int(expected_source_chat_id) if expected_source_chat_id is not None else None
+            pre_upload_latest_id = None
+            if is_pool and copy_source_chat_id is None:
+                logger.error(
+                    "SessionManager: uploader account unavailable for session %s",
+                    record.session_id[:8],
+                )
+                return None
+
+            if is_pool:
+                pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
+                if pre_upload_latest_id is None:
+                    logger.error(
+                        "SessionManager: could not read bot-side watermark for session %s chat=%s",
+                        record.session_id[:8],
+                        copy_source_chat_id,
+                    )
+                    return None
+
+            sent_msg = await bridge.enqueue_task(
+                worker,
+                send_fn,
+                is_media=True,
+                owner_user_id=user_id,
+            )
 
             # Pool sessions: copy from bot DM to user chat
             if is_pool and sent_msg is not None:
-                copy_source_chat_id = get_bot_copy_source_chat_id(sent_msg, upload_chat_id)
+                detected_source_chat_id = get_bot_copy_source_chat_id(sent_msg, upload_chat_id)
+                if copy_source_chat_id is None:
+                    copy_source_chat_id = detected_source_chat_id
+                elif detected_source_chat_id is not None and int(detected_source_chat_id) != int(copy_source_chat_id):
+                    logger.error(
+                        "SessionManager: copy source mismatch expected=%s detected=%s session=%s",
+                        copy_source_chat_id,
+                        detected_source_chat_id,
+                        record.session_id[:8],
+                    )
+                    return None
                 if copy_source_chat_id is None:
                     logger.error(
                         "SessionManager: cannot determine copy source for session %s",
                         record.session_id[:8],
                     )
                     return None
+
+                try:
+                    real_msg_id = await get_bot_real_message_id(
+                        bot_client,
+                        copy_source_chat_id,
+                        sent_msg,
+                        min_message_id=pre_upload_latest_id,
+                    )
+                except BotMessageResolutionError as resolve_err:
+                    logger.error(
+                        "SessionManager: blocked unsafe copy for session %s chat=%s sent_id=%s: %s",
+                        record.session_id[:8],
+                        copy_source_chat_id,
+                        getattr(sent_msg, "id", None),
+                        resolve_err,
+                    )
+                    return None
+
                 _copy_ok = False
                 for _copy_try in range(3):
                     try:
@@ -225,13 +313,13 @@ class SessionManager:
                         await bot_client.copy_message(
                             chat_id=target_chat_id,
                             from_chat_id=copy_source_chat_id,
-                            message_id=sent_msg.id,
+                            message_id=real_msg_id,
                             **_copy_kwargs,
                         )
                         _copy_ok = True
                         logger.debug(
                             "SessionManager: copied pool message %d to user %d",
-                            sent_msg.id, user_id,
+                            real_msg_id, user_id,
                         )
                         break
                     except FloodWait as _cfw:
@@ -252,14 +340,14 @@ class SessionManager:
                 # ONLY delete intermediate message if copy succeeded
                 if _copy_ok:
                     try:
-                        await bot_client.delete_messages(copy_source_chat_id, [sent_msg.id])
+                        await bot_client.delete_messages(copy_source_chat_id, [real_msg_id])
                     except Exception:
                         pass  # best-effort cleanup
                 else:
                     logger.error(
                         "SessionManager: copy_message failed after 3 attempts — "
                         "keeping intermediate msg %d for user %d",
-                        sent_msg.id, user_id,
+                        real_msg_id, user_id,
                     )
                     return None
 
@@ -349,6 +437,71 @@ class SessionManager:
         logger.warning(
             "SessionManager: all %d attempt(s) exhausted for user %d",
             max_attempts, user_id,
+        )
+        return False
+
+    async def upload_with_system_session(
+        self,
+        target_chat_id: int,
+        msg_type: str,
+        file_path: str,
+        send_kwargs: dict,
+        bot_client: Client,
+        video_meta: Optional[dict] = None,
+        thumb_path: Optional[str] = None,
+        progress_cb=None,
+        max_attempts: int = 8,
+        doc_file_name: Optional[str] = None,
+        bot_user_id: Optional[int] = None,
+    ) -> bool:
+        """
+        Upload a background/system job through GLOBAL or BORROWABLE sessions.
+
+        The upload always copies from the uploader account's bot DM into
+        target_chat_id, so monitored channel jobs can deliver to any configured
+        target instead of the uploader's own bot chat.
+        """
+        if not self._initialized:
+            return False
+
+        tried: Set[str] = set()
+        owner_for_borrow = int(target_chat_id)
+
+        for attempt in range(max_attempts):
+            record = self._select_system_excluding(tried)
+            if record is None:
+                logger.info(
+                    "SessionManager: no available system session for target %d after %d attempt(s)",
+                    target_chat_id, attempt,
+                )
+                return False
+
+            tried.add(record.session_id)
+            result = await self.upload_with_session(
+                record=record,
+                user_id=owner_for_borrow,
+                target_chat_id=target_chat_id,
+                msg_type=msg_type,
+                file_path=file_path,
+                send_kwargs=send_kwargs,
+                bot_client=bot_client,
+                video_meta=video_meta,
+                thumb_path=thumb_path,
+                progress_cb=progress_cb,
+                bot_user_id=bot_user_id,
+                doc_file_name=doc_file_name,
+                force_copy=True,
+            )
+            if result is not None:
+                logger.info(
+                    "SessionManager: system upload succeeded via session %s (attempt %d)",
+                    record.session_id[:8], attempt + 1,
+                )
+                return True
+
+        logger.warning(
+            "SessionManager: all %d system upload attempt(s) exhausted for target %d",
+            max_attempts, target_chat_id,
         )
         return False
 

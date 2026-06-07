@@ -4,6 +4,12 @@ from types import SimpleNamespace
 
 from core.copy_utils import get_bot_copy_source_chat_id
 from core.channel_monitor import MonitoredChannel, channel_monitor
+from core.failure_classifier import (
+    FailureCategory,
+    classify_failure,
+    is_reportable_to_owner,
+    should_notify_user,
+)
 from core.permission_guard import permission_guard
 from core.priority_queue import PriorityJob, PriorityQueue
 from core.rate_limiter import RateLimiter
@@ -108,6 +114,56 @@ def test_restricted_channel_guard_ignores_disabled_monitored_channel():
         assert message == ""
     finally:
         channel_monitor._channels = original
+
+
+def test_failure_classifier_deleted_post_is_silent_expected_state():
+    category = classify_failure("fetch", "post is deleted or inaccessible")
+
+    assert category == FailureCategory.EXPECTED_TELEGRAM_STATE
+    assert should_notify_user(category) is False
+    assert is_reportable_to_owner(
+        category,
+        message_fetched=False,
+        processing_started=False,
+        system_exception=False,
+    ) is False
+
+
+def test_failure_classifier_album_missing_does_not_page_owner():
+    category = classify_failure("topic_album", "message not found")
+
+    assert category == FailureCategory.EXPECTED_TELEGRAM_STATE
+    assert is_reportable_to_owner(
+        category,
+        message_fetched=False,
+        processing_started=True,
+        system_exception=False,
+    ) is False
+
+
+def test_failure_classifier_upload_failure_pages_owner_after_fetch():
+    category = classify_failure("send_media", "download_and_send_media returned False")
+
+    assert category == FailureCategory.SYSTEM_FAILURE
+    assert should_notify_user(category) is True
+    assert is_reportable_to_owner(
+        category,
+        message_fetched=True,
+        processing_started=True,
+        system_exception=False,
+    ) is True
+
+
+def test_failure_classifier_peer_id_invalid_is_system_failure():
+    category = classify_failure("public_bot_copy", "copy failed", RuntimeError("PEER_ID_INVALID"))
+
+    assert category == FailureCategory.SYSTEM_FAILURE
+    assert is_reportable_to_owner(
+        category,
+        message_fetched=False,
+        processing_started=True,
+        system_exception=True,
+    ) is True
 
 
 def test_copy_source_prefers_sender_user_id():

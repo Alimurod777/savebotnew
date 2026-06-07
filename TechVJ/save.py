@@ -33,6 +33,14 @@ from core.message_utils import (
     MAX_MESSAGE_LENGTH,
     MAX_CAPTION_LENGTH,
 )
+from core.failure_classifier import (
+    FailureCategory,
+    classify_failure,
+    describe as describe_failure_category,
+    is_reportable_to_owner,
+    should_notify_user,
+    stage_indicates_processing,
+)
 from pyrogram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
 from pyrogram.raw import functions, types
 import time
@@ -1196,6 +1204,22 @@ async def _log_failed_download_local(
         return None
 
 
+def _classify_post_failure(
+    stage: str,
+    reason: str,
+    error: Any = None,
+    source_msg: Any = None,
+) -> Tuple[FailureCategory, bool, bool, bool]:
+    category = classify_failure(stage, reason, error)
+    message_fetched = bool(source_msg and not getattr(source_msg, "empty", False))
+    processing_started = bool(message_fetched or stage_indicates_processing(stage))
+    system_exception = bool(
+        isinstance(error, BaseException)
+        and category == FailureCategory.SYSTEM_FAILURE
+    )
+    return category, message_fetched, processing_started, system_exception
+
+
 async def _owner_diag_verified_context(acc, chat_id: Any) -> Tuple[bool, dict]:
     """Verify session, channel existence, and membership before notifying owner."""
     info = {
@@ -1264,6 +1288,29 @@ async def _notify_owner_channel_post_failure(
         return
 
     try:
+        category, message_fetched, processing_started, system_exception = _classify_post_failure(
+            stage,
+            reason,
+            error,
+            source_msg,
+        )
+        if not is_reportable_to_owner(
+            category,
+            message_fetched=message_fetched,
+            processing_started=processing_started,
+            system_exception=system_exception,
+        ):
+            logger.debug(
+                "Skipping owner diagnostic for user=%s chat=%s post=%s: category=%s stage=%s reason=%s",
+                user_id,
+                chat_id,
+                post_id,
+                category.value,
+                stage,
+                reason,
+            )
+            return
+
         verified, verify_info = await _owner_diag_verified_context(acc, chat_id)
         if not verified:
             logger.debug(
@@ -1349,6 +1396,8 @@ async def _notify_owner_channel_post_failure(
             details={
                 "task_id": getattr(context, "task_id", None),
                 "requested_total": requested_total,
+                "failure_category": category.value,
+                "failure_category_label": describe_failure_category(category),
                 "post_exists": post_exists,
                 "post_link": _owner_diag_post_link(chat_id, post_id, chat),
                 "source_fetch_error": _owner_diag_error(source_fetch_error),
@@ -1417,23 +1466,36 @@ async def _notify_realtime_post_failure(
 ) -> None:
     await ping_activity(user_id)
 
-    await _notify_owner_channel_post_failure(
-        client,
-        acc,
-        user_id=user_id,
-        chat_id=chat_id,
-        post_id=post_id,
-        stage=stage,
-        reason=reason,
-        error=error,
-        source_msg=source_msg,
-        request_message=request_message,
-        context=context,
-        parsed=parsed,
-        requested_total=requested_total,
-    )
+    category, _, _, _ = _classify_post_failure(stage, reason, error, source_msg)
 
-    if notify_user and user_id:
+    if category == FailureCategory.SYSTEM_FAILURE:
+        await _notify_owner_channel_post_failure(
+            client,
+            acc,
+            user_id=user_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            stage=stage,
+            reason=reason,
+            error=error,
+            source_msg=source_msg,
+            request_message=request_message,
+            context=context,
+            parsed=parsed,
+            requested_total=requested_total,
+        )
+    else:
+        logger.debug(
+            "Post failure kept out of owner diagnostics: category=%s user=%s chat=%s post=%s stage=%s reason=%s",
+            category.value,
+            user_id,
+            chat_id,
+            post_id,
+            stage,
+            reason,
+        )
+
+    if notify_user and user_id and should_notify_user(category):
         try:
             await client.send_message(
                 user_id,
@@ -1468,20 +1530,39 @@ async def _notify_bot_only_post_failure(
     """Bot-only realtime diagnostic for flows that do not have a user session."""
     await ping_activity(user_id)
 
-    retry_url = _owner_diag_retry_url(chat_id, post_id, parsed)
-    log_id = await _log_failed_download_local(
-        user_id=user_id,
-        chat_id=chat_id,
-        post_id=post_id,
-        stage=stage,
-        reason=reason,
-        error=error,
-        parsed=parsed,
-        retry_url=retry_url,
-        details={"requested_total": requested_total},
+    category, message_fetched, processing_started, system_exception = _classify_post_failure(
+        stage,
+        reason,
+        error,
+        None,
+    )
+    owner_reportable = is_reportable_to_owner(
+        category,
+        message_fetched=message_fetched,
+        processing_started=processing_started,
+        system_exception=system_exception,
     )
 
-    if OWNER_ID:
+    retry_url = _owner_diag_retry_url(chat_id, post_id, parsed)
+    log_id = None
+    if owner_reportable:
+        log_id = await _log_failed_download_local(
+            user_id=user_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            stage=stage,
+            reason=reason,
+            error=error,
+            parsed=parsed,
+            retry_url=retry_url,
+            details={
+                "requested_total": requested_total,
+                "failure_category": category.value,
+                "failure_category_label": describe_failure_category(category),
+            },
+        )
+
+    if OWNER_ID and owner_reportable:
         try:
             lines = [
                 "Post delivery failure report",
@@ -1497,6 +1578,7 @@ async def _notify_bot_only_post_failure(
                 f"Requested total: {requested_total if requested_total is not None else '-'}",
                 "",
                 "Failure:",
+                f"Category: {describe_failure_category(category)}",
                 f"Stage: {stage}",
                 f"Reason: {reason}",
                 f"Error: {_owner_diag_error(error)}",
@@ -1508,7 +1590,7 @@ async def _notify_bot_only_post_failure(
             reply_markup = None
             if log_id and retry_url:
                 reply_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔄 Qayta urinish", callback_data=f"retry_failed:{log_id}")
+                    InlineKeyboardButton("Qayta urinish", callback_data=f"retry_failed:{log_id}")
                 ]])
             await client.send_message(
                 OWNER_ID,
@@ -1519,19 +1601,29 @@ async def _notify_bot_only_post_failure(
             )
         except Exception as owner_err:
             logger.debug("Bot-only owner failure notify skipped: %s", owner_err)
-
-    try:
-        await client.send_message(
+    elif not owner_reportable:
+        logger.debug(
+            "Bot-only post failure kept out of owner diagnostics: category=%s user=%s chat=%s post=%s stage=%s reason=%s",
+            category.value,
             user_id,
-            _user_failure_text(stage, reason, post_id, error),
-            parse_mode=ParseMode.DISABLED,
-            **build_reply_kwargs_from_message(request_message),
+            chat_id,
+            post_id,
+            stage,
+            reason,
         )
-    except Exception as user_err:
-        logger.debug("Bot-only user failure notify skipped user=%s post=%s: %s", user_id, post_id, user_err)
+
+    if should_notify_user(category):
+        try:
+            await client.send_message(
+                user_id,
+                _user_failure_text(stage, reason, post_id, error),
+                parse_mode=ParseMode.DISABLED,
+                **build_reply_kwargs_from_message(request_message),
+            )
+        except Exception as user_err:
+            logger.debug("Bot-only user failure notify skipped user=%s post=%s: %s", user_id, post_id, user_err)
 
     await ping_activity(user_id)
-
 
 def sanitize_html(content):
     """Fixes common HTML issues like unclosed tags."""
@@ -4122,6 +4214,21 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         _topic_msg_cache = {m.id: m for m in topic_msgs}
                     except TopicExtractionError as _te:
                         logger.warning("TopicExtractor failed, falling back to per-ID: %s", _te)
+                        await _notify_realtime_post_failure(
+                            client,
+                            acc,
+                            user_id=user_id,
+                            chat_id=channel_id,
+                            post_id=topic_id,
+                            stage="topic_extraction",
+                            reason="TopicExtractor failed",
+                            error=_te,
+                            source_msg=topic_msg if "topic_msg" in locals() else None,
+                            request_message=message,
+                            context=ctx,
+                            parsed=parsed,
+                            requested_total=total_posts,
+                        )
                         _topic_msg_cache = {}
                         if topic_range_anchor:
                             try:

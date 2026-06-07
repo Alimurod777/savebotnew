@@ -5,6 +5,26 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-034: Deleted/missing postlar owner diagnostika spamiga aylanadi
+**Sana:** 2026-06-07
+**Holat:** Hal qilindi
+
+**Muammo:** BUG-027..030 dan keyin private/topic/public batchlarda `post is deleted or inaccessible`, `message not found`, `MSG_ID_INVALID`, message gap, FloodWait va shunga o'xshash normal Telegram holatlari `_notify_realtime_post_failure()` / `_notify_bot_only_post_failure()` orqali owner chatiga va failed log retry tizimiga tushib ketardi. Bular bot nosozligi emas: post o'chirilgan, ID mavjud emas, user eski/noto'g'ri link yuborgan yoki source xabar endi o'qilmaydi.
+
+**Sabab:** Reporting helperlari failure turini ajratmasdan barcha per-post xatolarni owner diagnostika deb hisoblagan. `topic_album` kabi stage nomlarida "album" borligi ham oddiy missing postni system failure sifatida ko'rishga sabab bo'lishi mumkin edi.
+
+**Yechim:**
+1. `core/failure_classifier.py` faol reporting qatlamiga ulandi: `EXPECTED_TELEGRAM_STATE`, `USER_INPUT_ERROR`, `SYSTEM_FAILURE`.
+2. `TechVJ/save.py` ichida `_notify_owner_channel_post_failure()`, `_notify_realtime_post_failure()` va `_notify_bot_only_post_failure()` classification gate orqali ishlaydi.
+3. Expected Telegram state (deleted/missing/inaccessible/message gap/FloodWait/timeout/source access restriction) ownerga yuborilmaydi, bot-only per-post notice ham yuborilmaydi, failed-download retry logga yozilmaydi; mavjud counter/statistika oqimi saqlanadi.
+4. System failure (upload/relay/routing/copy mismatch/session/queue/worker/pool/topic extractor unexpected failure, `PEER_ID_INVALID`, `CHANNEL_INVALID`, corruption va hokazo) faqat message fetched yoki processing started yoki real system exception bo'lsa ownerga chiqadi.
+5. `TopicExtractor` xatosi ham shu gate orqali report qilinadi: kutilgan Telegram access/missing holati jim, real extractor bug esa reportable.
+6. Regression testlar qo'shildi: deleted post jim, album+message-not-found ownerga chiqmaydi, upload failure va `PEER_ID_INVALID` system failure bo'lib qoladi.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/failure_classifier.py`, `test_governance_fixes.py`
+
+---
+
 ## BUG-033: Sender isolation pool upload'larda noto'g'ri owner_user_id bilan qayta ishlangan
 **Sana:** 2026-05-29
 **Holat:** ✅ Hal qilindi

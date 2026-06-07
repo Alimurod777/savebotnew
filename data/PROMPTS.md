@@ -5,6 +5,31 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 12 (2026-06-07) - Owner failure report spam filter
+
+### So'rov:
+Senior Telegram MTProto incident-response refactor: deleted/inaccessible/missing posts, message gaps, invalid old links va normal Telegram holatlari owner/bot/admin monitoring reportlariga aylanmasin. Reporting tizimi qayta yozilmasin, mavjud pipeline ichida surgical refactor qilinsin.
+
+### Natija:
+- **BUG-034**: reporting helperlari `core/failure_classifier.py` orqali 3 category bilan ishlaydi: `EXPECTED_TELEGRAM_STATE`, `USER_INPUT_ERROR`, `SYSTEM_FAILURE`.
+- `_notify_owner_channel_post_failure()` endi faqat `SYSTEM_FAILURE` va reportability gate (`message_fetched` yoki `processing_started` yoki real system exception) o'tsa ownerga yuboradi.
+- `_notify_realtime_post_failure()` expected Telegram state uchun owner/user realtime xabar yubormaydi; faqat statistik counterlar mavjud looplarda qoladi.
+- `_notify_bot_only_post_failure()` expected Telegram state uchun owner report va `failed_downloads` retry log yozmaydi.
+- Upload/relay/routing/copy/session/queue/worker/pool/topic extractor kabi real system failurelar reportable bo'lib qoldi.
+- TopicExtractor failure ham shu gate orqali ulandi: expected access/missing holat jim, real extractor bug ownerga chiqadi.
+
+### Tekshiruv:
+- `python -m compileall -q TechVJ core database main.py test_governance_fixes.py` - OK
+- `pytest -q test_governance_fixes.py` - 17 passed
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `core/failure_classifier.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## Sessiya 11 (2026-05-29) - Audit: barcha qilingan ishlarni ko'rib chiqish va xatolarni to'g'irlash
 
 ### So'rov:

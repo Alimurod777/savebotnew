@@ -505,7 +505,13 @@ def test_topic_extractor_range_uses_chronological_topic_order():
 
         extractor = TopicExtractor(
             FakeClient(),
-            TopicExtractorConfig(chat_id=-100123, topic_id=topic_id, fetch_batch_size=10),
+            TopicExtractorConfig(
+                chat_id=-100123,
+                topic_id=topic_id,
+                fetch_batch_size=10,
+                allow_history_scan_fallback=True,
+                use_cache=False,
+            ),
         )
 
         result = await extractor.extract_between(100, 50)
@@ -513,3 +519,420 @@ def test_topic_extractor_range_uses_chronological_topic_order():
         assert [msg.id for msg in result] == [100, 1000, 50]
 
     asyncio.run(run())
+
+
+def test_save_topic_membership_accepts_message_thread_id():
+    from TechVJ.save import _message_belongs_to_topic
+
+    topic_id = 15
+    msg = SimpleNamespace(
+        id=806,
+        empty=False,
+        message_thread_id=topic_id,
+        reply_to_top_message_id=None,
+        reply_to_message_id=None,
+    )
+
+    assert _message_belongs_to_topic(msg, topic_id)
+
+
+def test_topic_extractor_range_stops_after_anchors_found():
+    async def run():
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 5
+        pages = [
+            [
+                SimpleNamespace(id=400, date=datetime(2024, 1, 5, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+                SimpleNamespace(id=50, date=datetime(2024, 1, 4, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            ],
+            [
+                SimpleNamespace(id=1000, date=datetime(2024, 1, 3, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+                SimpleNamespace(id=100, date=datetime(2024, 1, 2, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            ],
+            [
+                SimpleNamespace(id=5, date=datetime(2024, 1, 1, tzinfo=timezone.utc), reply_to_top_message_id=None),
+            ],
+        ]
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_chat_history(self, chat_id, **kwargs):
+                async def gen():
+                    idx = self.calls
+                    self.calls += 1
+                    for msg in pages[idx]:
+                        yield msg
+
+                return gen()
+
+        client = FakeClient()
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=-100123,
+                topic_id=topic_id,
+                fetch_batch_size=2,
+                stop_after_ids={100, 50},
+                allow_history_scan_fallback=True,
+                use_cache=False,
+            ),
+        )
+
+        result = await extractor.extract_between(100, 50)
+
+        assert [msg.id for msg in result] == [100, 1000, 50]
+        assert client.calls == 2
+
+    asyncio.run(run())
+
+
+def test_topic_extractor_uses_raw_search_when_thread_filter_missing():
+    async def run():
+        from pyrogram import raw
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 5
+        pages = [
+            raw.types.messages.Messages(
+                messages=[
+                    raw.types.Message(
+                        id=50,
+                        peer_id=raw.types.PeerChannel(channel_id=123),
+                        date=int(datetime(2024, 1, 4, tzinfo=timezone.utc).timestamp()),
+                        message="last",
+                        out=False,
+                        mentioned=False,
+                        media_unread=False,
+                        silent=False,
+                        post=False,
+                        from_scheduled=False,
+                        legacy=False,
+                        edit_hide=False,
+                        pinned=False,
+                        noforwards=False,
+                        invert_media=False,
+                        offline=False,
+                        from_id=raw.types.PeerUser(user_id=10),
+                        reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=topic_id, reply_to_top_id=topic_id),
+                    ),
+                    raw.types.Message(
+                        id=1000,
+                        peer_id=raw.types.PeerChannel(channel_id=123),
+                        date=int(datetime(2024, 1, 3, tzinfo=timezone.utc).timestamp()),
+                        message="middle",
+                        out=False,
+                        mentioned=False,
+                        media_unread=False,
+                        silent=False,
+                        post=False,
+                        from_scheduled=False,
+                        legacy=False,
+                        edit_hide=False,
+                        pinned=False,
+                        noforwards=False,
+                        invert_media=False,
+                        offline=False,
+                        from_id=raw.types.PeerUser(user_id=10),
+                        reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=topic_id, reply_to_top_id=topic_id),
+                    ),
+                ],
+                topics=[],
+                chats=[raw.types.Channel(id=123, title="Forum", photo=raw.types.ChatPhotoEmpty(), date=0, creator=False, left=False, broadcast=False, verified=False, megagroup=True, restricted=False, signatures=False, min=False, scam=False, has_link=False, has_geo=False, slowmode_enabled=False, call_active=False, call_not_empty=False, fake=False, gigagroup=False, noforwards=False, join_to_send=False, join_request=False, forum=True, stories_hidden=False, stories_hidden_min=False, stories_unavailable=False, signature_profiles=False, autotranslation=False, broadcast_messages_allowed=False, monoforum=False, forum_tabs=False, access_hash=1)],
+                users=[raw.types.User(id=10, is_self=False, contact=False, mutual_contact=False, deleted=False, bot=False, bot_chat_history=False, bot_nochats=False, verified=False, restricted=False, min=False, bot_inline_geo=False, support=False, scam=False, apply_min_photo=True, fake=False, bot_attach_menu=False, premium=False, attach_menu_enabled=False, bot_can_edit=False, close_friend=False, stories_hidden=False, stories_unavailable=False, contact_require_premium=False, bot_business=False, bot_has_main_app=False, first_name="A")],
+            ),
+            raw.types.messages.Messages(
+                messages=[
+                    raw.types.Message(
+                        id=100,
+                        peer_id=raw.types.PeerChannel(channel_id=123),
+                        date=int(datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp()),
+                        message="first",
+                        out=False,
+                        mentioned=False,
+                        media_unread=False,
+                        silent=False,
+                        post=False,
+                        from_scheduled=False,
+                        legacy=False,
+                        edit_hide=False,
+                        pinned=False,
+                        noforwards=False,
+                        invert_media=False,
+                        offline=False,
+                        from_id=raw.types.PeerUser(user_id=10),
+                        reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=topic_id, reply_to_top_id=topic_id),
+                    ),
+                ],
+                topics=[],
+                chats=[raw.types.Channel(id=123, title="Forum", photo=raw.types.ChatPhotoEmpty(), date=0, creator=False, left=False, broadcast=False, verified=False, megagroup=True, restricted=False, signatures=False, min=False, scam=False, has_link=False, has_geo=False, slowmode_enabled=False, call_active=False, call_not_empty=False, fake=False, gigagroup=False, noforwards=False, join_to_send=False, join_request=False, forum=True, stories_hidden=False, stories_hidden_min=False, stories_unavailable=False, signature_profiles=False, autotranslation=False, broadcast_messages_allowed=False, monoforum=False, forum_tabs=False, access_hash=1)],
+                users=[raw.types.User(id=10, is_self=False, contact=False, mutual_contact=False, deleted=False, bot=False, bot_chat_history=False, bot_nochats=False, verified=False, restricted=False, min=False, bot_inline_geo=False, support=False, scam=False, apply_min_photo=True, fake=False, bot_attach_menu=False, premium=False, attach_menu_enabled=False, bot_can_edit=False, close_friend=False, stories_hidden=False, stories_unavailable=False, contact_require_premium=False, bot_business=False, bot_has_main_app=False, first_name="A")],
+            ),
+        ]
+
+        class FakeClient:
+            def __init__(self):
+                self.history_calls = 0
+                self.invoke_calls = 0
+                self.message_cache = {}
+
+            def get_chat_history(self, chat_id, **kwargs):
+                self.history_calls += 1
+                raise TypeError("get_chat_history() got an unexpected keyword argument 'message_thread_id'")
+
+            async def resolve_peer(self, chat_id):
+                return raw.types.InputPeerChannel(channel_id=123, access_hash=1)
+
+            async def invoke(self, query, **kwargs):
+                assert isinstance(query, raw.functions.messages.Search)
+                assert query.top_msg_id == topic_id
+                assert query.add_offset == self.invoke_calls * 2
+                assert query.offset_id == 0
+                result = pages[self.invoke_calls]
+                self.invoke_calls += 1
+                return result
+
+            async def get_messages(self, chat_id, message_ids, **kwargs):
+                return SimpleNamespace(id=topic_id, date=datetime(2024, 1, 1, tzinfo=timezone.utc), reply_to_top_message_id=None, empty=False)
+
+        client = FakeClient()
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=-100123,
+                topic_id=topic_id,
+                fetch_batch_size=2,
+                stop_after_ids={100, 50},
+                use_cache=False,
+            ),
+        )
+
+        result = await extractor.extract_between(100, 50)
+
+        assert [msg.id for msg in result] == [100, 1000, 50]
+        assert client.history_calls == 0
+        assert client.invoke_calls == 2
+
+    asyncio.run(run())
+
+
+def test_topic_extractor_falls_back_to_raw_get_replies_when_search_missing():
+    async def run():
+        from pyrogram import raw
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 5
+
+        def raw_message(message_id, text, day):
+            return raw.types.Message(
+                id=message_id,
+                peer_id=raw.types.PeerChannel(channel_id=123),
+                date=int(datetime(2024, 1, day, tzinfo=timezone.utc).timestamp()),
+                message=text,
+                out=False,
+                mentioned=False,
+                media_unread=False,
+                silent=False,
+                post=False,
+                from_scheduled=False,
+                legacy=False,
+                edit_hide=False,
+                pinned=False,
+                noforwards=False,
+                invert_media=False,
+                offline=False,
+                from_id=raw.types.PeerUser(user_id=10),
+                reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=topic_id, reply_to_top_id=topic_id),
+            )
+
+        channel = raw.types.Channel(id=123, title="Forum", photo=raw.types.ChatPhotoEmpty(), date=0, creator=False, left=False, broadcast=False, verified=False, megagroup=True, restricted=False, signatures=False, min=False, scam=False, has_link=False, has_geo=False, slowmode_enabled=False, call_active=False, call_not_empty=False, fake=False, gigagroup=False, noforwards=False, join_to_send=False, join_request=False, forum=True, stories_hidden=False, stories_hidden_min=False, stories_unavailable=False, signature_profiles=False, autotranslation=False, broadcast_messages_allowed=False, monoforum=False, forum_tabs=False, access_hash=1)
+        user = raw.types.User(id=10, is_self=False, contact=False, mutual_contact=False, deleted=False, bot=False, bot_chat_history=False, bot_nochats=False, verified=False, restricted=False, min=False, bot_inline_geo=False, support=False, scam=False, apply_min_photo=True, fake=False, bot_attach_menu=False, premium=False, attach_menu_enabled=False, bot_can_edit=False, close_friend=False, stories_hidden=False, stories_unavailable=False, contact_require_premium=False, bot_business=False, bot_has_main_app=False, first_name="A")
+
+        search_page = raw.types.messages.Messages(
+            messages=[],
+            topics=[],
+            chats=[channel],
+            users=[user],
+        )
+        replies_page = raw.types.messages.Messages(
+            messages=[
+                raw_message(50, "last", 4),
+                raw_message(1000, "middle", 3),
+                raw_message(100, "first", 2),
+            ],
+            topics=[],
+            chats=[channel],
+            users=[user],
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.history_calls = 0
+                self.search_calls = 0
+                self.reply_calls = 0
+                self.message_cache = {}
+
+            def get_chat_history(self, chat_id, **kwargs):
+                self.history_calls += 1
+                raise TypeError("get_chat_history() got an unexpected keyword argument 'message_thread_id'")
+
+            async def resolve_peer(self, chat_id):
+                return raw.types.InputPeerChannel(channel_id=123, access_hash=1)
+
+            async def invoke(self, query, **kwargs):
+                if isinstance(query, raw.functions.messages.Search):
+                    self.search_calls += 1
+                    return search_page
+                assert isinstance(query, raw.functions.messages.GetReplies)
+                self.reply_calls += 1
+                return replies_page
+
+            async def get_messages(self, chat_id, message_ids, **kwargs):
+                return SimpleNamespace(id=topic_id, date=datetime(2024, 1, 1, tzinfo=timezone.utc), reply_to_top_message_id=None, empty=False)
+
+        client = FakeClient()
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=-100123,
+                topic_id=topic_id,
+                fetch_batch_size=10,
+                stop_after_ids={100, 50},
+                use_cache=False,
+            ),
+        )
+
+        result = await extractor.extract_between(100, 50)
+
+        assert [msg.id for msg in result] == [100, 1000, 50]
+        assert client.history_calls == 0
+        assert client.search_calls == 1
+        assert client.reply_calls == 1
+
+    asyncio.run(run())
+
+
+def test_topic_extractor_serves_range_from_topic_cache():
+    async def run():
+        import tempfile
+        from pyrogram import raw
+        import core.topic_extractor as topic_extractor_module
+        from core.topic_cache import TopicCache, TopicCacheEntry
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 5
+        tmp = tempfile.TemporaryDirectory()
+        cache = TopicCache(f"{tmp.name}/topics.json")
+        cache.put(
+            TopicCacheEntry(
+                chat_id=-100123,
+                topic_id=topic_id,
+                root_message_id=topic_id,
+                known_message_ids=[topic_id, 100, 1000, 50],
+                last_processed_message_id=50,
+                fully_scanned=True,
+            )
+        )
+
+        def raw_message(message_id, text, day):
+            return raw.types.Message(
+                id=message_id,
+                peer_id=raw.types.PeerChannel(channel_id=123),
+                date=int(datetime(2024, 1, day, tzinfo=timezone.utc).timestamp()),
+                message=text,
+                out=False,
+                mentioned=False,
+                media_unread=False,
+                silent=False,
+                post=False,
+                from_scheduled=False,
+                legacy=False,
+                edit_hide=False,
+                pinned=False,
+                noforwards=False,
+                invert_media=False,
+                offline=False,
+                from_id=raw.types.PeerUser(user_id=10),
+                reply_to=raw.types.MessageReplyHeader(reply_to_msg_id=topic_id, reply_to_top_id=topic_id),
+            )
+
+        channel = raw.types.Channel(id=123, title="Forum", photo=raw.types.ChatPhotoEmpty(), date=0, creator=False, left=False, broadcast=False, verified=False, megagroup=True, restricted=False, signatures=False, min=False, scam=False, has_link=False, has_geo=False, slowmode_enabled=False, call_active=False, call_not_empty=False, fake=False, gigagroup=False, noforwards=False, join_to_send=False, join_request=False, forum=True, stories_hidden=False, stories_hidden_min=False, stories_unavailable=False, signature_profiles=False, autotranslation=False, broadcast_messages_allowed=False, monoforum=False, forum_tabs=False, access_hash=1)
+        user = raw.types.User(id=10, is_self=False, contact=False, mutual_contact=False, deleted=False, bot=False, bot_chat_history=False, bot_nochats=False, verified=False, restricted=False, min=False, bot_inline_geo=False, support=False, scam=False, apply_min_photo=True, fake=False, bot_attach_menu=False, premium=False, attach_menu_enabled=False, bot_can_edit=False, close_friend=False, stories_hidden=False, stories_unavailable=False, contact_require_premium=False, bot_business=False, bot_has_main_app=False, first_name="A")
+
+        class FakeClient:
+            def __init__(self):
+                self.history_calls = 0
+                self.search_calls = 0
+                self.get_messages_calls = 0
+                self.message_cache = {}
+
+            def get_chat_history(self, chat_id, **kwargs):
+                self.history_calls += 1
+                raise AssertionError("history should not be used on cache hit")
+
+            async def resolve_peer(self, chat_id):
+                return raw.types.InputPeerChannel(channel_id=123, access_hash=1)
+
+            async def invoke(self, query, **kwargs):
+                if isinstance(query, raw.functions.messages.Search):
+                    self.search_calls += 1
+                    raise AssertionError("search should not be used on cache hit")
+                assert isinstance(query, raw.functions.channels.GetMessages)
+                self.get_messages_calls += 1
+                requested = [item.id for item in query.id]
+                by_id = {
+                    topic_id: raw_message(topic_id, "root", 1),
+                    100: raw_message(100, "first", 2),
+                    1000: raw_message(1000, "middle", 3),
+                    50: raw_message(50, "last", 4),
+                }
+                return raw.types.messages.Messages(
+                    messages=[by_id[msg_id] for msg_id in requested],
+                    topics=[],
+                    chats=[channel],
+                    users=[user],
+                )
+
+        original_cache = topic_extractor_module.topic_cache
+        topic_extractor_module.topic_cache = cache
+        try:
+            client = FakeClient()
+            extractor = TopicExtractor(
+                client,
+                TopicExtractorConfig(
+                    chat_id=-100123,
+                    topic_id=topic_id,
+                    fetch_batch_size=10,
+                    stop_after_ids={100, 50},
+                ),
+            )
+
+            result = await extractor.extract_between(100, 50)
+
+            assert [msg.id for msg in result] == [100, 1000, 50]
+            assert client.history_calls == 0
+            assert client.search_calls == 0
+            assert client.get_messages_calls == 1
+        finally:
+            topic_extractor_module.topic_cache = original_cache
+            tmp.cleanup()
+
+    asyncio.run(run())
+
+
+def test_retry_utils_detects_flood_premium_wait_text():
+    from core.retry_utils import get_floodwait_seconds, is_floodwait_error
+
+    class FloodPremiumWait(Exception):
+        pass
+
+    err = FloodPremiumWait(
+        'Telegram says: [420 FLOOD_PREMIUM_WAIT_X] '
+        '(caused by "upload.SaveBigFilePart") '
+        'Pyrogram thinks: A wait of 11 seconds is required'
+    )
+
+    assert is_floodwait_error(err)
+    assert get_floodwait_seconds(err) == 11

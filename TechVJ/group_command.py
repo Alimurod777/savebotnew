@@ -50,6 +50,7 @@ from TechVJ.session_handler import (
     SessionConnectionError,
 )
 from core.structured_log import op_log
+from core.topic_extractor import TopicExtractor, TopicExtractorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -320,61 +321,7 @@ async def get_topic_messages_by_date(
     Returns:
         (message_count, first_message, last_message)
     """
-    messages_by_date: List[TopicMessage] = []
-    count = 0
-    
-    try:
-        # Iterate topic messages using search or history
-        # Pyrogram's get_chat_history doesn't filter by topic directly,
-        # so we use search_messages with reply_to filter or iterate and filter
-        
-        # Method: Use iter_history and filter by reply_to_top_message_id
-        # This is the most reliable method for forum topics
-        async for msg in client.get_chat_history(chat_id, limit=limit):
-            # Check if message belongs to this topic
-            msg_topic_id = None
-            
-            # Check reply_to_top_message_id (primary method)
-            if hasattr(msg, 'reply_to_top_message_id') and msg.reply_to_top_message_id:
-                msg_topic_id = msg.reply_to_top_message_id
-            # Check reply_to_message_id for direct topic replies
-            elif hasattr(msg, 'reply_to_message_id') and msg.reply_to_message_id:
-                # Could be a reply to the topic starter
-                msg_topic_id = msg.reply_to_message_id
-            # Check if this IS the topic starter message
-            elif msg.id == topic_id:
-                msg_topic_id = topic_id
-            
-            if msg_topic_id == topic_id:
-                count += 1
-                if msg.date:
-                    messages_by_date.append(TopicMessage(
-                        message_id=msg.id,
-                        date=msg.date,
-                        is_topic_starter=(msg.id == topic_id)
-                    ))
-            
-            # Early exit if we've scanned enough
-            if count >= limit:
-                break
-        
-        if not messages_by_date:
-            return count, None, None
-        
-        # CRITICAL: Sort by DATE, not message_id
-        messages_by_date.sort(key=lambda m: m.date)
-        
-        first_msg = messages_by_date[0]
-        last_msg = messages_by_date[-1]
-        
-        return count, first_msg, last_msg
-        
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout scanning topic {topic_id}")
-        return count, None, None
-    except Exception as e:
-        logger.warning(f"Error scanning topic {topic_id}: {e}")
-        return count, None, None
+    return await scan_topic_with_raw_api(client, chat_id, topic_id, limit=limit)
 
 
 async def scan_topic_with_raw_api(
@@ -389,6 +336,41 @@ async def scan_topic_with_raw_api(
     CRITICAL: Chronology is derived from message.date, NOT message IDs.
     Only tracks first/last by date to minimize memory usage.
     """
+    try:
+        peer = await client.resolve_peer(chat_id)
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=chat_id,
+                topic_id=topic_id,
+                fetch_batch_size=100,
+                raw_peer=peer,
+            ),
+        )
+        messages = await extractor.extract_all()
+        if limit:
+            messages = messages[:limit]
+        if not messages:
+            return 0, None, None
+
+        topic_messages: List[TopicMessage] = []
+        for msg in messages:
+            if not getattr(msg, "date", None):
+                continue
+            topic_messages.append(
+                TopicMessage(
+                    message_id=msg.id,
+                    date=msg.date,
+                    is_topic_starter=(msg.id == topic_id),
+                )
+            )
+        if not topic_messages:
+            return len(messages), None, None
+        topic_messages.sort(key=lambda m: m.date)
+        return len(messages), topic_messages[0], topic_messages[-1]
+    except Exception as e:
+        logger.warning(f"TopicExtractor scan failed for topic {topic_id}, falling back to GetReplies: {e}")
+
     first_msg: Optional[TopicMessage] = None
     last_msg: Optional[TopicMessage] = None
     total_count = 0

@@ -23,8 +23,8 @@ import logging
 from typing import Any, Callable, List, Optional, Set, Tuple
 
 from pyrogram import Client
-from pyrogram.errors import FloodWait
 
+from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 from core.copy_utils import (
     BotMessageResolutionError,
     get_bot_copy_source_chat_id,
@@ -322,14 +322,15 @@ class SessionManager:
                             real_msg_id, user_id,
                         )
                         break
-                    except FloodWait as _cfw:
-                        _cfw_wait = getattr(_cfw, "value", getattr(_cfw, "x", 10))
-                        logger.warning(
-                            "SessionManager: copy_message FloodWait %ds — retrying",
-                            _cfw_wait,
-                        )
-                        await asyncio.sleep(min(_cfw_wait, 30))
                     except Exception as e:
+                        if is_floodwait_error(e):
+                            _cfw_wait = get_floodwait_seconds(e, default=10)
+                            logger.warning(
+                                "SessionManager: copy_message FloodWait %ds — retrying",
+                                _cfw_wait,
+                            )
+                            await asyncio.sleep(min(_cfw_wait, 30))
+                            continue
                         logger.warning(
                             "SessionManager: copy_message failed for user %d (attempt %d): %s",
                             user_id, _copy_try + 1, e,
@@ -353,16 +354,15 @@ class SessionManager:
 
             return sent_msg
 
-        except FloodWait as e:
-            wait = getattr(e, "value", getattr(e, "x", 30))
-            logger.warning(
-                "SessionManager: FloodWait %ds on session %s — marking flooded",
-                wait, record.session_id[:8],
-            )
-            await borrow_manager.mark_flood(record, float(wait))
-            return None
-
         except Exception as e:
+            if is_floodwait_error(e):
+                wait = get_floodwait_seconds(e)
+                logger.warning(
+                    "SessionManager: FloodWait %ds on session %s — marking flooded",
+                    wait, record.session_id[:8],
+                )
+                await borrow_manager.mark_flood(record, float(wait))
+                return None
             logger.warning(
                 "SessionManager: upload error on session %s: %s: %s",
                 record.session_id[:8], type(e).__name__, e,

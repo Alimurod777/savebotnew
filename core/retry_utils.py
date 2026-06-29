@@ -26,6 +26,7 @@ Usage:
 import asyncio
 import random
 import logging
+import re
 from typing import TypeVar, Callable, Optional, Set, Type, Any
 from functools import wraps
 
@@ -102,10 +103,44 @@ def is_fatal_error(error: Exception) -> bool:
     return False
 
 
-def get_floodwait_seconds(error: FloodWait) -> int:
-    """Extract wait time from FloodWait error (handles Pyrofork variants)."""
-    # Pyrofork uses .value, older versions use .x
-    return getattr(error, 'value', getattr(error, 'x', 30))
+def is_floodwait_error(error: BaseException) -> bool:
+    """Return True for Pyrogram/Pyrofork FloodWait variants.
+
+    Pyrofork exposes some 420 errors (for example FLOOD_PREMIUM_WAIT_X)
+    as separate exception classes, so isinstance(error, FloodWait) is not
+    enough in production.
+    """
+    if isinstance(error, FloodWait):
+        return True
+
+    cls_name = type(error).__name__.upper()
+    error_id = str(getattr(error, "ID", "") or "")
+    text = f"{cls_name} {error_id} {error}".upper()
+    return "FLOOD_WAIT" in text or "FLOOD_PREMIUM_WAIT" in text
+
+
+def get_floodwait_seconds(error: BaseException, default: int = 30) -> int:
+    """Extract wait time from FloodWait-like errors."""
+    for attr in ("value", "x"):
+        val = getattr(error, attr, None)
+        if val is not None:
+            try:
+                return max(0, int(float(val)))
+            except (TypeError, ValueError):
+                pass
+
+    text = str(error)
+    patterns = (
+        r"FLOOD(?:_PREMIUM)?_WAIT_(\d+)",
+        r"wait of (\d+) seconds",
+        r"(\d+) seconds",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return int(default)
 
 
 async def handle_floodwait(
@@ -201,23 +236,22 @@ def with_retry(
                 try:
                     return await func(*args, **kwargs)
                 
-                except FloodWait as e:
-                    wait_time = get_floodwait_seconds(e)
-                    
-                    if wait_time > max_floodwait:
-                        logger.error(
-                            f"{func.__name__} FloodWait {wait_time}s exceeds max {max_floodwait}s, giving up"
-                        )
-                        raise
-                    
-                    logger.warning(f"{func.__name__} FloodWait: {wait_time}s (attempt {attempt + 1}/{max_attempts})")
-                    await asyncio.sleep(wait_time)
-                    last_error = e
-                    # Don't count FloodWait against attempt limit
-                    continue
-                
                 except Exception as e:
                     last_error = e
+
+                    if is_floodwait_error(e):
+                        wait_time = get_floodwait_seconds(e)
+
+                        if wait_time > max_floodwait:
+                            logger.error(
+                                f"{func.__name__} FloodWait {wait_time}s exceeds max {max_floodwait}s, giving up"
+                            )
+                            raise
+
+                        logger.warning(f"{func.__name__} FloodWait: {wait_time}s (attempt {attempt + 1}/{max_attempts})")
+                        await asyncio.sleep(wait_time)
+                        # Don't count FloodWait against attempt limit
+                        continue
                     
                     # Fatal errors - don't retry
                     if reraise_fatal and is_fatal_error(e):
@@ -275,12 +309,13 @@ class RetryContext:
                 try:
                     result = await some_operation()
                     break  # Success
-                except FloodWait as e:
-                    await ctx.handle_floodwait(e)
                 except Exception as e:
-                    if not ctx.should_retry(e):
+                    if is_floodwait_error(e):
+                        await ctx.handle_floodwait(e)
+                    elif not ctx.should_retry(e):
                         raise
-                    await ctx.backoff()
+                    else:
+                        await ctx.backoff()
     """
     
     def __init__(

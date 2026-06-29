@@ -5,6 +5,102 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-038: TopicExtractor Search va GetReplies ikkalasi ham topic xabarlarini topmaydi
+**Sana:** 2026-06-20
+**Holat:** Hal qilindi
+
+**Muammo:** Production logda `https://t.me/indoc_info/1465/1476-1536` va `https://t.me/c/2346917200/15/806-877` uchun `messages.Search(top_msg_id=...)` faqat 1 ta xabar yig'di. GetReplies retry ham 1 ta xabar qaytardi. Natijada `extract_between()` ikki anchorni topmadi va `topic range anchor not found` bilan to'xtadi. Raw forum topic metadata xabarlar mavjudligini ko'rsatsa-da, server-side topic filterlar ularni bermaydi.
+
+**Sabab:** 
+1. Ayrim forum kanallarida `messages.Search` va `messages.GetReplies` to'liq topic streamni bermasligi mumkin. Server-side topic index ba'zi topiclar uchun to'liq ishlamaydi.
+2. Fallback sifatida xabarlarni to'g'ridan-to'g'ri `get_messages` orqali olganda, Pyrogram forum topic xabarlariga `reply_to_top_message_id`ni qo'shmaydi, balki to'g'ridan-to'g'ri `message_thread_id` atributini to'ldiradi. Eski `_is_topic_message` filter buni inobatga olmagani uchun to'g'ri olingan xabarlarni ham tashlab yuborardi.
+
+**Yechim:**
+1. `TopicExtractor.extract_between()` ga uchinchi fallback bosqich qo'shildi: Search va GetReplies ikkalasi ham anchorlarni topmasa, `_direct_id_range_fallback()` ishga tushadi.
+2. Yangi `_direct_id_range_fallback()` metodi `[min, max]` orasidagi BARCHA message IDlarni to'g'ridan-to'g'ri `channels.GetMessages` bilan oladi (maksimum 500 span).
+3. `TopicExtractor._is_topic_message` filtri yangilandi: Endi u `msg.message_thread_id == topic_id` ni ham tekshiradi. Pyrogram/Pyrofork raw xabarlarini topicga ajratish shu orqali aniq ishlaydi.
+
+**O'zgartirilgan fayllar:** `core/topic_extractor.py`, `data/BUGS.md`
+
+---
+
+## BUG-037: TopicExtractor `GetHistory`ni birinchi ishlatgani sabab FloodWait davom etadi
+**Sana:** 2026-06-20
+**Holat:** Hal qilindi
+
+**Muammo:** Topic extraction productionda hali ham `messages.GetHistory FloodWait 20-30 seconds` keltiryapti. Sabab: `TopicExtractor` server-side topic filter sifatida `get_chat_history(message_thread_id=topic_id)`ni birinchi sinab ko'radi. Pyrogram/Pyrofork bu yo'lni baribir `messages.GetHistory` orqali bajaradi, shuning uchun katta forumlarda topic ichidagi 100 xabarni olishdan oldin chat history pressure paydo bo'ladi.
+
+**Sabab:**
+1. Raw `messages.Search(top_msg_id=topic_id)` va `messages.GetReplies` mavjud bo'lsa ham, extractor avval high-level history pathga kirardi.
+2. `core/guards.py` va `/group` analiz helperlarida eski history scan/range probing fallbacklar qolgan edi.
+3. Topic cache yo'q edi; bir topic qayta so'ralganda avvalgi anchor/order natijasi ishlatilmasdi.
+
+**Yechim:**
+1. `TopicExtractor` priority tartibi o'zgartirildi: raw `messages.Search(top_msg_id)` → raw `messages.GetReplies` → faqat explicit `allow_history_scan_fallback=True` bo'lsa `get_chat_history`.
+2. `messages.GetDiscussionMessage` metadata/root discovery uchun best-effort qo'shildi; topic root raw `channels.GetMessages` orqali hydrate qilinadi.
+3. `core/topic_cache.py` qo'shildi: `data/topic_cache/topics.json` ichida `chat_id`, `topic_id`, `root_message_id`, `known_message_ids`, `last_processed_message_id`, `fully_scanned` saqlanadi.
+4. Range anchorlari cache'da bo'lsa discovery umuman qilinmaydi; IDlar batch raw `channels.GetMessages` bilan hydrate qilinadi.
+5. Full topic qayta so'ralganda cache boundary (`last_processed_message_id`)gacha yangi sahifalar olinadi; known xabarlar qayta scan qilinmaydi.
+6. `process_topic_posts()` extractor path loglarini (`raw_search`, `raw_replies`, `history`, `cache`) chiqaradi.
+7. `core/guards.py` topic helperlari va `/group` topic analiz yo'li `TopicExtractor`ga delegatsiya qilindi; eski flood-prone history scan fallbacklar olib tashlandi yoki faqat explicit fallback sifatida qoldi.
+8. Regression testlar qo'shildi: raw Search historysiz ishlashi, Search bo'sh bo'lsa GetReplies fallback, cache hit discovery qilmasligi.
+
+**O'zgartirilgan fayllar:** `core/topic_extractor.py`, `core/topic_cache.py`, `core/guards.py`, `TechVJ/save.py`, `TechVJ/group_command.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-036: Raw GetReplies forum topic range anchorlarini topmaydi
+**Sana:** 2026-06-13
+**Holat:** Hal qilindi
+
+**Muammo:** Production logda `https://t.me/c/2234521267/8/75-171796` uchun `get_chat_history(message_thread_id=...)` yo'qligi sabab raw fallback ishga tushdi, lekin `messages.GetReplies(peer, msg_id=8)` faqat 1 ta message yig'di. Natijada `75` va `171796` anchorlari topilmadi va task `topic range anchor not found` bilan to'xtadi.
+
+**Sabab:**
+1. Telegram/Pyroforkda `messages.GetReplies` forum topic tarixini hamma chatlarda to'liq topic stream sifatida bermaydi; ayrim holatda faqat topic root yoki direct replies qaytadi.
+2. Pyroforkning `search_messages(thread_id=...)` implementatsiyasi aslida raw `messages.Search(..., top_msg_id=thread_id)` ishlatadi. Bu forum topic ichini server-side filter qilish uchun to'g'riroq yo'l.
+3. Search pagination `offset_id` bilan emas, `add_offset` bilan yuradi; aks holda birinchi sahifa qayta olinishi yoki anchorlar topilmasligi mumkin.
+4. Pyrogram/Pyrofork history/search sahifasi amalda 100 limit bilan ishlaydi; 200 limit kutish oxirgi sahifani noto'g'ri aniqlashi mumkin edi.
+
+**Yechim:**
+1. `TopicExtractor`da `message_thread_id` TypeError bo'lsa fallback tartibi o'zgartirildi: avval raw `messages.Search(top_msg_id=topic_id)`, keyin zaxira sifatida `messages.GetReplies`.
+2. Raw Search sahifalash `add_offset += len(page)` bilan qilindi; GetReplies/history esa `offset_id=page[-1].id` bilan qoldi.
+3. Page limit 100 ga clamp qilindi va last-page tekshiruvi shu real limitga moslandi.
+4. Agar raw Search anchorlarni topmasa, `extract_between()` bir marta `GetReplies` bilan retry qiladi.
+5. Topic flow `acc.resolve_peer(channel_id)` natijasini saqlaydi va `TopicExtractor`ga beradi; bu stale/access_hash qayta-resolve muammosini kamaytiradi.
+6. `get_chat().is_forum` yo'q bo'lsa fatal hisoblanmaydi. Buning o'rniga raw `messages.GetForumTopicsByID(peer=resolved_peer, topics=[topic_id])` bilan topic metadata tekshiriladi.
+7. Raw forum topic `top_message` faqat diagnostika uchun loglanadi. Extractor har doim URLdagi topic root id bilan ishlaydi (`/c/<chat>/<topic>/<from>-<to>` formatida middle segment: masalan `8` yoki `1465`). `top_message` topicdagi oxirgi/yuqori xabar bo'lishi mumkin, root emas.
+8. Regression testlar qo'shildi: raw Search primary fallback, raw GetReplies secondary fallback, Search pagination `add_offset`, va avvalgi FloodPremiumWait/topic anchor testlari.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/topic_extractor.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-035: FloodPremiumWait stacktrace va topic range GetHistory bosimi
+**Sana:** 2026-06-12
+**Holat:** Hal qilindi
+
+**Muammo:** Katta forum topic range (`/c/<chat>/<topic>/<from>-<to>`, masalan `75-171796`) ishlovida production logda `FloodPremiumWait: [420 FLOOD_PREMIUM_WAIT_X] (upload.SaveBigFilePart)` stacktrace chiqdi. Shu paytda `messages.GetHistory` ham 21-22s FloodWait berib turardi va task media yuborishga yetmasdan topic scan ichida uzoq qolardi.
+
+**Sabab:**
+1. Pyrofork 2.3.69 `FLOOD_PREMIUM_WAIT_X`ni oddiy `FloodWait` subclassi sifatida emas, alohida `FloodPremiumWait` classi sifatida chiqarishi mumkin. Mavjud `except FloodWait` bloklari uni ushlamasdi, natijada upload worker/session manager uni oddiy exception yoki stacktrace sifatida ko'rardi.
+2. Pyrofork `get_chat_history(message_thread_id=...)`ni qo'llamasa, extractor butun chat history'ni scan fallbackga o'tardi. Katta forumlarda bu server-side topic filter emas, chat bo'ylab `messages.GetHistory` sahifalash bo'lib, FloodWait olib taskni media yuborishga yetkazmasdi.
+3. `TopicExtractor.extract_between()` range anchorlar topilgandan keyin ham butun topicni oxirigacha yig'ardi. Katta topiclarda bu keraksiz sahifalar va FloodWait bosimini oshirardi.
+
+**Yechim:**
+1. `core/retry_utils.py`ga `is_floodwait_error()` qo'shildi: `FloodWait`, `FLOOD_WAIT`, `FLOOD_PREMIUM_WAIT_X`, class name, `ID`, `.value`, `.x` va stringdagi "wait of N seconds" variantlarini taniydi.
+2. `get_floodwait_seconds()` umumiy helperga aylantirildi va `FLOOD_PREMIUM_WAIT_X` matnidan ham sekundni ajratadi.
+3. `UserUploadWorker`, `SessionManager`, legacy pool fallback va `download_and_send_media()` flood-like exceptionlarni oddiy error emas, mavjud FloodWait yo'liga uzatadi: short wait bo'lsa retry, long/pool wait bo'lsa rotation/cooldown.
+4. `TopicExtractor` fallback yo'li qayta yozildi: `message_thread_id` TypeError bersa, endi butun chat `get_chat_history()` scan qilinmaydi; raw MTProto `messages.GetReplies(peer, msg_id=topic_id, ...)` ishlatiladi. Bu serverdan aynan topic root replies/thread xabarlarini oladi.
+5. `get_chat_history` full-scan fallback productionda default o'chirildi (`allow_history_scan_fallback=False`). Faqat explicit yoqilsa ishlaydi.
+6. Raw `GetReplies` natijasi `pyrogram.utils.parse_messages()` orqali oddiy Pyrogram `Message` obyektlariga aylantiriladi; mavjud media/text yuborish pipeline o'zgarmaydi.
+7. `TopicExtractorConfig.stop_after_ids` qo'shildi. Topic range anchorlari topilgach extractor sahifalashni to'xtatadi, lekin xronologik slice uchun anchorlar orasidagi allaqachon olingan xabarlarni saqlaydi.
+8. `process_topic_posts()` range anchorlarini `stop_after_ids` sifatida uzatadi.
+9. Regression testlar qo'shildi: raw `GetReplies` fallback ishlashi, topic range anchor topilgach erta to'xtashi va `FloodPremiumWait` matnini flood sifatida tanish.
+
+**O'zgartirilgan fayllar:** `core/retry_utils.py`, `core/topic_extractor.py`, `core/user_upload_worker.py`, `core/session_manager/session_manager.py`, `TechVJ/save.py`, `test_governance_fixes.py`
+
+---
+
 ## BUG-034: Deleted/missing postlar owner diagnostika spamiga aylanadi
 **Sana:** 2026-06-07
 **Holat:** Hal qilindi

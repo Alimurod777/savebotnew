@@ -41,6 +41,7 @@ from core.failure_classifier import (
     should_notify_user,
     stage_indicates_processing,
 )
+from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 from pyrogram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
 from pyrogram.raw import functions, types
 import time
@@ -203,10 +204,10 @@ def _task_context_for_channel_monitor(
     )
 
 
-async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] = None) -> None:
+async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] = None) -> Optional[Any]:
     """Resolve peer per request to avoid stale access_hash caches."""
     try:
-        await acc.resolve_peer(peer_id)
+        return await acc.resolve_peer(peer_id)
     except Exception as e:
         logger.debug(
             "Peer resolve failed (task=%s peer=%s): %s",
@@ -214,6 +215,29 @@ async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] =
             peer_id,
             e,
         )
+        return None
+
+
+async def _get_forum_topic_raw(acc, raw_peer, topic_id: int):
+    """Best-effort raw forum topic lookup.
+
+    Pyrofork's high-level get_forum_topics_by_id wrapper uses a stale keyword
+    on this build, so call the generated raw function directly.
+    """
+    if raw_peer is None:
+        return None
+    result = await acc.invoke(
+        functions.messages.GetForumTopicsByID(
+            peer=raw_peer,
+            topics=[int(topic_id)],
+        ),
+        sleep_threshold=0,
+    )
+    topics = getattr(result, "topics", None) or []
+    for topic in topics:
+        if getattr(topic, "id", None) == int(topic_id):
+            return topic
+    return None
 
 
 async def _validate_restricted_channel_request(
@@ -633,6 +657,30 @@ class ParsedURL:
         if self.topic_range_anchor:
             extra += f", topic_range_anchor={self.topic_range_anchor}"
         return f"ParsedURL(channel_id={self.channel_id}, post_ids={self.post_ids}, type={self.url_type}{extra})"
+
+
+def _message_belongs_to_topic(msg: Message, topic_id: int) -> bool:
+    """Return True when a fetched message belongs to the requested forum topic."""
+    if not msg or getattr(msg, "empty", False):
+        return False
+
+    if getattr(msg, "id", None) == topic_id:
+        return True
+
+    thread_id = getattr(msg, "message_thread_id", None)
+    if thread_id is not None:
+        return thread_id == topic_id
+
+    reply_top = getattr(msg, "reply_to_top_message_id", None)
+    if reply_top is None:
+        reply_to_obj = getattr(msg, "reply_to", None)
+        if reply_to_obj is not None:
+            reply_top = getattr(reply_to_obj, "reply_to_top_message_id", None)
+    if reply_top == topic_id:
+        return True
+
+    reply_to = getattr(msg, "reply_to_message_id", None)
+    return reply_to == topic_id and not reply_top
 
 
 def parse_topic_url(url: str) -> Optional[ParsedURL]:
@@ -3752,6 +3800,8 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                 return
                                 
                         except Exception as e:
+                            if is_floodwait_error(e):
+                                raise
                             error_str = str(e).upper()
                             if "MSG_ID_INVALID" in error_str:
                                 await client.edit_message_text(
@@ -4116,7 +4166,13 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
-                await _resolve_peer_safe(acc, channel_id, ctx)
+                raw_peer = await _resolve_peer_safe(acc, channel_id, ctx)
+                logger.info(
+                    "Topic source resolved task=%s chat=%s peer=%s",
+                    ctx.task_id,
+                    channel_id,
+                    type(raw_peer).__name__ if raw_peer is not None else "None",
+                )
                 # First, verify the topic exists (optional - for better error messages)
                 try:
                     chat = await acc.get_chat(channel_id)
@@ -4128,12 +4184,52 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         return
                     
                     # Check if it's a forum (supergroup with topics enabled)
-                    is_forum = hasattr(chat, 'is_forum') and chat.is_forum
+                    is_forum = bool(
+                        getattr(chat, "is_forum", False)
+                        or getattr(chat, "forum", False)
+                    )
                     if not is_forum:
-                        logger.info(f"Chat {channel_id} may not be a forum, proceeding anyway")
+                        logger.info(
+                            "Chat %s did not expose forum flag via get_chat; checking raw topic metadata",
+                            channel_id,
+                        )
                         
                 except Exception as chat_err:
                     logger.warning(f"Could not verify chat: {chat_err}")
+
+                raw_topic = None
+                try:
+                    raw_topic = await asyncio.wait_for(
+                        _get_forum_topic_raw(acc, raw_peer, topic_id),
+                        timeout=15.0,
+                    )
+                    if raw_topic is not None:
+                        raw_top_message = getattr(raw_topic, "top_message", None)
+                        logger.info(
+                            "Raw forum topic resolved task=%s chat=%s topic=%s top_message=%s title=%r",
+                            ctx.task_id,
+                            channel_id,
+                            topic_id,
+                            raw_top_message,
+                            getattr(raw_topic, "title", None),
+                        )
+                    else:
+                        logger.warning(
+                            "Raw forum topic lookup returned no topic task=%s chat=%s topic=%s",
+                            ctx.task_id,
+                            channel_id,
+                            topic_id,
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout resolving raw forum topic %s in chat %s", topic_id, channel_id)
+                except Exception as topic_raw_err:
+                    logger.warning(
+                        "Raw forum topic lookup failed task=%s chat=%s topic=%s: %s",
+                        ctx.task_id,
+                        channel_id,
+                        topic_id,
+                        topic_raw_err,
+                    )
                 
                 # FIX Issue 3.3: Validate topic_id exists and is a topic starter
                 try:
@@ -4193,12 +4289,26 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 topic_id=topic_id,
                                 fetch_batch_size=200,
                                 inter_page_delay=0.3,
+                                stop_after_ids=set(topic_range_anchor) if topic_range_anchor else None,
+                                raw_peer=raw_peer,
+                                incremental_from_cache=not bool(topic_range_anchor),
                             ),
                         )
                         if topic_range_anchor:
                             topic_msgs = await extractor.extract_between(*topic_range_anchor)
                         else:
                             topic_msgs = await extractor.extract_all()
+                        logger.info(
+                            "TopicExtractor completed task=%s chat=%s topic=%s count=%d raw_search=%s raw_replies=%s history=%s cache=%s",
+                            ctx.task_id,
+                            channel_id,
+                            topic_id,
+                            len(topic_msgs),
+                            extractor.used_raw_search,
+                            extractor.used_raw_replies,
+                            extractor.used_history,
+                            extractor.used_cache,
+                        )
                         post_ids = [m.id for m in topic_msgs]
                         total_posts = len(post_ids)
                         is_range = total_posts > 1
@@ -4335,21 +4445,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         # or msg.id == topic_id (topic starter itself).
                         # reply_to_message_id alone is unreliable — it could
                         # point to any message, not necessarily the topic root.
-                        is_in_topic = False
-                        
-                        if msg.id == topic_id:
-                            # This IS the topic starter message
-                            is_in_topic = True
-                        elif hasattr(msg, 'reply_to_top_message_id') and msg.reply_to_top_message_id == topic_id:
-                            # Primary method: message explicitly belongs to this topic
-                            is_in_topic = True
-                        elif hasattr(msg, 'reply_to_message_id') and msg.reply_to_message_id == topic_id:
-                            # Direct reply to topic starter (first-level reply, no top_message_id set)
-                            # Only accept if reply_to_top_message_id is absent/None
-                            if not getattr(msg, 'reply_to_top_message_id', None):
-                                is_in_topic = True
-                        
-                        if not is_in_topic:
+                        if not _message_belongs_to_topic(msg, topic_id):
                             logger.debug(f"Message {post_id} not in topic {topic_id}, skipping")
                             skipped += 1
                             continue
@@ -4640,6 +4736,8 @@ async def process_single_topic_message(
     except FloodWait:
         raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"process_single_topic_message error: {e}")
         try:
             source_chat_id = (
@@ -4891,6 +4989,8 @@ async def process_album_messages(
                 await asyncio.sleep(1.5)
                 
             except Exception as e:
+                if is_floodwait_error(e):
+                    raise
                 logger.warning(f"Individual media error: {e}")
                 continue
         
@@ -4899,6 +4999,8 @@ async def process_album_messages(
     except FloodWait:
         raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"process_album_messages error: {e}")
         return False
 
@@ -5164,6 +5266,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                 failed += 1
                                 continue
                         except Exception as e:
+                            if is_floodwait_error(e):
+                                raise
                             logger.warning(f"Error processing post {post_id}: {e}")
                             failed += 1
                             failed_ids.append(post_id)
@@ -5349,6 +5453,8 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                         else:
                             await asyncio.sleep(wait_time)
                     except Exception as _pub_err:
+                        if is_floodwait_error(_pub_err):
+                            raise
                         logger.debug("Public post process error: %s", _pub_err)
                         await _notify_realtime_post_failure(
                             client,
@@ -5419,6 +5525,8 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                     else:
                         await asyncio.sleep(wait_time)
                 except Exception as _bot_err:
+                    if is_floodwait_error(_bot_err):
+                        raise
                     logger.debug("Public post bot copy error: %s", _bot_err)
                     await _notify_bot_only_post_failure(
                         client,
@@ -5674,6 +5782,8 @@ async def process_single_post(
         # Re-raise FloodWait so the outer per-post loop can handle it
         raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"Error processing post {post_id}: {e}")
         await _notify_failure("process_single_post", "unexpected exception", e)
         return False
@@ -5849,6 +5959,8 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
         # Re-raise FloodWait so the outer per-post loop can handle it
         raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"send_text_message error: {e}")
         # Fallback: send as plain text without entities
         try:
@@ -5865,6 +5977,8 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
         except FloodWait:
             raise
         except Exception as e2:
+            if is_floodwait_error(e2):
+                raise
             logger.warning(f"send_text_message fallback error: {e2}")
         return False
 
@@ -6648,8 +6762,10 @@ async def download_and_send_media(
                             target_user_id=_acc_user_id,
                             request_message=message,
                         )
-                    except FloodWait as _fw:
-                        _fw_wait = getattr(_fw, "value", getattr(_fw, "x", 60))
+                    except Exception as _fw:
+                        if not is_floodwait_error(_fw):
+                            raise
+                        _fw_wait = get_floodwait_seconds(_fw, default=60)
                         if _cur_pool_idx is not None:
                             # Pause this pool session and try next
                             await _ru_main.pool.mark_flood(_cur_pool_idx, _fw_wait)
@@ -6841,6 +6957,8 @@ async def download_and_send_media(
         # (sleep for the required duration instead of hammering Telegram)
         raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"download_and_send_media error (type={msg_type}): {type(e).__name__}: {e}")
         if status_msg:
             try:

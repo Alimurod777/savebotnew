@@ -45,6 +45,13 @@ from pyrogram.errors import (
 
 logger = logging.getLogger(__name__)
 
+def _load_topic_extractor():
+    try:
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+        return TopicExtractor, TopicExtractorConfig
+    except ImportError:
+        return None, None
+
 
 # ============================================================================
 # ERROR CLASSIFICATION
@@ -513,14 +520,19 @@ def is_message_in_topic(msg: Message, topic_id: int) -> bool:
     
     Topic membership is determined by:
     1. Message IS the topic starter (msg.id == topic_id)
-    2. Message has reply_to_top_message_id == topic_id
-    3. Message has reply_to_message_id == topic_id (direct reply to topic)
+    2. Message has message_thread_id == topic_id
+    3. Message has reply_to_top_message_id == topic_id
+    4. Message has reply_to_message_id == topic_id (direct reply to topic)
     """
     if not msg or getattr(msg, 'empty', False):
         return False
     
     # Method 1: This IS the topic starter
     if msg.id == topic_id:
+        return True
+
+    thread_id = getattr(msg, 'message_thread_id', None)
+    if thread_id == topic_id:
         return True
     
     # Method 2: reply_to_top_message_id points to topic
@@ -584,104 +596,38 @@ async def smart_get_topic_range(
     Returns:
         TopicRangeResult with all found messages
     """
-    min_id = min(start_id, end_id)
-    max_id = max(start_id, end_id)
-    
-    # Track results
-    found: Dict[int, Message] = {}
-    missing_ids: Set[int] = set()
-    out_of_topic_ids: Set[int] = set()
-    requested_ids = set(range(min_id, max_id + 1))
-    
-    # ========== PASS 1: Direct ID check ==========
-    # Check each ID in the requested range
-    ids_to_check = list(range(min_id, max_id + 1))
-    
-    # Batch fetch for efficiency (Telegram allows up to 100 per request)
-    for i in range(0, len(ids_to_check), 100):
-        batch = ids_to_check[i:i + 100]
-        
-        try:
-            messages = await client.get_messages(chat_id, batch)
-            if not isinstance(messages, list):
-                messages = [messages]
-            
-            for msg in messages:
-                if msg and not getattr(msg, 'empty', False):
-                    if is_message_in_topic(msg, topic_id):
-                        found[msg.id] = msg
-                    else:
-                        out_of_topic_ids.add(msg.id)
-                else:
-                    # Message doesn't exist
-                    if msg:
-                        missing_ids.add(msg.id)
-            
-            if batch_delay and i + 100 < len(ids_to_check):
-                await asyncio.sleep(batch_delay)
-                
-        except FloodWait as e:
-            wait_time = getattr(e, 'value', getattr(e, 'x', 30))
-            logger.warning(f"FloodWait {wait_time}s during topic range fetch")
-            await asyncio.sleep(min(wait_time, 60))
-            continue
-        except Exception as e:
-            logger.warning(f"Error fetching batch: {e}")
-    
-    # ========== PASS 2: Topic history scan ==========
-    # Scan topic history to find messages with IDs in our range
-    # that we might have missed (non-sequential topic messages)
+    TopicExtractor, TopicExtractorConfig = _load_topic_extractor()
     try:
-        scanned = 0
-        async for msg in client.get_chat_history(
-            chat_id,
-            reply_to_message_id=topic_id,
-            limit=history_limit
-        ):
-            scanned += 1
-            
-            # Is this message in our ID range?
-            if min_id <= msg.id <= max_id:
-                if msg.id not in found:
-                    found[msg.id] = msg
-                    # Remove from missing if we found it
-                    missing_ids.discard(msg.id)
-                    out_of_topic_ids.discard(msg.id)
-            
-            # Optimization: if we've gone past our range, stop
-            # (history is usually in descending order)
-            if msg.id < min_id:
-                # But continue a bit more in case of gaps
-                if scanned > 50:
-                    break
-                    
+        if not (TopicExtractor and TopicExtractorConfig):
+            raise RuntimeError("TopicExtractor unavailable")
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=chat_id,
+                topic_id=topic_id,
+                fetch_batch_size=100,
+                inter_page_delay=batch_delay,
+                stop_after_ids={start_id, end_id},
+            ),
+        )
+        messages = await extractor.extract_between(start_id, end_id)
+        found_ids = {msg.id for msg in messages}
+        return TopicRangeResult(
+            messages=messages,
+            found_ids=found_ids,
+            missing_ids={start_id, end_id} - found_ids,
+            out_of_topic_ids=set(),
+            total_requested=len(messages),
+        )
     except Exception as e:
-        logger.warning(f"Error scanning topic history: {e}")
-    
-    # ========== Build result ==========
-    # Calculate truly missing IDs
-    found_ids = set(found.keys())
-    missing_ids = requested_ids - found_ids - out_of_topic_ids
-    
-    # Sort messages by ID (ascending or descending based on request)
-    messages = list(found.values())
-    if start_id <= end_id:
-        messages.sort(key=lambda m: m.id)
-    else:
-        messages.sort(key=lambda m: m.id, reverse=True)
-    
-    logger.info(
-        f"Topic range result: {len(messages)} found, "
-        f"{len(out_of_topic_ids)} not in topic, "
-        f"{len(missing_ids)} missing"
-    )
-    
+        logger.warning(f"TopicExtractor smart range failed without history scan: {e}")
+
     return TopicRangeResult(
-        messages=messages,
-        found_ids=found_ids,
-        missing_ids=missing_ids,
-        out_of_topic_ids=out_of_topic_ids,
-        total_requested=len(requested_ids)
+        messages=[],
+        found_ids=set(),
+        missing_ids={start_id, end_id},
+        out_of_topic_ids=set(),
+        total_requested=2,
     )
 
 
@@ -716,30 +662,29 @@ async def get_all_topic_messages(
         # Get topic messages with ID >= 100
         messages = await get_all_topic_messages(client, chat_id, topic_id=5, min_id=100)
     """
-    messages = []
-    
+    TopicExtractor, TopicExtractorConfig = _load_topic_extractor()
     try:
-        async for msg in client.get_chat_history(
-            chat_id,
-            reply_to_message_id=topic_id,
-            limit=limit
-        ):
-            # Apply ID filters if specified
-            if min_id is not None and msg.id < min_id:
-                continue
-            if max_id is not None and msg.id > max_id:
-                continue
-            
-            messages.append(msg)
-            
-    except FloodWait as e:
-        wait_time = getattr(e, 'value', getattr(e, 'x', 30))
-        logger.warning(f"FloodWait {wait_time}s getting topic messages")
-        await asyncio.sleep(min(wait_time, 60))
+        if not (TopicExtractor and TopicExtractorConfig):
+            raise RuntimeError("TopicExtractor unavailable")
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=chat_id,
+                topic_id=topic_id,
+                fetch_batch_size=min(limit, 100),
+                incremental_from_cache=min_id is not None,
+            ),
+        )
+        messages = await extractor.extract_all()
+        if min_id is not None:
+            messages = [msg for msg in messages if msg.id >= min_id]
+        if max_id is not None:
+            messages = [msg for msg in messages if msg.id <= max_id]
+        return messages[:limit]
     except Exception as e:
-        logger.error(f"Error getting topic messages: {e}")
-    
-    return messages
+        logger.warning(f"TopicExtractor get_all failed without history scan: {e}")
+
+    return []
 
 
 async def get_topic_message_boundaries(
@@ -763,28 +708,22 @@ async def get_topic_message_boundaries(
     Returns:
         (first_msg_id, last_msg_id) or (None, None) if unavailable
     """
+    TopicExtractor, TopicExtractorConfig = _load_topic_extractor()
     try:
-        # Get most recent messages in topic
-        messages = []
-        async for msg in client.get_chat_history(
-            chat_id,
-            limit=limit,
-            reply_to_message_id=topic_id
-        ):
-            messages.append(msg)
-        
+        if not (TopicExtractor and TopicExtractorConfig):
+            raise RuntimeError("TopicExtractor unavailable")
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=chat_id,
+                topic_id=topic_id,
+                fetch_batch_size=max(1, min(limit, 100)),
+            ),
+        )
+        messages = await extractor.extract_all()
         if not messages:
             return None, None
-        
-        # Last message is the most recent
-        last_msg_id = messages[0].id if messages else None
-        
-        # For first message, we'd need to iterate through entire history
-        # which is expensive. Return None for first unless we have all messages.
-        first_msg_id = messages[-1].id if len(messages) >= limit else None
-        
-        return first_msg_id, last_msg_id
-        
+        return messages[0].id, messages[-1].id
     except Exception as e:
         logger.warning(f"Failed to get topic boundaries: {e}")
         return None, None
@@ -824,11 +763,7 @@ async def safe_get_topic_messages(
         )
         
         for msg in range_result.messages:
-            # Check if message belongs to this topic
-            reply_to = getattr(msg, 'reply_to_message_id', None)
-            reply_top = getattr(msg, 'reply_to_top_message_id', None)
-            
-            if reply_to == topic_id or reply_top == topic_id or msg.id == topic_id:
+            if is_message_in_topic(msg, topic_id):
                 result.messages.append(msg)
             else:
                 result.skipped_ids.append(msg.id)
@@ -845,14 +780,21 @@ async def safe_get_topic_messages(
         result.errors.update(range_result.errors)
         
     else:
-        # Fetch recent topic messages
+        TopicExtractor, TopicExtractorConfig = _load_topic_extractor()
         try:
-            async for msg in client.get_chat_history(
-                chat_id,
-                limit=limit,
-                reply_to_message_id=topic_id
-            ):
-                result.messages.append(msg)
+            if not (TopicExtractor and TopicExtractorConfig):
+                raise RuntimeError("TopicExtractor unavailable")
+            extractor = TopicExtractor(
+                client,
+                TopicExtractorConfig(
+                    chat_id=chat_id,
+                    topic_id=topic_id,
+                    fetch_batch_size=min(limit, 100),
+                ),
+            )
+            result.messages = await extractor.extract_all()
+            result.total_requested = len(result.messages)
+            return result
         except Exception as e:
             diagnostic = classify_error(e, {'chat_id': chat_id, 'topic_id': topic_id})
             logger.warning(f"Topic fetch error: {diagnostic}")

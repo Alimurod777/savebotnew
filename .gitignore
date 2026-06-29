@@ -25,3 +25,10 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local DB and Cache
+local_db/
+data/roles/
+data/topic_cache/
+test/
+

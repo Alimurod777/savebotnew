@@ -53,6 +53,7 @@ from pyrogram.errors import FloodWait, UserIsBlocked, PeerIdInvalid
 from pyrogram.enums import ParseMode
 
 from config import API_ID, API_HASH, get_client_params
+from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 
 logger = logging.getLogger(__name__)
 
@@ -502,8 +503,38 @@ class UserUploadWorker:
                 task.future.set_exception(e)
             return
 
-        except FloodWait as e:
-            wait = getattr(e, "value", getattr(e, "x", 30)) + FLOOD_BUFFER
+        except Exception as e:
+            if not is_floodwait_error(e):
+                err_upper = str(e).upper()
+                if "USER_IS_BLOCKED" in err_upper or "BOT WAS BLOCKED" in err_upper:
+                    recovered = False
+                    if self._bot_username:
+                        try:
+                            await self._prepare_bot_chat(self._bot_username, force=True)
+                            recovered = True
+                        except Exception:
+                            recovered = False
+                    if recovered:
+                        try:
+                            result = await task.send_fn(self._client)
+                            self._last_send_time = time.monotonic()
+                            self._last_activity = self._last_send_time
+                            if not task.future.done():
+                                task.future.set_result(result)
+                            return
+                        except Exception as retry_err:
+                            if not task.future.done():
+                                task.future.set_exception(retry_err)
+                            return
+                logger.warning(
+                    "UserUploadWorker[%d] send error: %s: %s",
+                    self._user_id, type(e).__name__, e,
+                )
+                if not task.future.done():
+                    task.future.set_exception(e)
+                return
+
+            wait = get_floodwait_seconds(e) + FLOOD_BUFFER
             self._throttle.record_flood(wait)
             if wait >= FLOOD_LONG_SEC:
                 # Long FloodWait — surface to caller; caller should try another session
@@ -531,35 +562,6 @@ class UserUploadWorker:
             except Exception as retry_err:
                 if not task.future.done():
                     task.future.set_exception(retry_err)
-
-        except Exception as e:
-            err_upper = str(e).upper()
-            if "USER_IS_BLOCKED" in err_upper or "BOT WAS BLOCKED" in err_upper:
-                recovered = False
-                if self._bot_username:
-                    try:
-                        await self._prepare_bot_chat(self._bot_username, force=True)
-                        recovered = True
-                    except Exception:
-                        recovered = False
-                if recovered:
-                    try:
-                        result = await task.send_fn(self._client)
-                        self._last_send_time = time.monotonic()
-                        self._last_activity = self._last_send_time
-                        if not task.future.done():
-                            task.future.set_result(result)
-                        return
-                    except Exception as retry_err:
-                        if not task.future.done():
-                            task.future.set_exception(retry_err)
-                        return
-            logger.warning(
-                "UserUploadWorker[%d] send error: %s: %s",
-                self._user_id, type(e).__name__, e,
-            )
-            if not task.future.done():
-                task.future.set_exception(e)
 
 
 # ── Global registry ───────────────────────────────────────────────────────────

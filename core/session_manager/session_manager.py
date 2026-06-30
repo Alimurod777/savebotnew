@@ -206,8 +206,6 @@ class SessionManager:
             if bridge is None:
                 return None
 
-            is_pool = force_copy or self._is_pool_session(record, user_id)
-
             # CRITICAL: ALL sessions upload to bot_user_id (bot's Telegram user ID).
             # - Pool session → pool_user↔bot chat → copy_message to user
             # - Non-pool session → user↔bot chat (directly visible to user)
@@ -219,11 +217,9 @@ class SessionManager:
             # and pass it to copy_message instead — the pool session's bot chat
             # does NOT contain the user's original message, so reply_to_message_id
             # would be silently ignored by Telegram if included in the upload call.
-            _reply_to_id = None
-            _upload_kwargs = send_kwargs
-            if is_pool:
-                _upload_kwargs = dict(send_kwargs)  # copy
-                _reply_to_id = _upload_kwargs.pop("reply_to_message_id", None)
+            _upload_kwargs = dict(send_kwargs)
+            _reply_to_id = _upload_kwargs.pop("reply_to_message_id", None)
+            _upload_kwargs.pop("reply_parameters", None)
 
             send_fn = bridge.build_send_fn(
                 target_chat_id=upload_chat_id,
@@ -243,22 +239,21 @@ class SessionManager:
             expected_source_chat_id = getattr(worker, "session_user_id", None)
             copy_source_chat_id = int(expected_source_chat_id) if expected_source_chat_id is not None else None
             pre_upload_latest_id = None
-            if is_pool and copy_source_chat_id is None:
+            if copy_source_chat_id is None:
                 logger.error(
                     "SessionManager: uploader account unavailable for session %s",
                     record.session_id[:8],
                 )
                 return None
 
-            if is_pool:
-                pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
-                if pre_upload_latest_id is None:
-                    logger.error(
-                        "SessionManager: could not read bot-side watermark for session %s chat=%s",
-                        record.session_id[:8],
-                        copy_source_chat_id,
-                    )
-                    return None
+            pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
+            if pre_upload_latest_id is None:
+                logger.error(
+                    "SessionManager: could not read bot-side watermark for session %s chat=%s",
+                    record.session_id[:8],
+                    copy_source_chat_id,
+                )
+                return None
 
             sent_msg = await bridge.enqueue_task(
                 worker,
@@ -267,8 +262,9 @@ class SessionManager:
                 owner_user_id=user_id,
             )
 
-            # Pool sessions: copy from bot DM to user chat
-            if is_pool and sent_msg is not None:
+            # Copy from uploader-bot DM to user chat so reply context is applied.
+            copied_msg = None
+            if sent_msg is not None:
                 detected_source_chat_id = get_bot_copy_source_chat_id(sent_msg, upload_chat_id)
                 if copy_source_chat_id is None:
                     copy_source_chat_id = detected_source_chat_id
@@ -310,7 +306,7 @@ class SessionManager:
                         _copy_kwargs = {}
                         if _reply_to_id is not None:
                             _copy_kwargs["reply_to_message_id"] = _reply_to_id
-                        await bot_client.copy_message(
+                        copied_msg = await bot_client.copy_message(
                             chat_id=target_chat_id,
                             from_chat_id=copy_source_chat_id,
                             message_id=real_msg_id,
@@ -318,7 +314,7 @@ class SessionManager:
                         )
                         _copy_ok = True
                         logger.debug(
-                            "SessionManager: copied pool message %d to user %d",
+                            "SessionManager: copied uploaded message %d to user %d",
                             real_msg_id, user_id,
                         )
                         break
@@ -352,7 +348,7 @@ class SessionManager:
                     )
                     return None
 
-            return sent_msg
+            return copied_msg or sent_msg
 
         except Exception as e:
             if is_floodwait_error(e):

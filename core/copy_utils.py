@@ -56,6 +56,33 @@ def _media_fingerprint(message: Any) -> Optional[Tuple[str, str, Optional[int], 
             str(file_name) if file_name else None,
             caption,
         )
+
+    venue = getattr(message, "venue", None)
+    if venue:
+        location = getattr(venue, "location", None)
+        latitude = getattr(location, "latitude", None)
+        longitude = getattr(location, "longitude", None)
+        if latitude is not None and longitude is not None:
+            return (
+                "venue",
+                f"{float(latitude):.7f},{float(longitude):.7f}",
+                None,
+                f"{getattr(venue, 'title', '')}|{getattr(venue, 'address', '')}",
+                caption,
+            )
+
+    location = getattr(message, "location", None)
+    if location:
+        latitude = getattr(location, "latitude", None)
+        longitude = getattr(location, "longitude", None)
+        if latitude is not None and longitude is not None:
+            return (
+                "location",
+                f"{float(latitude):.7f},{float(longitude):.7f}",
+                None,
+                None,
+                caption,
+            )
     return None
 
 

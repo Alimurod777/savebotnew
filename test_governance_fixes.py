@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from core.copy_utils import get_bot_copy_source_chat_id
+from core.copy_utils import get_bot_copy_source_chat_id, get_bot_real_message_id
 from core.channel_monitor import MonitoredChannel, channel_monitor
 from core.failure_classifier import (
     FailureCategory,
@@ -181,6 +181,66 @@ def test_copy_source_falls_back_to_message_chat_id():
     assert get_bot_copy_source_chat_id(sent) == 222
 
 
+def test_copy_utils_resolves_location_and_venue_fingerprints():
+    async def run():
+        sent_location = SimpleNamespace(
+            id=10,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=777),
+            from_user=SimpleNamespace(id=333),
+            location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
+            caption=None,
+        )
+        bot_location = SimpleNamespace(
+            id=20,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=333),
+            from_user=SimpleNamespace(id=333),
+            location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
+            caption=None,
+        )
+        sent_venue = SimpleNamespace(
+            id=11,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=777),
+            from_user=SimpleNamespace(id=333),
+            venue=SimpleNamespace(
+                location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
+                title="Tashkent",
+                address="Center",
+            ),
+            caption=None,
+        )
+        bot_venue = SimpleNamespace(
+            id=21,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=333),
+            from_user=SimpleNamespace(id=333),
+            venue=SimpleNamespace(
+                location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
+                title="Tashkent",
+                address="Center",
+            ),
+            caption=None,
+        )
+
+        class FakeBot:
+            def __init__(self, items):
+                self.items = items
+
+            def get_chat_history(self, chat_id, limit=80):
+                async def gen():
+                    for item in self.items:
+                        yield item
+
+                return gen()
+
+        assert await get_bot_real_message_id(FakeBot([bot_location]), 333, sent_location) == 20
+        assert await get_bot_real_message_id(FakeBot([bot_venue]), 333, sent_venue) == 21
+
+    asyncio.run(run())
+
+
 def test_priority_queue_spills_over_idle_capacity():
     async def run():
         pq = PriorityQueue()
@@ -230,6 +290,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             document=SimpleNamespace(file_unique_id="u1", file_size=123, file_name="a.bin"),
             caption=None,
         )
+        copied = SimpleNamespace(id=199, chat=SimpleNamespace(id=123))
         old_bot_side = SimpleNamespace(
             id=50,
             date=datetime(2023, 12, 31, tzinfo=timezone.utc),
@@ -258,6 +319,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
 
             async def copy_message(self, **kwargs):
                 self.copy_calls.append(kwargs)
+                return copied
 
             async def delete_messages(self, chat_id, message_ids):
                 self.delete_calls.append((chat_id, message_ids))
@@ -297,7 +359,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             bot_user_id=777,
         )
 
-        assert result is sent
+        assert result is copied
         assert bot.copy_calls[0]["from_chat_id"] == 222
         assert bot.copy_calls[0]["message_id"] == 99
         assert bot.delete_calls == [(222, [99])]
@@ -429,7 +491,7 @@ def test_session_manager_pool_copy_does_not_fallback_to_sender_id_when_unresolve
                 return SimpleNamespace(session_user_id=333)
 
             async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
-                assert owner_user_id == 333
+                assert owner_user_id == 123
                 return sent
 
         class FakeBot:
@@ -585,6 +647,99 @@ def test_topic_extractor_range_stops_after_anchors_found():
 
         assert [msg.id for msg in result] == [100, 1000, 50]
         assert client.calls == 2
+
+    asyncio.run(run())
+
+
+def test_topic_extractor_returns_collected_topic_messages_when_end_anchor_missing():
+    async def run():
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 8
+        messages = [
+            SimpleNamespace(id=171769, date=datetime(2024, 1, 4, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=1000, date=datetime(2024, 1, 3, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=75, date=datetime(2024, 1, 2, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=8, date=datetime(2024, 1, 1, tzinfo=timezone.utc), reply_to_top_message_id=None),
+        ]
+
+        class FakeClient:
+            def get_chat_history(self, chat_id, **kwargs):
+                async def gen():
+                    for msg in messages:
+                        yield msg
+
+                return gen()
+
+        extractor = TopicExtractor(
+            FakeClient(),
+            TopicExtractorConfig(
+                chat_id=-1002234521267,
+                topic_id=topic_id,
+                fetch_batch_size=10,
+                allow_history_scan_fallback=True,
+                use_cache=False,
+            ),
+        )
+
+        result = await extractor.extract_between(75, 171796)
+
+        assert [msg.id for msg in result] == [75, 1000, 171769]
+
+    asyncio.run(run())
+
+
+def test_topic_extractor_hydrates_existing_missing_range_anchor():
+    async def run():
+        from core.topic_extractor import TopicExtractor, TopicExtractorConfig
+
+        topic_id = 8
+        messages = [
+            SimpleNamespace(id=171769, date=datetime(2024, 1, 4, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=1000, date=datetime(2024, 1, 3, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=75, date=datetime(2024, 1, 2, tzinfo=timezone.utc), reply_to_top_message_id=topic_id),
+            SimpleNamespace(id=8, date=datetime(2024, 1, 1, tzinfo=timezone.utc), reply_to_top_message_id=None),
+        ]
+        hydrated = SimpleNamespace(
+            id=171796,
+            date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+            reply_to_top_message_id=topic_id,
+            empty=False,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.get_message_ids = []
+
+            def get_chat_history(self, chat_id, **kwargs):
+                async def gen():
+                    for msg in messages:
+                        yield msg
+
+                return gen()
+
+            async def get_messages(self, chat_id, ids, **kwargs):
+                if not isinstance(ids, list):
+                    ids = [ids]
+                self.get_message_ids.extend(ids)
+                return [hydrated for msg_id in ids if msg_id == hydrated.id]
+
+        client = FakeClient()
+        extractor = TopicExtractor(
+            client,
+            TopicExtractorConfig(
+                chat_id=-1002234521267,
+                topic_id=topic_id,
+                fetch_batch_size=10,
+                allow_history_scan_fallback=True,
+                use_cache=False,
+            ),
+        )
+
+        result = await extractor.extract_between(75, 171796)
+
+        assert [msg.id for msg in result] == [75, 1000, 171769, 171796]
+        assert 171796 in client.get_message_ids
 
     asyncio.run(run())
 

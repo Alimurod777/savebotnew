@@ -537,12 +537,19 @@ def is_message_in_topic(msg: Message, topic_id: int) -> bool:
     
     # Method 2: reply_to_top_message_id points to topic
     reply_top = getattr(msg, 'reply_to_top_message_id', None)
+    reply_to_obj = getattr(msg, 'reply_to', None)
+    if reply_top is None and reply_to_obj is not None:
+        reply_top = getattr(reply_to_obj, 'reply_to_top_message_id', None)
+        if reply_top is None:
+            reply_top = getattr(reply_to_obj, 'reply_to_top_id', None)
     if reply_top == topic_id:
         return True
     
     # Method 3: Direct reply to topic starter
     reply_to = getattr(msg, 'reply_to_message_id', None)
-    if reply_to == topic_id:
+    if reply_to is None and reply_to_obj is not None:
+        reply_to = getattr(reply_to_obj, 'reply_to_msg_id', None)
+    if reply_to == topic_id and not reply_top:
         return True
     
     return False

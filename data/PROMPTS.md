@@ -5,6 +5,70 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 17 (2026-06-29) - Source context reply anchor va user-session copy delivery
+
+### So'rov:
+Foydalanuvchi real API tekshiruvdan keyin `171796` topic 8 emas degan xulosaga e'tiroz bildirdi va owner sessiya bilan tekshirishni so'radi. Shuningdek progress xabaridan keyin linkka oid guruh/kanal nomi, forum bo'lsa forum nomi, discussion bo'lsa asosiy post matni chiqishini va keyingi user/bot yuboradigan xabarlar shu kontekst xabariga reply bo'lishini talab qildi. Ayrim user session uploadlari bot chatida reply qilmayotgani aytildi.
+
+### Natija:
+- **BUG-040** qo'shildi va hal qilindi.
+- Real API metadata xulosasi saqlandi: `171796` mavjud, lekin topic 8 emas (`message_thread_id=1`, `reply_to_top_message_id=171777`, `reply_to_message_id=171790`).
+- `_send_source_context_message()` qo'shildi: bot progressdan keyin `Manba`, forum topic nomi yoki discussion root preview xabarini yuboradi.
+- `ParsedURL.thread_root_id` qo'shildi; thread range linklarda ham asosiy discussion post previewi yo'qolmaydi.
+- `process_thread_comments()` delivery pathlari source contextga reply qiladi.
+- Topic/private/public/bot delivery pathlarida source context anchor ishlatiladi; private/public user-session flowlarda source metadata `acc.get_chat()` va birinchi post orqali olinadi.
+- `_enqueue_media_delivery()` hamma sessiyalar uchun bot-side resolve/copy/delete patterniga o'tdi, shunda user-owned session upload ham reply contextni bot copy bosqichida oladi.
+- Direct premium `>2GB` worker upload ham `_enqueue_media_delivery()` orqali yuradi.
+- Photo-only album, album fallback photo, split chunk, premium direct failure split fallback, location va venue yo'llari ham bot-side resolved copy/delete orqali source contextga reply qiladi.
+- Upload source chat endi `target_user_id` deb faraz qilinmaydi; user/session account ID `acc.get_me()` bilan kesh qilinadi, shunda system/channel monitor sessiyalarida ham copy to'g'ri DMdan olinadi.
+- Overflow caption textlari ham source contextga reply qilib yuboriladi.
+
+### Tekshiruv:
+- `.\venv\Scripts\python.exe -m py_compile TechVJ\save.py core\copy_utils.py core\session_manager\session_manager.py core\topic_extractor.py core\guards.py test_governance_fixes.py test\real_topic_debug.py` - OK
+- Venv manual runner bilan `test_governance_fixes.py`: 26/26 PASS
+- Global `python -m pytest -q test_governance_fixes.py`: 24 PASS, 1 FAIL faqat global Python muhitida `psutil` yo'qligi sabab; venvda `psutil` bor, lekin `pytest` o'rnatilmagan.
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `core/copy_utils.py`
+- `core/session_manager/session_manager.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## Sessiya 16 (2026-06-29) - Topic anchor direct hydrate va deleted sender holati
+
+### So'rov:
+Foydalanuvchi production log berdi: topic `8` uchun raw metadata `top_message=171769` va extractor `21 messages` yig'gan, lekin range anchor `171796` topilmadi deb fallbackga tushgan. Foydalanuvchi `171796` xabar mavjudligini, xabarni yuborgan account o'chganini aytdi.
+
+### Natija:
+- **BUG-039** qo'shildi va hal qilindi.
+- `TopicExtractor.extract_between()` katta range'ni scan qilmasdan missing anchor IDlarni alohida hydrate qiladi (`channels.GetMessages`/`get_messages` batch).
+- Direct range probe endi faqat anchor hydrate'dan keyin va faqat kichik spanlarda ishlaydi; `75..171796` kabi range kengaytirilmaydi.
+- `_is_topic_message()` senderga bog'lanmaydi; `message_thread_id` mos kelsa qabul qiladi, mos kelmasa `reply_to_top_message_id`, nested `reply_to_top_id`, `reply_to_message_id`/`reply_to_msg_id` bilan tekshiradi.
+- Anchor baribir inaccessible bo'lsa, extractor yig'ilgan topic xabarlarini numeric bounds ichida qaytaradi; 21 valid xabar tashlab yuborilmaydi.
+- `test/real_topic_debug.py` CLI target override va katta-span direct fetch himoyasi bilan yangilandi.
+- Real API smoke: `171796` mavjud, lekin API metadata bo'yicha `message_thread_id=1`, `reply_to_top_message_id=171777`, `reply_to_message_id=171790`; topic 8 emas. Extractor topic 8 ichidagi 20 ta xabarni chronological tartibda qaytardi va `171796`ni noto'g'ri topicga qo'shmadi.
+
+### Tekshiruv:
+- `python -m py_compile core\topic_extractor.py test_governance_fixes.py test\real_topic_debug.py` - OK
+- TopicExtractor focused regression runner - OK
+- `python test\real_topic_debug.py --help` - OK
+- `python test\real_topic_debug.py --use-owner-db-session --chat-id -1002234521267 --topic-id 8 --range 75-171796 --expected-ids 75,171796 --expected-mode subset --jsonl test\artifacts\topic_8_debug.jsonl --quiet` - real API ishladi; expected `171796` topic 8 metadata'siz qaytgani uchun final expected-ID check FAIL, lekin extractor crash qilmadi va topic 8 xabarlarini qaytardi.
+- `TechVJ.save` importli bitta test `psutil` yo'qligi sabab o'tkazilmadi; bu dependency muammosi topic extractor fixiga bog'liq emas.
+
+### O'zgartirilgan fayllar:
+- `core/topic_extractor.py`
+- `TechVJ/save.py`
+- `core/guards.py`
+- `test_governance_fixes.py`
+- `test/real_topic_debug.py`
+- `test/README.md`
+- `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## Sessiya 15 (2026-06-20) - Topic extraction raw-first + cache
 
 ### So'rov:

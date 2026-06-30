@@ -373,13 +373,13 @@ def _prepare_upload_send_kwargs(send_kwargs: dict, is_pool_session: bool) -> Tup
     user session uploads to bot_user_id where the user's message ID doesn't
     exist. The reply context is applied later via copy_message.
     """
-    direct_send_kwargs = dict(send_kwargs)
     upload_send_kwargs = dict(send_kwargs)
 
     # Always strip reply context — user session uploads to bot_user_id
     # where the original user message doesn't exist (BUG-018 fix)
     upload_send_kwargs.pop("reply_to_message_id", None)
     upload_send_kwargs.pop("reply_parameters", None)
+    direct_send_kwargs = dict(upload_send_kwargs)
 
     return upload_send_kwargs, direct_send_kwargs
 
@@ -398,24 +398,20 @@ async def _enqueue_media_delivery(
     """
     Enqueue upload task and copy the result to the user with reply context.
 
-    Pool sessions: upload → bot DM of pool account → resolve real message ID
-    → copy_message to user → delete intermediate.
-
-    Non-pool sessions: upload → user's own bot DM → message is directly
-    visible to the user, no copy needed.
+    All sessions: upload → uploader↔bot DM → resolve real bot-side message ID
+    → copy_message to user with reply context → delete intermediate.
     """
     # ── Pre-upload watermark (pool only) ──────────────────────────────────
     copy_source_chat_id = None
     pre_upload_latest_id = None
 
-    if is_pool_session:
-        expected_source_chat_id = getattr(worker, "session_user_id", None)
-        if expected_source_chat_id is None:
-            raise PoolDeliveryError("Could not determine uploader account before upload")
-        copy_source_chat_id = int(expected_source_chat_id)
-        pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
-        if pre_upload_latest_id is None:
-            raise PoolDeliveryError("Could not read bot-side upload watermark")
+    expected_source_chat_id = getattr(worker, "session_user_id", None)
+    if expected_source_chat_id is None:
+        raise PoolDeliveryError("Could not determine uploader account before upload")
+    copy_source_chat_id = int(expected_source_chat_id)
+    pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
+    if pre_upload_latest_id is None:
+        raise PoolDeliveryError("Could not read bot-side upload watermark")
 
     # ── Enqueue upload ────────────────────────────────────────────────────
     upload_task = task_factory(send_fn=send_fn, is_media=True, owner_user_id=int(target_user_id))
@@ -424,9 +420,6 @@ async def _enqueue_media_delivery(
         return sent
 
     # ── Non-pool: message already visible in user's bot DM ────────────────
-    if not is_pool_session:
-        return sent
-
     # ── Pool: copy from pool↔bot DM to user chat ─────────────────────────
     detected_source_chat_id = get_bot_copy_source_chat_id(
         sent, getattr(getattr(sent, "chat", None), "id", None)
@@ -457,9 +450,10 @@ async def _enqueue_media_delivery(
         raise PoolDeliveryError(str(resolve_err)) from resolve_err
 
     copy_ok = False
+    copied_msg = None
     for copy_try in range(3):
         try:
-            await bot_client.copy_message(
+            copied_msg = await bot_client.copy_message(
                 chat_id=target_user_id,
                 from_chat_id=copy_source_chat_id,
                 message_id=real_msg_id,
@@ -485,7 +479,7 @@ async def _enqueue_media_delivery(
             await bot_client.delete_messages(copy_source_chat_id, [real_msg_id])
         except Exception:
             pass
-        return sent
+        return copied_msg or sent
 
     # copy failed — keep intermediate msg for recovery, raise error
     logger.error(
@@ -495,6 +489,126 @@ async def _enqueue_media_delivery(
     raise PoolDeliveryError(
         f"Pool upload reached intermediate chat but delivery to user {target_user_id} failed"
     )
+
+
+async def _copy_user_session_upload_to_user(
+    *,
+    bot_client: Client,
+    sent_message,
+    source_user_id: int,
+    target_user_id: int,
+    request_message,
+    pre_upload_latest_id: Optional[int],
+    reply_kwargs_builder=build_reply_kwargs_from_message,
+) -> Optional[Message]:
+    """
+    Copy a message uploaded by a user session to the bot DM back to the user.
+
+    User-session uploads see sender-side message IDs. The bot must resolve the
+    matching receiver-side ID before copy/delete; otherwise replies can attach
+    to the wrong message or disappear.
+    """
+    if sent_message is None:
+        return None
+    if pre_upload_latest_id is None:
+        logger.warning(
+            "copy_message skipped: missing bot-side watermark source=%s target=%s sent_id=%s",
+            source_user_id,
+            target_user_id,
+            getattr(sent_message, "id", None),
+        )
+        return None
+
+    copy_source_chat_id = int(source_user_id)
+    detected_source_chat_id = get_bot_copy_source_chat_id(
+        sent_message,
+        copy_source_chat_id,
+    )
+    if detected_source_chat_id is not None and int(detected_source_chat_id) != copy_source_chat_id:
+        logger.warning(
+            "copy_message skipped: source mismatch expected=%s detected=%s sent_id=%s",
+            copy_source_chat_id,
+            detected_source_chat_id,
+            getattr(sent_message, "id", None),
+        )
+        return None
+
+    try:
+        real_msg_id = await get_bot_real_message_id(
+            bot_client,
+            copy_source_chat_id,
+            sent_message,
+            min_message_id=pre_upload_latest_id,
+        )
+    except BotMessageResolutionError as resolve_err:
+        logger.warning(
+            "copy_message skipped: could not resolve bot-side message id chat=%s sent_id=%s: %s",
+            copy_source_chat_id,
+            getattr(sent_message, "id", None),
+            resolve_err,
+        )
+        return None
+
+    copied_msg = None
+    for copy_try in range(3):
+        try:
+            copied_msg = await bot_client.copy_message(
+                chat_id=target_user_id,
+                from_chat_id=copy_source_chat_id,
+                message_id=real_msg_id,
+                **reply_kwargs_builder(request_message),
+            )
+            try:
+                await bot_client.delete_messages(copy_source_chat_id, [real_msg_id])
+            except Exception:
+                pass
+            return copied_msg
+        except FloodWait as copy_wait:
+            wait_seconds = getattr(copy_wait, "value", getattr(copy_wait, "x", 10))
+            logger.warning("copy_message FloodWait %ds - retrying", wait_seconds)
+            await asyncio.sleep(min(wait_seconds, 30))
+        except Exception as copy_err:
+            logger.warning(
+                "copy_message to user failed (attempt %d): %s",
+                copy_try + 1,
+                copy_err,
+            )
+            if copy_try < 2:
+                await asyncio.sleep(1.0 * (copy_try + 1))
+
+    logger.error(
+        "copy_message failed after 3 attempts - keeping intermediate msg in chat %s",
+        copy_source_chat_id,
+    )
+    return None
+
+
+async def _get_user_session_account_id(acc, fallback_user_id: int) -> int:
+    """Return the Telegram user id of the MTProto account doing the upload."""
+    cached = getattr(acc, "_techvj_session_user_id", None)
+    if cached is not None:
+        try:
+            return int(cached)
+        except Exception:
+            pass
+
+    try:
+        me = getattr(acc, "me", None)
+        me_id = getattr(me, "id", None)
+        if me_id is None:
+            me = await asyncio.wait_for(acc.get_me(), timeout=10.0)
+            me_id = getattr(me, "id", None)
+        if me_id is not None:
+            me_id = int(me_id)
+            try:
+                setattr(acc, "_techvj_session_user_id", me_id)
+            except Exception:
+                pass
+            return me_id
+    except Exception as err:
+        logger.debug("user session account id lookup skipped: %s", err)
+
+    return int(fallback_user_id)
 
 
 def _get_user_session_target_chat_id(bot_client: Client, fallback_chat_id: int) -> int:
@@ -632,6 +746,7 @@ class ParsedURL:
         topic_id: int = None,
         thread_id: int = None,
         topic_range_anchor: Optional[Tuple[int, int]] = None,
+        thread_root_id: Optional[int] = None,
     ):
         self.channel_id = channel_id
         self.post_ids = post_ids
@@ -639,6 +754,7 @@ class ParsedURL:
         self.topic_id = topic_id  # For topic links: https://t.me/c/CHAT/TOPIC/MSG
         self.thread_id = thread_id  # For thread links: ?thread=ID
         self.topic_range_anchor = topic_range_anchor
+        self.thread_root_id = thread_root_id
     
     @property
     def is_topic(self) -> bool:
@@ -656,6 +772,8 @@ class ParsedURL:
             extra = f", thread_id={self.thread_id}"
         if self.topic_range_anchor:
             extra += f", topic_range_anchor={self.topic_range_anchor}"
+        if self.thread_root_id:
+            extra += f", thread_root_id={self.thread_root_id}"
         return f"ParsedURL(channel_id={self.channel_id}, post_ids={self.post_ids}, type={self.url_type}{extra})"
 
 
@@ -668,18 +786,22 @@ def _message_belongs_to_topic(msg: Message, topic_id: int) -> bool:
         return True
 
     thread_id = getattr(msg, "message_thread_id", None)
-    if thread_id is not None:
-        return thread_id == topic_id
+    if thread_id == topic_id:
+        return True
 
     reply_top = getattr(msg, "reply_to_top_message_id", None)
+    reply_to_obj = getattr(msg, "reply_to", None)
     if reply_top is None:
-        reply_to_obj = getattr(msg, "reply_to", None)
         if reply_to_obj is not None:
             reply_top = getattr(reply_to_obj, "reply_to_top_message_id", None)
+            if reply_top is None:
+                reply_top = getattr(reply_to_obj, "reply_to_top_id", None)
     if reply_top == topic_id:
         return True
 
     reply_to = getattr(msg, "reply_to_message_id", None)
+    if reply_to is None and reply_to_obj is not None:
+        reply_to = getattr(reply_to_obj, "reply_to_msg_id", None)
     return reply_to == topic_id and not reply_top
 
 
@@ -803,7 +925,13 @@ def parse_thread_url(url: str) -> Optional[ParsedURL]:
         else:
             post_ids = list(range(range_start, range_end - 1, -1))
         
-        return ParsedURL(channel_id, post_ids, "thread", thread_id=thread_id)
+        return ParsedURL(
+            channel_id,
+            post_ids,
+            "thread",
+            thread_id=thread_id,
+            thread_root_id=post_id,
+        )
     
     # Thread link single: /c/CHAT/MSG?thread=ID
     thread_match = re.match(r'^https?://t\.me/c/(\d+)/(\d+)\?thread=(\d+)$', url)
@@ -811,7 +939,13 @@ def parse_thread_url(url: str) -> Optional[ParsedURL]:
         channel_id = int("-100" + thread_match.group(1))
         post_id = int(thread_match.group(2))
         thread_id = int(thread_match.group(3))
-        return ParsedURL(channel_id, [post_id], "thread", thread_id=thread_id)
+        return ParsedURL(
+            channel_id,
+            [post_id],
+            "thread",
+            thread_id=thread_id,
+            thread_root_id=post_id,
+        )
     
     return None
 
@@ -1214,6 +1348,75 @@ def _owner_diag_retry_url(
     if thread_id and not topic_id:
         return f"{base}?thread={thread_id}"
     return base
+
+
+def _source_preview_text(msg: Any, limit: int = 700) -> str:
+    text = (
+        getattr(msg, "text", None)
+        or getattr(msg, "caption", None)
+        or getattr(msg, "message", None)
+        or ""
+    )
+    text = str(text).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+async def _send_source_context_message(
+    client: Client,
+    *,
+    user_id: int,
+    parsed: Optional[ParsedURL],
+    source_chat: Any = None,
+    source_msg: Any = None,
+    topic_msg: Any = None,
+    raw_topic: Any = None,
+    request_message: Optional[Message] = None,
+) -> Optional[Message]:
+    """Send a bot-authored source header used as reply anchor for results."""
+    try:
+        title = getattr(source_chat, "title", None) or getattr(source_chat, "username", None)
+        if not title:
+            title = str(getattr(parsed, "channel_id", "") or "Unknown")
+
+        lines = [f"Manba: {title}"]
+        if getattr(parsed, "topic_id", None):
+            topic_title = (
+                getattr(raw_topic, "title", None)
+                or getattr(getattr(source_msg, "topic", None), "title", None)
+                or getattr(getattr(topic_msg, "topic", None), "title", None)
+            )
+            if topic_title:
+                lines.append(f"Forum: {topic_title}")
+            else:
+                lines.append(f"Forum topic: {parsed.topic_id}")
+
+        if getattr(parsed, "thread_id", None):
+            preview = _source_preview_text(source_msg or topic_msg)
+            if preview:
+                lines.append("Discussion:")
+                lines.append(preview)
+            else:
+                lines.append(f"Discussion thread: {parsed.thread_id}")
+        elif not getattr(parsed, "topic_id", None):
+            preview = _source_preview_text(source_msg)
+            if preview:
+                lines.append("Post:")
+                lines.append(preview)
+
+        text = "\n\n".join(lines)
+        return await client.send_message(
+            user_id,
+            text,
+            disable_web_page_preview=True,
+            **build_reply_kwargs_from_message(request_message),
+        )
+    except Exception as err:
+        logger.debug("source context message skipped: %s", err)
+        return None
 
 
 async def _log_failed_download_local(
@@ -3777,6 +3980,27 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             ) as acc:
                 await _resolve_peer_safe(acc, channel_id, ctx)
                 try:
+                    source_chat = None
+                    thread_root_msg = None
+                    try:
+                        source_chat = await acc.get_chat(channel_id)
+                    except Exception as chat_err:
+                        logger.debug("Thread source chat lookup skipped: %s", chat_err)
+                    try:
+                        root_id = getattr(parsed, "thread_root_id", None) or thread_id
+                        thread_root_msg = await acc.get_messages(channel_id, root_id)
+                        if thread_root_msg and getattr(thread_root_msg, "empty", False):
+                            thread_root_msg = None
+                    except Exception as root_err:
+                        logger.debug("Thread root message lookup skipped: %s", root_err)
+                    source_context_msg = await _send_source_context_message(
+                        client,
+                        user_id=user_id,
+                        parsed=parsed,
+                        source_chat=source_chat,
+                        source_msg=thread_root_msg,
+                        request_message=message,
+                    ) or message
                     comments = []
                     
                     # ================================================================
@@ -3926,7 +4150,10 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                         album_success = await download_and_send_media(
                                             client,
                                             acc,
-                                            _make_reply_target_message(user_id, getattr(message, "id", None)),
+                                            _make_reply_target_message(
+                                                user_id,
+                                                getattr(source_context_msg, "id", None),
+                                            ),
                                             comment,
                                             get_message_type(comment),
                                             temp_dir,
@@ -3937,7 +4164,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                     elif _is_photo_only_group(album_msgs):
                                         album_success = await process_album_messages(
                                             client, acc, user_id, album_msgs, temp_dir, pipeline,
-                                            request_message=message,
+                                            request_message=source_context_msg,
                                             session_string=session_string,
                                             context=ctx,
                                         )
@@ -3949,7 +4176,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                             album_msgs,
                                             temp_dir,
                                             pipeline,
-                                            request_message=message,
+                                            request_message=source_context_msg,
                                             session_string=session_string,
                                             context=ctx,
                                         )
@@ -3964,7 +4191,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                 # Process single comment
                                 success = await send_comment_to_user(
                                     client, acc, user_id, comment, temp_dir, pipeline,
-                                    request_message=message,
+                                    request_message=source_context_msg,
                                     session_string=session_string,
                                     context=ctx,
                                 )
@@ -4262,6 +4489,17 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     logger.warning(f"Could not validate topic: {e}")
                     # Continue anyway
                     # Continue anyway
+
+                source_context_msg = await _send_source_context_message(
+                    client,
+                    user_id=user_id,
+                    parsed=parsed,
+                    source_chat=chat if "chat" in locals() else None,
+                    source_msg=topic_msg if "topic_msg" in locals() else None,
+                    topic_msg=topic_msg if "topic_msg" in locals() else None,
+                    raw_topic=raw_topic,
+                    request_message=message,
+                ) or message
                 
                 processed = 0
                 failed = 0
@@ -4464,7 +4702,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                     album_success = await download_and_send_media(
                                         client,
                                         acc,
-                                        _make_reply_target_message(user_id, getattr(message, "id", None)),
+                                        _make_reply_target_message(user_id, getattr(source_context_msg, "id", None)),
                                         msg,
                                         get_message_type(msg),
                                         temp_dir,
@@ -4475,7 +4713,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 elif _is_photo_only_group(album_msgs):
                                     album_success = await process_album_messages(
                                         client, acc, user_id, album_msgs, temp_dir, pipeline,
-                                        request_message=message,
+                                        request_message=source_context_msg,
                                         session_string=session_string,
                                         context=ctx,
                                     )
@@ -4487,7 +4725,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                         album_msgs,
                                         temp_dir,
                                         pipeline,
-                                        request_message=message,
+                                        request_message=source_context_msg,
                                         session_string=session_string,
                                         context=ctx,
                                     )
@@ -4537,7 +4775,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                             # Single message
                             success = await process_single_topic_message(
                                 client, acc, user_id, msg, temp_dir, pipeline,
-                                request_message=message,
+                                request_message=source_context_msg,
                                 session_string=session_string,
                                 context=ctx,
                             )
@@ -4873,11 +5111,34 @@ async def process_album_messages(
                 # Send as photo album via user session
                 try:
                     _target_chat_id = _get_user_session_target_chat_id(client, user_id)
-                    await acc.send_media_group(
+                    _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+                    _pre_album_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                    _sent_album = await acc.send_media_group(
                         _target_chat_id,
                         media_list,
-                        **build_reply_kwargs_from_message(request_message),
                     )
+                    _sent_album_messages = list(_sent_album or [])
+                    _copied_album_count = 0
+                    for _sent_album_msg in _sent_album_messages:
+                        _copied_album_msg = await _copy_user_session_upload_to_user(
+                            bot_client=client,
+                            sent_message=_sent_album_msg,
+                            source_user_id=_upload_source_user_id,
+                            target_user_id=user_id,
+                            request_message=request_message,
+                            pre_upload_latest_id=_pre_album_latest_id,
+                        )
+                        if _copied_album_msg:
+                            _copied_album_count += 1
+                    if not _sent_album_messages or _copied_album_count != len(_sent_album_messages):
+                        logger.warning(
+                            "album copy delivery incomplete for user %s copied=%s/%s; intermediate bot-DM album kept",
+                            user_id,
+                            _copied_album_count,
+                            len(_sent_album_messages),
+                        )
+                        _cleanup_files(downloaded_files)
+                        return False
 
                     # Overflow caption text always via bot client (not user session —
                     # user session text triggers the bot's link handler if caption
@@ -4914,16 +5175,29 @@ async def process_album_messages(
 
             # Fallback: send photos individually via user session
             _target_chat_id = _get_user_session_target_chat_id(client, user_id)
+            _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
             for idx, media in enumerate(media_list):
                 try:
                     # Only first photo gets caption in fallback too
                     cap = media.caption if idx == 0 else None
-                    await acc.send_photo(
+                    _pre_photo_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                    _sent_photo = await acc.send_photo(
                         _target_chat_id,
                         media.media,
                         caption=cap,
-                        **build_reply_kwargs_from_message(request_message),
                     )
+                    _copied_photo = await _copy_user_session_upload_to_user(
+                        bot_client=client,
+                        sent_message=_sent_photo,
+                        source_user_id=_upload_source_user_id,
+                        target_user_id=user_id,
+                        request_message=request_message,
+                        pre_upload_latest_id=_pre_photo_latest_id,
+                    )
+                    if not _copied_photo:
+                        logger.warning("album fallback photo copy delivery failed for user %s", user_id)
+                        _cleanup_files(downloaded_files)
+                        return False
                     await asyncio.sleep(1)
                 except Exception as send_err:
                     logger.warning(f"Photo send error: {send_err}")
@@ -5053,13 +5327,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 f"⏳ {total_posts} ta post yuklanmoqda...",
                 **build_reply_kwargs_from_message(message)
             )
-            
-            # Pin status message so user can always find it
-            if total_posts > 1:
-                try:
-                    await client.pin_chat_message(user_id, status_msg.id, disable_notification=True)
-                except Exception:
-                    pass
+
+            source_context_msg = None
             
             # Use album-aware iterator
             iterator = AlbumAwareIterator(parsed.post_ids)
@@ -5084,6 +5353,36 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     peers_to_resolve=[parsed.channel_id],
                 ) as acc:
                     await _resolve_peer_safe(acc, parsed.channel_id, ctx)
+                    if source_context_msg is None:
+                        source_chat = None
+                        source_msg = None
+                        try:
+                            source_chat = await acc.get_chat(parsed.channel_id)
+                        except Exception:
+                            source_chat = None
+                        try:
+                            first_post_id = parsed.post_ids[0] if parsed.post_ids else None
+                            if first_post_id is not None:
+                                source_msg = await acc.get_messages(parsed.channel_id, first_post_id)
+                                if source_msg and getattr(source_msg, "empty", False):
+                                    source_msg = None
+                        except Exception:
+                            source_msg = None
+                        source_context_msg = await _send_source_context_message(
+                            client,
+                            user_id=user_id,
+                            parsed=parsed,
+                            source_chat=source_chat,
+                            source_msg=source_msg,
+                            request_message=message,
+                        ) or message
+                        # Pin after the source context message so the visible
+                        # order remains: progress/status, source, delivered posts.
+                        if total_posts > 1:
+                            try:
+                                await client.pin_chat_message(user_id, status_msg.id, disable_notification=True)
+                            except Exception:
+                                pass
                     while True:
                         # Check for cancellation
                         if await pipeline.check_cancelled():
@@ -5149,7 +5448,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                     target_chat_id=user_id,
                                     source_chat_id=parsed.channel_id,
                                     message_id=post_id,
-                                    reply_to_message_id=message.id,
+                                    reply_to_message_id=getattr(source_context_msg, "id", message.id),
                                     check_cancelled=pipeline.check_cancelled,
                                     sent_albums=iterator.processed_albums,
                                 )
@@ -5190,7 +5489,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             else:
                                 # Not an album - process single message
                                 result = await process_single_post(
-                                    client, acc, message,
+                                    client, acc, source_context_msg,
                                     parsed.channel_id, post_id,
                                     temp_dir, pipeline,
                                     session_string=session_string,
@@ -5383,6 +5682,12 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
             user_id, f"Processing {total_posts} public posts...",
             **build_reply_kwargs_from_message(message)
         )
+        source_chat = None
+        try:
+            source_chat = await client.get_chat(parsed.channel_id)
+        except Exception:
+            source_chat = None
+        source_context_msg = None
         
         processed = 0
         _p_batch = BatchController(user_id) if _THROTTLE_AVAILABLE else None
@@ -5397,6 +5702,27 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                 peers_to_resolve=[parsed.channel_id],
             ) as acc:
                 await _resolve_peer_safe(acc, parsed.channel_id, ctx)
+                source_msg = None
+                try:
+                    source_chat = await acc.get_chat(parsed.channel_id)
+                except Exception:
+                    pass
+                try:
+                    first_post_id = parsed.post_ids[0] if parsed.post_ids else None
+                    if first_post_id is not None:
+                        source_msg = await acc.get_messages(parsed.channel_id, first_post_id)
+                        if source_msg and getattr(source_msg, "empty", False):
+                            source_msg = None
+                except Exception:
+                    source_msg = None
+                source_context_msg = await _send_source_context_message(
+                    client,
+                    user_id=user_id,
+                    parsed=parsed,
+                    source_chat=source_chat,
+                    source_msg=source_msg,
+                    request_message=message,
+                ) or message
                 for idx, post_id in enumerate(parsed.post_ids):
                     await ping_activity(user_id)
                     if await pipeline.check_cancelled():
@@ -5410,7 +5736,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
 
                     try:
                         result = await process_single_post(
-                            client, acc, message, parsed.channel_id, post_id, None, pipeline,
+                            client, acc, source_context_msg, parsed.channel_id, post_id, None, pipeline,
                             session_string=session_string,
                             context=ctx.with_client_type("user_session"),
                         )
@@ -5478,6 +5804,13 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
 
                     await asyncio.sleep(2)
         else:
+            source_context_msg = await _send_source_context_message(
+                client,
+                user_id=user_id,
+                parsed=parsed,
+                source_chat=source_chat,
+                request_message=message,
+            ) or message
             for idx, post_id in enumerate(parsed.post_ids):
                 await ping_activity(user_id)
                 if await pipeline.check_cancelled():
@@ -5491,7 +5824,12 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
 
                 try:
                     msg = await client.get_messages(parsed.channel_id, post_id)
-                    await client.copy_message(user_id, msg.chat.id, msg.id, **build_reply_kwargs_from_message(message))
+                    await client.copy_message(
+                        user_id,
+                        msg.chat.id,
+                        msg.id,
+                        **build_reply_kwargs_from_message(source_context_msg),
+                    )
                     processed += 1
                     if _p_batch:
                         _p_batch.record_success()
@@ -5583,11 +5921,23 @@ async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL,
     
     try:
         async with StopSafePipeline(user_id, task_manager) as pipeline:
+            source_chat = None
+            try:
+                source_chat = await client.get_chat(parsed.channel_id)
+            except Exception:
+                source_chat = None
+            source_context_msg = await _send_source_context_message(
+                client,
+                user_id=user_id,
+                parsed=parsed,
+                source_chat=source_chat,
+                request_message=message,
+            ) or message
             for post_id in parsed.post_ids:
                 if await pipeline.check_cancelled():
                     return
                 await process_single_post(
-                    client, acc, message, parsed.channel_id, post_id, None, pipeline,
+                    client, acc, source_context_msg, parsed.channel_id, post_id, None, pipeline,
                     session_string=user_data['session'],
                     context=ctx,
                 )
@@ -5683,24 +6033,22 @@ async def process_single_post(
             loc = msg.location
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
+                upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+                pre_upload_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
                 loc_msg = await acc.send_location(
                     chat_id=target_chat_id,
                     latitude=loc.latitude,
                     longitude=loc.longitude,
                 )
-                # Copy to user with reply context (BUG-018 fix)
-                if loc_msg and message and getattr(message, 'id', None):
-                    try:
-                        await client.copy_message(
-                            chat_id=user_id,
-                            from_chat_id=loc_msg.chat.id,
-                            message_id=loc_msg.id,
-                            **build_reply_kwargs_from_message(message),
-                        )
-                        await client.delete_messages(loc_msg.chat.id, [loc_msg.id])
-                    except Exception:
-                        pass  # Intermediate msg still visible
-                return True
+                copied_loc = await _copy_user_session_upload_to_user(
+                    bot_client=client,
+                    sent_message=loc_msg,
+                    source_user_id=upload_source_user_id,
+                    target_user_id=user_id,
+                    request_message=message,
+                    pre_upload_latest_id=pre_upload_latest_id,
+                )
+                return bool(copied_loc)
             except Exception as e:
                 logger.warning(f"send_location error: {e}")
                 await _notify_failure("send_location", "location send/copy failed", e, msg)
@@ -5711,6 +6059,8 @@ async def process_single_post(
             venue = msg.venue
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
+                upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+                pre_upload_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
                 venue_msg = await acc.send_venue(
                     chat_id=target_chat_id,
                     latitude=venue.location.latitude,
@@ -5718,19 +6068,15 @@ async def process_single_post(
                     title=venue.title,
                     address=venue.address,
                 )
-                # Copy to user with reply context (BUG-018 fix)
-                if venue_msg and message and getattr(message, 'id', None):
-                    try:
-                        await client.copy_message(
-                            chat_id=user_id,
-                            from_chat_id=venue_msg.chat.id,
-                            message_id=venue_msg.id,
-                            **build_reply_kwargs_from_message(message),
-                        )
-                        await client.delete_messages(venue_msg.chat.id, [venue_msg.id])
-                    except Exception:
-                        pass
-                return True
+                copied_venue = await _copy_user_session_upload_to_user(
+                    bot_client=client,
+                    sent_message=venue_msg,
+                    source_user_id=upload_source_user_id,
+                    target_user_id=user_id,
+                    request_message=message,
+                    pre_upload_latest_id=pre_upload_latest_id,
+                )
+                return bool(copied_venue)
             except Exception as e:
                 logger.warning(f"send_venue error: {e}")
                 await _notify_failure("send_venue", "venue send/copy failed", e, msg)
@@ -6157,6 +6503,7 @@ async def download_and_send_media(
                         cleanup_chunks(chunk_paths)
                         return False
                     total_parts = len(chunk_paths)
+                    upload_source_user_id = await _get_user_session_account_id(acc, user_id)
 
                     for i, chunk_path in enumerate(chunk_paths):
                         if await pipeline.check_cancelled():
@@ -6185,7 +6532,7 @@ async def download_and_send_media(
                         part_thumb_path = None
                         if msg_type != "Document" and is_video_file(chunk_path):
                             part_video_meta, part_thumb_path = await _get_local_video_artifacts(chunk_path, msg)
-                            part_video_kwargs = dict(build_reply_kwargs_from_message(message))
+                            part_video_kwargs = {}
                             part_video_kwargs["caption"] = part_caption
                             part_video_kwargs["supports_streaming"] = True
                             if part_thumb_path:
@@ -6196,18 +6543,40 @@ async def download_and_send_media(
                                 part_video_kwargs["width"] = part_video_meta["width"]
                             if part_video_meta.get("height") is not None:
                                 part_video_kwargs["height"] = part_video_meta["height"]
-                            await acc.send_video(
+                            _pre_part_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                            _sent_part = await acc.send_video(
                                 split_target_chat_id,
                                 chunk_path,
                                 **part_video_kwargs,
                             )
                         else:
-                            await acc.send_document(
+                            _pre_part_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                            _sent_part = await acc.send_document(
                                 split_target_chat_id, chunk_path,
                                 caption=part_caption,
                                 force_document=True,
-                                **build_reply_kwargs_from_message(message)
                             )
+                        _copied_part = await _copy_user_session_upload_to_user(
+                            bot_client=client,
+                            sent_message=_sent_part,
+                            source_user_id=upload_source_user_id,
+                            target_user_id=ctx_target_chat_id,
+                            request_message=message,
+                            pre_upload_latest_id=_pre_part_latest_id,
+                        )
+                        if not _copied_part:
+                            logger.error("Split part copy delivery failed for user %s part %s/%s", user_id, part_num, total_parts)
+                            try:
+                                os.remove(chunk_path)
+                            except Exception:
+                                pass
+                            if part_thumb_path and os.path.exists(part_thumb_path):
+                                try:
+                                    os.remove(part_thumb_path)
+                                except Exception:
+                                    pass
+                            cleanup_chunks(chunk_paths[i + 1:])
+                            return False
 
                         try:
                             os.remove(chunk_path)
@@ -6328,6 +6697,7 @@ async def download_and_send_media(
                     _send_kwargs["height"] = local_video_meta["height"]
             if thumb_path:
                 _send_kwargs["thumb"] = thumb_path
+            _upload_send_kwargs, _ = _prepare_upload_send_kwargs(_send_kwargs, False)
 
             _video_meta = None
             _thumb_path = thumb_path
@@ -6354,7 +6724,7 @@ async def download_and_send_media(
                 target_chat_id=_target_chat_id,
                 msg_type=msg_type,
                 file_path=file_path,
-                send_kwargs=_send_kwargs,
+                send_kwargs=_upload_send_kwargs,
                 video_meta=_video_meta,
                 thumb_path=_thumb_path,
                 progress_cb=upload_cb,
@@ -6362,7 +6732,15 @@ async def download_and_send_media(
             )
 
             try:
-                await _worker.enqueue(_UT(send_fn=_send_fn, is_media=True))
+                await _enqueue_media_delivery(
+                    worker=_worker,
+                    send_fn=_send_fn,
+                    task_factory=_UT,
+                    is_pool_session=False,
+                    bot_client=client,
+                    target_user_id=ctx_user_id,
+                    request_message=message,
+                )
             except Exception as _prem_direct_err:
                 logger.warning(
                     "Direct premium worker upload failed for user %d; falling back to split: %s",
@@ -6385,6 +6763,7 @@ async def download_and_send_media(
                         cleanup_chunks(_chunks)
                         return False
                     _total = len(_chunks)
+                    _upload_source_user_id = await _get_user_session_account_id(acc, _uid)
                     for _i, _cp in enumerate(_chunks):
                         if await pipeline.check_cancelled():
                             cleanup_chunks(_chunks[_i:])
@@ -6409,7 +6788,7 @@ async def download_and_send_media(
                         _part_thumb_path = None
                         if msg_type != "Document" and is_video_file(_cp):
                             _part_video_meta, _part_thumb_path = await _get_local_video_artifacts(_cp, msg)
-                            _part_video_kwargs = dict(build_reply_kwargs_from_message(message))
+                            _part_video_kwargs = {}
                             _part_video_kwargs["caption"] = _pcap
                             _part_video_kwargs["supports_streaming"] = True
                             if _part_thumb_path:
@@ -6420,19 +6799,41 @@ async def download_and_send_media(
                                 _part_video_kwargs["width"] = _part_video_meta["width"]
                             if _part_video_meta.get("height") is not None:
                                 _part_video_kwargs["height"] = _part_video_meta["height"]
-                            await acc.send_video(
+                            _pre_part_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                            _sent_part = await acc.send_video(
                                 split_target_chat_id,
                                 _cp,
                                 **_part_video_kwargs,
                             )
                         else:
-                            await acc.send_document(
+                            _pre_part_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                            _sent_part = await acc.send_document(
                                 split_target_chat_id,
                                 _cp,
                                 caption=_pcap,
                                 force_document=True,
-                                **build_reply_kwargs_from_message(message),
                             )
+                        _copied_part = await _copy_user_session_upload_to_user(
+                            bot_client=client,
+                            sent_message=_sent_part,
+                            source_user_id=_upload_source_user_id,
+                            target_user_id=ctx_target_chat_id,
+                            request_message=message,
+                            pre_upload_latest_id=_pre_part_latest_id,
+                        )
+                        if not _copied_part:
+                            logger.error("Split fallback part copy delivery failed for user %s part %s/%s", _uid, _pn, _total)
+                            try:
+                                os.remove(_cp)
+                            except Exception:
+                                pass
+                            if _part_thumb_path and os.path.exists(_part_thumb_path):
+                                try:
+                                    os.remove(_part_thumb_path)
+                                except Exception:
+                                    pass
+                            cleanup_chunks(_chunks[_i + 1:])
+                            return False
                         try:
                             os.remove(_cp)
                         except Exception:
@@ -6933,6 +7334,7 @@ async def download_and_send_media(
                     text=overflow_text,
                     entities=_ov_ents if _ov_ents else None,
                     parse_mode=ParseMode.DISABLED,
+                    **build_reply_kwargs_from_message(message),
                 )
             except Exception as overflow_err:
                 logger.warning(f"Failed to send overflow caption: {overflow_err}")
@@ -6941,6 +7343,7 @@ async def download_and_send_media(
                         ctx_target_chat_id,
                         text=overflow_text[:4000],
                         parse_mode=ParseMode.DISABLED,
+                        **build_reply_kwargs_from_message(message),
                     )
                 except Exception:
                     pass

@@ -5,6 +5,67 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-040: Source context va user-session upload reply anchori yo'qoladi
+**Sana:** 2026-06-29
+**Holat:** Hal qilindi
+
+**Muammo:** Topic/thread/private/public downloadlarda progress xabaridan keyin manba haqida alohida kontekst chiqmasdi yoki keyingi yuborilgan media/textlar original user link xabariga reply qilardi. User session orqali bot DMga upload qilingan media ayrim joylarda replysiz kelardi, chunki reply context upload bosqichida user sessionga berilgan, bot-side delivery/copy bosqichida emas.
+
+**Sabab:**
+1. `process_thread_comments()` source/context anchor yaratmasdan comment, album va media yuborishni original `message`ga bog'lardi.
+2. Private va public user-session yo'llarida source chat nomi bot `get_chat()` bilan olinardi; protected/private chatlarda bu ko'pincha yetarli emas.
+3. Legacy media delivery va SessionManager non-pool/user-owned sessiyalarda uploadni bevosita ko'rinadi deb hisoblab, bot-side `copy_message` reply anchorini hamma sessiyalar uchun ishlatmasdi.
+4. Direct premium `>2GB` worker yo'li `_enqueue_media_delivery()`ni chetlab o'tardi.
+5. Overflow caption text bot orqali yuborilsa ham source anchor reply kwargs qo'shilmasdi.
+
+**Yechim:**
+1. `_send_source_context_message()` qo'shildi: progress/statusdan keyin bot `Manba`, forum topic nomi yoki discussion root previewini yuboradi va keyingi content uchun reply anchor bo'ladi.
+2. `ParsedURL.thread_root_id` qo'shildi; thread range linklarda ham discussion asosiy post matni source contextga chiqadi.
+3. `process_thread_comments()`, `process_topic_posts()`, `process_private_posts()`, `process_public_posts()` va `process_bot_posts()` delivery calllari source context messagega bog'landi.
+4. Private/public user-session flowlarda source chat va birinchi post previewi user session (`acc`) orqali olinadi.
+5. `_enqueue_media_delivery()` hamma sessiyalar uchun upload -> bot-side resolve -> `copy_message(... reply_to=source_context)` -> delete patterniga o'tdi.
+6. Direct premium worker upload ham `_enqueue_media_delivery()` orqali yuradi; upload kwargsdan reply context strip qilinadi va reply faqat bot copy bosqichida qo'llanadi.
+7. `process_album_messages()` photo-album va fallback photo yo'llari user session uploaddan keyin sender-side ID bilan emas, bot-side resolved ID bilan `copy_message(... reply_to=source_context)` qiladi.
+8. Split fallback (`>2GB` bo'lingan partlar va premium direct failure fallback) ham har bir chunkni user session orqali bot DMga upload qilib, keyin bot-side resolve/copy/delete orqali source contextga reply qiladi.
+9. Location/venue xabarlari uchun `core.copy_utils` fingerprint qo'shildi; ular ham noto'g'ri sender-side ID bilan copy qilinmaydi.
+10. User session upload source chat endi `target_user_id` deb faraz qilinmaydi; `_get_user_session_account_id()` upload qilayotgan real account IDni olib, channel monitor/system-session holatlarida ham to'g'ri bot DMdan copy qiladi.
+11. Overflow caption chunks ham source contextga reply qilib yuboriladi.
+
+**Real API eslatma:** Owner sessiya bilan tekshiruvda `171796` xabar mavjud, lekin Telegram metadata bo'yicha `message_thread_id=1`, `reply_to_top_message_id=171777`, `reply_to_message_id=171790`; topic `8` emas. Shuning uchun topic 8 extraction uni majburan qo'shmaydi, lekin topic 8 ichidagi valid xabarlarni yuboradi.
+
+**Tekshiruv:**
+- `.\venv\Scripts\python.exe -m py_compile TechVJ\save.py core\copy_utils.py core\session_manager\session_manager.py core\topic_extractor.py core\guards.py test_governance_fixes.py test\real_topic_debug.py` - OK
+- `test_governance_fixes.py` manual runner venv ichida: 26/26 PASS
+- Global `python -m pytest -q test_governance_fixes.py`: 24 PASS, 1 FAIL faqat global Python muhitida `psutil` yo'qligi sabab; venvda `psutil` bor, lekin `pytest` yo'q.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/copy_utils.py`, `core/session_manager/session_manager.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-039: Topic range anchor mavjud, lekin sender account o'chgani sabab streamda yo'qdek ko'rinadi
+**Sana:** 2026-06-29
+**Holat:** Hal qilindi
+
+**Muammo:** Production logda `https://t.me/c/2234521267/8/75-171796` uchun raw topic metadata topicni topdi va `TopicExtractor` 21 ta topic xabarini yig'di, lekin range oxirgi anchor `171796` Search/GetReplies streamida kelmagani uchun `topic range anchor not found: 171796` bilan per-ID fallbackga tushdi. Foydalanuvchi `171796` xabar mavjudligini, faqat xabarni yuborgan profil o'chib ketganini aniqladi.
+
+**Sabab:**
+1. Search/GetReplies ayrim mavjud topic xabarlarini streamda bermasligi mumkin; sender deleted bo'lishi xabarni yo'q degani emas.
+2. `extract_between()` katta span (`75..171796`) uchun direct range probe'ni to'g'ri skip qilgan, lekin missing anchorni alohida direct hydrate qilmasdan xato qaytarardi.
+3. Raw parse pathda ba'zan `message_thread_id` yordamchi qiymat bo'lishi mumkin, lekin `reply_to_top_message_id` to'g'ri topic rootni ko'rsatadi. Eski filter `message_thread_id` mismatch bo'lsa keyingi reply metadata'ni tekshirmasdan rad qilishi mumkin edi.
+
+**Yechim:**
+1. `extract_between()` missing anchorlar uchun avval faqat o'sha IDlarni `_hydrate_missing_anchor_ids()` orqali `channels.GetMessages`/`get_messages` bilan oladi; 171k ID scan qilinmaydi.
+2. Agar anchor direct hydrate bilan topicga tegishli bo'lsa, chronological topic orderga qo'shiladi va range davom etadi.
+3. Agar anchor baribir inaccessible bo'lsa, extractor yig'ilgan topic xabarlarini numeric bounds ichida qaytaradi; 21 ta valid topic xabar endi tashlab yuborilmaydi.
+4. `_is_topic_message()` `message_thread_id` mos kelsa qabul qiladi, mos kelmasa `reply_to_top_message_id`, nested `reply_to_top_id` va `reply_to_msg_id` metadata'larini ham tekshiradi.
+5. Regression testlar qo'shildi: missing end anchor mavjud bo'lmasa yig'ilgan topic xabarlar qaytadi; mavjud anchor direct hydrate bilan tiklanadi.
+
+**Real API tekshiruv:** 2026-06-29 da owner sessiya bilan `get_messages([-1002234521267], [75, 171796])` tekshirildi. `171796` mavjud, lekin API uni `message_thread_id=1`, `reply_to_top_message_id=171777`, `reply_to_message_id=171790` qilib qaytardi; topic `8` metadata yo'q. Shuning uchun extractor uni topic 8 xabari sifatida yubormaydi, lekin topic 8 ichidagi 20 ta valid xabarni chronological tartibda qaytaradi va taskni yiqitmaydi.
+
+**O'zgartirilgan fayllar:** `core/topic_extractor.py`, `TechVJ/save.py`, `core/guards.py`, `test_governance_fixes.py`, `test/real_topic_debug.py`, `test/README.md`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-038: TopicExtractor Search va GetReplies ikkalasi ham topic xabarlarini topmaydi
 **Sana:** 2026-06-20
 **Holat:** Hal qilindi

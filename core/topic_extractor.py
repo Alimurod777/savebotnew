@@ -271,6 +271,14 @@ class TopicExtractor:
 
         for i in range(0, len(ids), 100):
             chunk = ids[i:i + 100]
+            result.extend(await self._fetch_messages_by_ids_high_level(chunk))
+        return result
+
+    async def _fetch_messages_by_ids_high_level(self, message_ids: List[int]) -> List[Message]:
+        """Fetch specific messages through Pyrogram get_messages in batches."""
+        result: List[Message] = []
+        for i in range(0, len(message_ids), 100):
+            chunk = message_ids[i:i + 100]
             fetched = await self._client.get_messages(self._cfg.chat_id, chunk)
             if not isinstance(fetched, list):
                 fetched = [fetched]
@@ -412,28 +420,38 @@ class TopicExtractor:
 
         Pyrofork uses reply_to_top_message_id (MTProto field name).
         """
+        if not msg or getattr(msg, "empty", False):
+            return False
+
         if msg.id == self._cfg.topic_id:
             return True
 
-        # Check message_thread_id (modern Pyrogram populates this for forums)
+        # Check message_thread_id (modern Pyrogram populates this for forums).
+        # Raw parse paths can expose a non-topic sentinel here while still
+        # carrying the real topic root in reply_to_top_message_id, so a
+        # mismatch is not enough to reject the message.
         thread_id = getattr(msg, "message_thread_id", None)
-        if thread_id is not None:
-            return thread_id == self._cfg.topic_id
+        if thread_id == self._cfg.topic_id:
+            return True
 
         # Primary: Pyrofork/Pyrogram attribute name
         top_id: Optional[int] = getattr(msg, "reply_to_top_message_id", None)
 
         # Fallback: nested reply_to object (some Pyrofork builds)
+        reply_to = getattr(msg, "reply_to", None)
         if top_id is None:
-            reply_to = getattr(msg, "reply_to", None)
             if reply_to is not None:
                 top_id = getattr(reply_to, "reply_to_top_message_id", None)
+                if top_id is None:
+                    top_id = getattr(reply_to, "reply_to_top_id", None)
 
         if top_id is not None:
             return top_id == self._cfg.topic_id
 
         # Last resort: first-level direct reply to topic root
         reply_id: Optional[int] = getattr(msg, "reply_to_message_id", None)
+        if reply_id is None and reply_to is not None:
+            reply_id = getattr(reply_to, "reply_to_msg_id", None)
         if reply_id == self._cfg.topic_id:
             return True
 
@@ -681,9 +699,9 @@ class TopicExtractor:
         numeric ID range.
 
         Fallback: if server-side topic APIs (Search, GetReplies) return
-        incomplete results and anchors are missing, directly probe all IDs in
-        the numeric range [min, max] via batch get_messages and filter by
-        topic membership.
+        incomplete results and anchors are missing, fetch only the missing
+        anchor IDs first.  A bounded numeric range probe is kept as a final
+        small-span fallback.
         """
         all_msgs = await self._collect_all()
         positions = {m.id: idx for idx, m in enumerate(all_msgs)}
@@ -702,6 +720,16 @@ class TopicExtractor:
             all_msgs = await self._collect_all()
             positions = {m.id: idx for idx, m in enumerate(all_msgs)}
 
+        if start_id not in positions or end_id not in positions:
+            missing_anchor_ids = [
+                mid for mid in (start_id, end_id) if mid not in positions
+            ]
+            all_msgs = await self._hydrate_missing_anchor_ids(
+                missing_anchor_ids,
+                all_msgs,
+            )
+            positions = {m.id: idx for idx, m in enumerate(all_msgs)}
+
         # ── Direct ID range probe fallback ──────────────────────────────────
         if start_id not in positions or end_id not in positions:
             all_msgs = await self._direct_id_range_fallback(
@@ -710,20 +738,128 @@ class TopicExtractor:
             positions = {m.id: idx for idx, m in enumerate(all_msgs)}
 
         if start_id not in positions or end_id not in positions:
-            missing = [
-                str(mid)
-                for mid in (start_id, end_id)
-                if mid not in positions
-            ]
-            raise TopicExtractionError(
-                "topic range anchor not found: " + ", ".join(missing)
+            missing = [str(mid) for mid in (start_id, end_id) if mid not in positions]
+            lo, hi = min(start_id, end_id), max(start_id, end_id)
+            bounded = [m for m in all_msgs if lo <= m.id <= hi]
+            logger.warning(
+                "TopicExtractor: anchors not found (%s) for topic=%d; "
+                "returning %d collected topic messages within numeric bounds [%d..%d]",
+                ", ".join(missing),
+                self._cfg.topic_id,
+                len(bounded),
+                lo,
+                hi,
             )
+            return bounded
 
         start_pos = positions[start_id]
         end_pos = positions[end_id]
         if start_pos <= end_pos:
             return all_msgs[start_pos:end_pos + 1]
         return all_msgs[end_pos:start_pos + 1]
+
+    async def _hydrate_missing_anchor_ids(
+        self,
+        anchor_ids: List[int],
+        existing: List[Message],
+    ) -> List[Message]:
+        """Fetch missing range anchors directly without scanning the full span."""
+        if not anchor_ids:
+            return existing
+
+        seen = {m.id for m in existing}
+        ids: List[int] = []
+        for msg_id in anchor_ids:
+            msg_id = int(msg_id)
+            if msg_id in seen or msg_id in ids:
+                continue
+            ids.append(msg_id)
+
+        if not ids:
+            return existing
+
+        logger.info(
+            "TopicExtractor: hydrating missing range anchor(s) topic=%d ids=%s",
+            self._cfg.topic_id,
+            ids,
+        )
+
+        try:
+            fetched = await self._fetch_messages_by_ids(ids)
+        except Exception as e:
+            if is_floodwait_error(e):
+                raise
+            logger.warning(
+                "TopicExtractor: missing anchor hydration failed topic=%d ids=%s: %s",
+                self._cfg.topic_id,
+                ids,
+                e,
+            )
+            return existing
+
+        recovered: List[Message] = []
+        for msg in fetched:
+            if not msg or getattr(msg, "empty", False):
+                continue
+            if msg.id in seen:
+                continue
+            if not self._is_topic_message(msg):
+                logger.warning(
+                    "TopicExtractor: hydrated anchor id=%s is not in topic=%d",
+                    getattr(msg, "id", None),
+                    self._cfg.topic_id,
+                )
+                continue
+            seen.add(msg.id)
+            recovered.append(msg)
+
+        unresolved_ids = [
+            msg_id for msg_id in ids
+            if msg_id not in seen
+        ]
+        if unresolved_ids:
+            try:
+                logger.info(
+                    "TopicExtractor: retrying missing anchor hydration via get_messages "
+                    "topic=%d ids=%s",
+                    self._cfg.topic_id,
+                    unresolved_ids,
+                )
+                high_level = await self._fetch_messages_by_ids_high_level(unresolved_ids)
+                for msg in high_level:
+                    if not msg or getattr(msg, "empty", False):
+                        continue
+                    if msg.id in seen:
+                        continue
+                    if not self._is_topic_message(msg):
+                        continue
+                    seen.add(msg.id)
+                    recovered.append(msg)
+            except Exception as e:
+                if is_floodwait_error(e):
+                    raise
+                logger.warning(
+                    "TopicExtractor: get_messages anchor hydration failed topic=%d ids=%s: %s",
+                    self._cfg.topic_id,
+                    unresolved_ids,
+                    e,
+                )
+
+        if not recovered:
+            return existing
+
+        logger.info(
+            "TopicExtractor: recovered %d missing anchor message(s) for topic=%d",
+            len(recovered),
+            self._cfg.topic_id,
+        )
+        merged = list(existing) + recovered
+        merged.sort(key=lambda m: (
+            m.date.timestamp() if m.date else 0,
+            m.id,
+        ))
+        self._store_cache(merged, fully_scanned=False)
+        return merged
 
     # ── Direct ID range fallback ────────────────────────────────────────────
 

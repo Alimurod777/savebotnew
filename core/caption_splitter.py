@@ -86,6 +86,14 @@ def _hyperlink_end_at_or_after(utf16_pos: int, hl_ranges: List[Tuple[int, int]])
     return None
 
 
+def _hyperlink_start_before(utf16_pos: int, hl_ranges: List[Tuple[int, int]]) -> Optional[int]:
+    """If utf16_pos is inside a hyperlink, return that hyperlink's start offset."""
+    for start, end in hl_ranges:
+        if start < utf16_pos < end:
+            return start
+    return None
+
+
 def _find_safe_split(
     text: str,
     entities: List[MessageEntity],
@@ -112,11 +120,15 @@ def _find_safe_split(
 
     split_utf16 = max_utf16
 
-    # If natural split point is inside a hyperlink → extend to hyperlink end
+    # If natural split point is inside a hyperlink, keep the entire link in
+    # one chunk. Prefer backing up when extending would exceed Telegram's cap.
     hl_end = _hyperlink_end_at_or_after(split_utf16, hl_ranges)
     if hl_end is not None:
-        split_utf16 = min(hl_end, text_utf16)
-        # After extending, return immediately (we cannot back up past the link)
+        if hl_end <= max_utf16:
+            return min(hl_end, text_utf16)
+        hl_start = _hyperlink_start_before(split_utf16, hl_ranges)
+        if hl_start is not None and hl_start > 0:
+            return hl_start
         return split_utf16
 
     # Try to find a nicer word boundary going backwards from split_utf16
@@ -165,6 +177,12 @@ def _reconstruct_entities_for_chunk(
         # Skip entities that don't overlap this chunk
         if ent_end <= chunk_start_utf16 or ent_start >= chunk_end_utf16:
             continue
+
+        # Hyperlinks must never be sent as partial entities; a partial
+        # TEXT_LINK/URL is the usual source of broken links after splitting.
+        if getattr(e, "type", None) in (MessageEntityType.TEXT_LINK, MessageEntityType.URL):
+            if ent_start < chunk_start_utf16 or ent_end > chunk_end_utf16:
+                continue
 
         # Skip CUSTOM_EMOJI unless premium (premium users can use custom emoji)
         if not is_premium and getattr(e, "type", None) == MessageEntityType.CUSTOM_EMOJI:

@@ -15,7 +15,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
 
-from config import API_ID, API_HASH
+from config import API_ID, API_HASH, get_client_params
 from database.db import database
 
 
@@ -30,13 +30,18 @@ def get(obj, key, default=None):
 async def create_user_client(session_string: str, name: str = "comment_checker"):
     """Create and connect a Pyrogram user client from session string."""
     try:
+        fp = get_client_params()
         client = Client(
             name,
             session_string=session_string,
             api_hash=API_HASH,
             api_id=API_ID,
             no_updates=True,  # Don't listen for updates - improves performance
-            in_memory=True    # Don't save session to disk
+            in_memory=True,   # Don't save session to disk
+            device_model=fp["device_model"],
+            system_version=fp["system_version"],
+            app_version=fp["app_version"],
+            lang_code=fp["lang_code"],
         )
         await client.connect()
         return client, None

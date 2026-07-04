@@ -80,7 +80,7 @@ MAX_LOGIN_ATTEMPTS_PER_HOUR = int(_get("MAX_LOGIN_ATTEMPTS_PER_HOUR", "3"))
 # Telegram security resets, forced logouts, and session invalidation.
 #
 # Rules:
-# - Desktop: device_model="Desktop", system_version=OS, app_version=Desktop version
+# - Desktop: device_model="Telegram Desktop", system_version=OS, app_version=Desktop version
 # - Android: device_model=Android device, system_version=Android ver, app_version=Android app ver
 # - iOS: device_model=iPhone/iPad, system_version=iOS ver, app_version=iOS app ver
 # ============================================================================
@@ -99,19 +99,19 @@ class ClientFingerprint:
     # safest for multi-user bots. Corporate use of multiple accounts is normal.
     PLATFORM_PRESETS = {
         'desktop_windows': {
-            'device_model': 'Desktop',
+            'device_model': 'Telegram Desktop',
             'system_version': 'Windows 11',
             'app_version': '5.9.0 x64',  # Stable version format
             'lang_code': 'en',
         },
         'desktop_macos': {
-            'device_model': 'Desktop',
+            'device_model': 'Telegram Desktop',
             'system_version': 'macOS 14.5',
             'app_version': '5.9.0',
             'lang_code': 'en',
         },
         'desktop_linux': {
-            'device_model': 'Desktop',
+            'device_model': 'Telegram Desktop',
             'system_version': 'Linux x86_64',
             'app_version': '5.9.0 x64',
             'lang_code': 'en',

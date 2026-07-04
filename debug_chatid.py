@@ -3,17 +3,22 @@ import sys
 from pyrogram import Client
 from pyrogram import raw
 from pyrogram.raw import functions, types
-from config import API_ID, API_HASH
+from config import API_ID, API_HASH, get_client_params
 from database.db import database
 
 async def debug_chat_id(chat_id, message_id, session_string):
     # Create client with the session
+    fp = get_client_params()
     client = Client(
         "debug_client", 
         session_string=session_string, 
         api_hash=API_HASH, 
         api_id=API_ID,
-        no_updates=True
+        no_updates=True,
+        device_model=fp["device_model"],
+        system_version=fp["system_version"],
+        app_version=fp["app_version"],
+        lang_code=fp["lang_code"],
     )
     
     try:
@@ -117,4 +122,4 @@ async def main():
     await debug_chat_id(chat_id, message_id, session_string)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

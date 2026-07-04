@@ -4,6 +4,7 @@
 # Ask Doubt on telegram @KingVJ01
 
 import asyncio 
+import hashlib
 import random
 import uuid
 import pyrogram
@@ -19,6 +20,7 @@ from core.copy_utils import (
     get_bot_copy_source_chat_id,
     get_bot_latest_message_id,
     get_bot_real_message_id,
+    start_bot_upload_update_waiter,
 )
 from core.restricted_channel_guard import validate_restricted_channel_id
 from core.safe_send import (
@@ -53,6 +55,18 @@ from typing import List, Tuple, Optional, Any
 from dataclasses import dataclass, replace
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_session_fp(session_string: Optional[str]) -> str:
+    """Short irreversible fingerprint for session-route diagnostics."""
+    if not session_string:
+        return "-"
+    try:
+        return hashlib.sha256(str(session_string).encode("utf-8")).hexdigest()[:10]
+    except Exception:
+        return "unknown"
+
+
 from config import API_ID, API_HASH, OWNER_ID, OWNER_USERNAME, BANNED_MESSAGE, TEMP_DOWNLOAD_DIR
 from database.async_db import async_db
 from TechVJ.strings import strings, HELP_TXT
@@ -302,7 +316,11 @@ async def _process_media_group_sequential(
             success = await download_and_send_media(
                 client,
                 acc,
-                _make_reply_target_message(user_id, getattr(request_message, "id", None)),
+                _make_reply_target_message(
+                    user_id,
+                    getattr(request_message, "id", None),
+                    source_message=request_message,
+                ),
                 msg,
                 msg_type,
                 temp_dir,
@@ -365,21 +383,125 @@ class PoolDeliveryError(RuntimeError):
     """Raised when a pool upload reaches the intermediate chat but not the user."""
 
 
+class RoutingGuardError(RuntimeError):
+    """Raised when bot/user clients are not safe for the required send route."""
+
+
+def _cached_client_me(client: Any) -> Any:
+    try:
+        return getattr(client, "_techvj_route_me", None) or getattr(client, "me", None)
+    except Exception:
+        return None
+
+
+async def _get_client_route_identity(client: Any) -> Tuple[Optional[int], Optional[bool], Any]:
+    """
+    Return (id, is_bot, me) for routing checks.
+
+    Text/status must be sent only by the bot client, while media must be sent
+    only by an MTProto user session.  This helper keeps that check cheap by
+    reusing client.me when available and caching get_me() results.
+    """
+    me = _cached_client_me(client)
+    if me is None and hasattr(client, "get_me"):
+        try:
+            me = await asyncio.wait_for(client.get_me(), timeout=10.0)
+        except Exception as err:
+            logger.warning("Routing guard could not resolve client identity: %s", err)
+            me = None
+
+    if me is not None:
+        try:
+            setattr(client, "_techvj_route_me", me)
+        except Exception:
+            pass
+
+    client_id = getattr(me, "id", None)
+    is_bot = getattr(me, "is_bot", None)
+    try:
+        client_id = int(client_id) if client_id is not None else None
+    except Exception:
+        client_id = None
+    if is_bot is not None:
+        is_bot = bool(is_bot)
+    return client_id, is_bot, me
+
+
+async def _ensure_media_route_clients(
+    client: Client,
+    acc: Any,
+    *,
+    user_id: int,
+    target_chat_id: int,
+    msg_type: str,
+) -> Tuple[Client, Any, int, Optional[int]]:
+    """
+    Verify strict send routing and fix the only safe accidental swap.
+
+    Required route:
+      - bot client: all progress/status/text
+      - user session: download/upload media to the bot DM
+    """
+    bot_id, client_is_bot, client_me = await _get_client_route_identity(client)
+    acc_id, acc_is_bot, acc_me = await _get_client_route_identity(acc)
+
+    if client_is_bot is False and acc_is_bot is True:
+        if acc_id is None:
+            raise RoutingGuardError("Swapped bot client has no id; cannot target bot DM")
+        logger.warning(
+            "Routing guard swapped clients back to safe order: user=%s target=%s type=%s bot_id=%s uploader_id=%s",
+            user_id,
+            target_chat_id,
+            msg_type,
+            acc_id,
+            bot_id,
+        )
+        try:
+            setattr(acc, "_techvj_route_me", acc_me)
+            setattr(client, "_techvj_route_me", client_me)
+        except Exception:
+            pass
+        return acc, client, int(acc_id), bot_id
+
+    if client_is_bot is not True:
+        raise RoutingGuardError(
+            f"Bot client is not verified for text/progress route (is_bot={client_is_bot}, id={bot_id})"
+        )
+    if acc_is_bot is not False:
+        raise RoutingGuardError(
+            f"Media uploader is not a verified user session (is_bot={acc_is_bot}, id={acc_id})"
+        )
+    if bot_id is None:
+        raise RoutingGuardError("Bot client id is unavailable; cannot target bot DM for media upload")
+    if acc_id is not None and int(acc_id) == int(bot_id):
+        raise RoutingGuardError("Bot client and media uploader resolve to the same account")
+
+    logger.debug(
+        "Routing guard OK: user=%s target=%s type=%s bot_id=%s uploader_id=%s",
+        user_id,
+        target_chat_id,
+        msg_type,
+        bot_id,
+        acc_id,
+    )
+    return client, acc, int(bot_id), acc_id
+
+
 def _prepare_upload_send_kwargs(send_kwargs: dict, is_pool_session: bool) -> Tuple[dict, dict]:
     """
     Return (upload_send_kwargs, direct_send_kwargs) for the current upload path.
 
-    reply_to_message_id is ALWAYS stripped from upload kwargs because the
-    user session uploads to bot_user_id where the user's message ID doesn't
-    exist. The reply context is applied later via copy_message.
+    Pool sessions cannot use the requesting user's reply target while uploading
+    to their own bot DM, so reply context is applied later via copy_message.
+    User-owned/non-pool sessions upload directly to the user's bot chat and can
+    carry reply context in the upload call itself.
     """
     upload_send_kwargs = dict(send_kwargs)
+    direct_send_kwargs = dict(send_kwargs)
 
-    # Always strip reply context — user session uploads to bot_user_id
-    # where the original user message doesn't exist (BUG-018 fix)
-    upload_send_kwargs.pop("reply_to_message_id", None)
-    upload_send_kwargs.pop("reply_parameters", None)
-    direct_send_kwargs = dict(upload_send_kwargs)
+    if is_pool_session:
+        upload_send_kwargs.pop("reply_to_message_id", None)
+        upload_send_kwargs.pop("reply_parameters", None)
 
     return upload_send_kwargs, direct_send_kwargs
 
@@ -396,58 +518,88 @@ async def _enqueue_media_delivery(
     reply_kwargs_builder=build_reply_kwargs_from_message,
 ):
     """
-    Enqueue upload task and copy the result to the user with reply context.
+    Enqueue a media upload task with strict sender routing.
 
-    All sessions: upload → uploader↔bot DM → resolve real bot-side message ID
-    → copy_message to user with reply context → delete intermediate.
+    Pool/global sessions upload to their own bot DM, then the bot copies to the
+    requesting user. User-owned sessions upload directly to the user's bot chat,
+    so no bot copy is needed and the media remains user-session-authored.
     """
-    # ── Pre-upload watermark (pool only) ──────────────────────────────────
+    # ── Upload ────────────────────────────────────────────────────────────
     copy_source_chat_id = None
     pre_upload_latest_id = None
+    update_waiter = None
 
     expected_source_chat_id = getattr(worker, "session_user_id", None)
     if expected_source_chat_id is None:
         raise PoolDeliveryError("Could not determine uploader account before upload")
     copy_source_chat_id = int(expected_source_chat_id)
-    pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
-    if pre_upload_latest_id is None:
-        raise PoolDeliveryError("Could not read bot-side upload watermark")
-
-    # ── Enqueue upload ────────────────────────────────────────────────────
-    upload_task = task_factory(send_fn=send_fn, is_media=True, owner_user_id=int(target_user_id))
-    sent = await worker.enqueue(upload_task)
-    if sent is None:
-        return sent
-
-    # ── Non-pool: message already visible in user's bot DM ────────────────
-    # ── Pool: copy from pool↔bot DM to user chat ─────────────────────────
-    detected_source_chat_id = get_bot_copy_source_chat_id(
-        sent, getattr(getattr(sent, "chat", None), "id", None)
-    )
-    if detected_source_chat_id is not None and int(detected_source_chat_id) != int(copy_source_chat_id):
-        logger.error(
-            "copy source mismatch: expected=%s detected=%s sent_id=%s",
-            copy_source_chat_id,
-            detected_source_chat_id,
-            getattr(sent, "id", None),
+    if is_pool_session and copy_source_chat_id == int(target_user_id):
+        logger.info(
+            "Pool-selected session belongs to requesting user %s; using direct bot-chat delivery",
+            target_user_id,
         )
-        raise PoolDeliveryError("Bot copy source mismatch")
+        is_pool_session = False
+    if is_pool_session:
+        try:
+            update_waiter = await start_bot_upload_update_waiter(
+                bot_client,
+                copy_source_chat_id,
+            )
+        except Exception as waiter_err:
+            logger.warning(
+                "Could not start bot-side upload waiter for chat %s: %s",
+                copy_source_chat_id,
+                waiter_err,
+            )
+            update_waiter = None
+            pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
 
     try:
-        real_msg_id = await get_bot_real_message_id(
-            bot_client,
-            copy_source_chat_id,
+        upload_task = task_factory(send_fn=send_fn, is_media=True, owner_user_id=int(target_user_id))
+        sent = await worker.enqueue(upload_task)
+        if sent is None:
+            return sent
+
+        if not is_pool_session:
+            return sent
+
+        # ── Pool: copy from pool↔bot DM to user chat ─────────────────────
+        detected_source_chat_id = get_bot_copy_source_chat_id(
             sent,
-            min_message_id=pre_upload_latest_id,
-        )
-    except BotMessageResolutionError as resolve_err:
-        logger.error(
-            "copy_message blocked: could not resolve bot-side message id chat=%s sent_id=%s: %s",
             copy_source_chat_id,
-            getattr(sent, "id", None),
-            resolve_err,
         )
-        raise PoolDeliveryError(str(resolve_err)) from resolve_err
+        if detected_source_chat_id is not None and int(detected_source_chat_id) != int(copy_source_chat_id):
+            logger.error(
+                "copy source mismatch: expected=%s detected=%s sent_id=%s",
+                copy_source_chat_id,
+                detected_source_chat_id,
+                getattr(sent, "id", None),
+            )
+            raise PoolDeliveryError("Bot copy source mismatch")
+
+        try:
+            if update_waiter is not None:
+                real_msg_id = await update_waiter.wait_for(sent)
+            else:
+                if pre_upload_latest_id is None:
+                    raise BotMessageResolutionError("Could not read bot-side upload watermark")
+                real_msg_id = await get_bot_real_message_id(
+                    bot_client,
+                    copy_source_chat_id,
+                    sent,
+                    min_message_id=pre_upload_latest_id,
+                )
+        except BotMessageResolutionError as resolve_err:
+            logger.error(
+                "copy_message blocked: could not resolve bot-side message id chat=%s sent_id=%s: %s",
+                copy_source_chat_id,
+                getattr(sent, "id", None),
+                resolve_err,
+            )
+            raise PoolDeliveryError(str(resolve_err)) from resolve_err
+    finally:
+        if update_waiter is not None:
+            await update_waiter.close()
 
     copy_ok = False
     copied_msg = None
@@ -502,14 +654,22 @@ async def _copy_user_session_upload_to_user(
     reply_kwargs_builder=build_reply_kwargs_from_message,
 ) -> Optional[Message]:
     """
-    Copy a message uploaded by a user session to the bot DM back to the user.
+    Copy a media message only when the uploader is not the target user.
 
-    User-session uploads see sender-side message IDs. The bot must resolve the
-    matching receiver-side ID before copy/delete; otherwise replies can attach
-    to the wrong message or disappear.
+    Own user-session uploads are already visible in the user's bot chat. Pool,
+    global and system-session uploads need bot copy_message so the target user
+    receives the media.
     """
     if sent_message is None:
         return None
+    if _is_direct_user_session_upload(source_user_id, target_user_id):
+        logger.debug(
+            "direct user-session media delivery: source=%s target=%s sent_id=%s; bot copy skipped",
+            source_user_id,
+            target_user_id,
+            getattr(sent_message, "id", None),
+        )
+        return sent_message
     if pre_upload_latest_id is None:
         logger.warning(
             "copy_message skipped: missing bot-side watermark source=%s target=%s sent_id=%s",
@@ -583,6 +743,20 @@ async def _copy_user_session_upload_to_user(
     return None
 
 
+def _is_direct_user_session_upload(source_user_id: int, target_user_id: int) -> bool:
+    """
+    True when the uploader is the requesting user's own session.
+
+    In that case media sent by the user session to the bot's user id is already
+    visible in the user's bot chat. Bot copy_message must be reserved for
+    pool/global/system sessions, otherwise media appears as bot-authored.
+    """
+    try:
+        return int(source_user_id) == int(target_user_id)
+    except Exception:
+        return False
+
+
 async def _get_user_session_account_id(acc, fallback_user_id: int) -> int:
     """Return the Telegram user id of the MTProto account doing the upload."""
     cached = getattr(acc, "_techvj_session_user_id", None)
@@ -619,7 +793,7 @@ def _get_user_session_target_chat_id(bot_client: Client, fallback_chat_id: int) 
     To deliver into the bot PM, the user session must send to the bot's user ID.
     """
     try:
-        bot_me = getattr(bot_client, "me", None)
+        bot_me = _cached_client_me(bot_client)
         bot_id = getattr(bot_me, "id", None)
         if bot_id:
             return int(bot_id)
@@ -692,8 +866,21 @@ def _build_split_part_caption(
     return text
 
 
-def _make_reply_target_message(user_id: int, reply_to_message_id: Optional[int] = None):
+def _make_reply_target_message(
+    user_id: int,
+    reply_to_message_id: Optional[int] = None,
+    source_message: Optional[Any] = None,
+):
     """Create a minimal message-like object that preserves reply context."""
+    text = None
+    date = None
+    if source_message is not None:
+        text = (
+            getattr(source_message, "text", None)
+            or getattr(source_message, "caption", None)
+            or getattr(source_message, "message", None)
+        )
+        date = getattr(source_message, "date", None)
     return type(
         "ReplyTargetMessage",
         (),
@@ -701,6 +888,9 @@ def _make_reply_target_message(user_id: int, reply_to_message_id: Optional[int] 
             "chat": type("Chat", (), {"id": user_id})(),
             "id": reply_to_message_id,
             "message_id": reply_to_message_id,
+            "text": text,
+            "caption": None,
+            "date": date,
         },
     )()
 
@@ -1401,18 +1591,13 @@ async def _send_source_context_message(
                 lines.append(preview)
             else:
                 lines.append(f"Discussion thread: {parsed.thread_id}")
-        elif not getattr(parsed, "topic_id", None):
-            preview = _source_preview_text(source_msg)
-            if preview:
-                lines.append("Post:")
-                lines.append(preview)
-
         text = "\n\n".join(lines)
+        # Keep the source header standalone. Delivered content replies to this
+        # message, while the header itself does not reply to the original link.
         return await client.send_message(
             user_id,
             text,
             disable_web_page_preview=True,
-            **build_reply_kwargs_from_message(request_message),
         )
     except Exception as err:
         logger.debug("source context message skipped: %s", err)
@@ -4000,7 +4185,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                         source_chat=source_chat,
                         source_msg=thread_root_msg,
                         request_message=message,
-                    ) or message
+                    ) or _make_reply_target_message(user_id, None)
                     comments = []
                     
                     # ================================================================
@@ -4153,6 +4338,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                             _make_reply_target_message(
                                                 user_id,
                                                 getattr(source_context_msg, "id", None),
+                                                source_message=source_context_msg,
                                             ),
                                             comment,
                                             get_message_type(comment),
@@ -4289,6 +4475,7 @@ async def send_comment_to_user(
                 _make_reply_target_message(
                     user_id,
                     getattr(request_message, "id", None),
+                    source_message=request_message,
                 ),
                 comment, msg_type, temp_dir, pipeline,
                 session_string=session_string,
@@ -4499,7 +4686,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     topic_msg=topic_msg if "topic_msg" in locals() else None,
                     raw_topic=raw_topic,
                     request_message=message,
-                ) or message
+                ) or _make_reply_target_message(user_id, None)
                 
                 processed = 0
                 failed = 0
@@ -4702,7 +4889,11 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                     album_success = await download_and_send_media(
                                         client,
                                         acc,
-                                        _make_reply_target_message(user_id, getattr(source_context_msg, "id", None)),
+                                        _make_reply_target_message(
+                                            user_id,
+                                            getattr(source_context_msg, "id", None),
+                                            source_message=source_context_msg,
+                                        ),
                                         msg,
                                         get_message_type(msg),
                                         temp_dir,
@@ -4942,7 +5133,11 @@ async def process_single_topic_message(
             result = await download_and_send_media(
                 client,
                 acc,
-                _make_reply_target_message(user_id, getattr(request_message, "id", None)),
+                _make_reply_target_message(
+                    user_id,
+                    getattr(request_message, "id", None),
+                    source_message=request_message,
+                ),
                 msg,
                 msg_type,
                 temp_dir,
@@ -5112,7 +5307,11 @@ async def process_album_messages(
                 try:
                     _target_chat_id = _get_user_session_target_chat_id(client, user_id)
                     _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
-                    _pre_album_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                    _album_needs_copy = not _is_direct_user_session_upload(_upload_source_user_id, user_id)
+                    _pre_album_latest_id = (
+                        await get_bot_latest_message_id(client, _upload_source_user_id)
+                        if _album_needs_copy else None
+                    )
                     _sent_album = await acc.send_media_group(
                         _target_chat_id,
                         media_list,
@@ -5176,11 +5375,15 @@ async def process_album_messages(
             # Fallback: send photos individually via user session
             _target_chat_id = _get_user_session_target_chat_id(client, user_id)
             _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+            _photo_needs_copy = not _is_direct_user_session_upload(_upload_source_user_id, user_id)
             for idx, media in enumerate(media_list):
                 try:
                     # Only first photo gets caption in fallback too
                     cap = media.caption if idx == 0 else None
-                    _pre_photo_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                    _pre_photo_latest_id = (
+                        await get_bot_latest_message_id(client, _upload_source_user_id)
+                        if _photo_needs_copy else None
+                    )
                     _sent_photo = await acc.send_photo(
                         _target_chat_id,
                         media.media,
@@ -5248,7 +5451,11 @@ async def process_album_messages(
                 success = await download_and_send_media(
                     client,
                     acc,
-                    _make_reply_target_message(user_id, getattr(request_message, "id", None)),
+                    _make_reply_target_message(
+                        user_id,
+                        getattr(request_message, "id", None),
+                        source_message=request_message,
+                    ),
                     msg,
                     msg_type,
                     temp_dir,
@@ -5375,7 +5582,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             source_chat=source_chat,
                             source_msg=source_msg,
                             request_message=message,
-                        ) or message
+                        ) or _make_reply_target_message(user_id, None)
                         # Pin after the source context message so the visible
                         # order remains: progress/status, source, delivered posts.
                         if total_posts > 1:
@@ -5722,7 +5929,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                     source_chat=source_chat,
                     source_msg=source_msg,
                     request_message=message,
-                ) or message
+                ) or _make_reply_target_message(user_id, None)
                 for idx, post_id in enumerate(parsed.post_ids):
                     await ping_activity(user_id)
                     if await pipeline.check_cancelled():
@@ -5810,7 +6017,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                 parsed=parsed,
                 source_chat=source_chat,
                 request_message=message,
-            ) or message
+            ) or _make_reply_target_message(user_id, None)
             for idx, post_id in enumerate(parsed.post_ids):
                 await ping_activity(user_id)
                 if await pipeline.check_cancelled():
@@ -5932,7 +6139,7 @@ async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL,
                 parsed=parsed,
                 source_chat=source_chat,
                 request_message=message,
-            ) or message
+            ) or _make_reply_target_message(user_id, None)
             for post_id in parsed.post_ids:
                 if await pipeline.check_cancelled():
                     return
@@ -6034,7 +6241,11 @@ async def process_single_post(
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
                 upload_source_user_id = await _get_user_session_account_id(acc, user_id)
-                pre_upload_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                _loc_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
+                pre_upload_latest_id = (
+                    await get_bot_latest_message_id(client, upload_source_user_id)
+                    if _loc_needs_copy else None
+                )
                 loc_msg = await acc.send_location(
                     chat_id=target_chat_id,
                     latitude=loc.latitude,
@@ -6060,7 +6271,11 @@ async def process_single_post(
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
                 upload_source_user_id = await _get_user_session_account_id(acc, user_id)
-                pre_upload_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                _venue_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
+                pre_upload_latest_id = (
+                    await get_bot_latest_message_id(client, upload_source_user_id)
+                    if _venue_needs_copy else None
+                )
                 venue_msg = await acc.send_venue(
                     chat_id=target_chat_id,
                     latitude=venue.location.latitude,
@@ -6357,11 +6572,20 @@ async def download_and_send_media(
     status_msg = None
     ctx_user_id = context.user_id if context else message.chat.id
     ctx_target_chat_id = context.target_chat_id if context else message.chat.id
+    route_bot_id: Optional[int] = None
 
     try:
         # Check cancellation
         if await pipeline.check_cancelled():
             return False
+
+        client, acc, route_bot_id, _route_uploader_id = await _ensure_media_route_clients(
+            client,
+            acc,
+            user_id=int(ctx_user_id),
+            target_chat_id=int(ctx_target_chat_id),
+            msg_type=msg_type,
+        )
 
         # EARLY EXIT: if the message has no actual downloadable media object,
         # it is a web-page preview or text-only message. Never send it through
@@ -6504,6 +6728,7 @@ async def download_and_send_media(
                         return False
                     total_parts = len(chunk_paths)
                     upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+                    split_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, ctx_target_chat_id)
 
                     for i, chunk_path in enumerate(chunk_paths):
                         if await pipeline.check_cancelled():
@@ -6543,14 +6768,20 @@ async def download_and_send_media(
                                 part_video_kwargs["width"] = part_video_meta["width"]
                             if part_video_meta.get("height") is not None:
                                 part_video_kwargs["height"] = part_video_meta["height"]
-                            _pre_part_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                            _pre_part_latest_id = (
+                                await get_bot_latest_message_id(client, upload_source_user_id)
+                                if split_needs_copy else None
+                            )
                             _sent_part = await acc.send_video(
                                 split_target_chat_id,
                                 chunk_path,
                                 **part_video_kwargs,
                             )
                         else:
-                            _pre_part_latest_id = await get_bot_latest_message_id(client, upload_source_user_id)
+                            _pre_part_latest_id = (
+                                await get_bot_latest_message_id(client, upload_source_user_id)
+                                if split_needs_copy else None
+                            )
                             _sent_part = await acc.send_document(
                                 split_target_chat_id, chunk_path,
                                 caption=part_caption,
@@ -6624,8 +6855,7 @@ async def download_and_send_media(
             )
         
         # caption and caption_entities already extracted above (before split check)
-        overflow_text = None
-        overflow_entities = None
+        overflow_chunks = []
 
         # CORRECT UTF-16 CAPTION SPLITTING using caption_splitter
         if caption:
@@ -6639,12 +6869,7 @@ async def download_and_send_media(
                 caption_entities = _primary.entities if _primary.entities else None
                 logger.debug(f"Caption split: primary={len(caption)} chars, overflow={len(_overflow_chunks)}")
 
-                if _overflow_chunks:
-                    overflow_text = _overflow_chunks[0].text
-                    overflow_entities = _overflow_chunks[0].entities if _overflow_chunks[0].entities else None
-                    if len(_overflow_chunks) > 1:
-                        extra = "\n\n".join(c.text for c in _overflow_chunks[1:])
-                        overflow_text = overflow_text + "\n\n" + extra
+                overflow_chunks = list(_overflow_chunks or [])
             except Exception as _split_err:
                 logger.warning(f"caption split failed: {_split_err}")
                 # Truncate caption instead of crashing
@@ -6697,7 +6922,6 @@ async def download_and_send_media(
                     _send_kwargs["height"] = local_video_meta["height"]
             if thumb_path:
                 _send_kwargs["thumb"] = thumb_path
-            _upload_send_kwargs, _ = _prepare_upload_send_kwargs(_send_kwargs, False)
 
             _video_meta = None
             _thumb_path = thumb_path
@@ -6712,13 +6936,44 @@ async def download_and_send_media(
                 engine = await get_engine()
                 upload_cb = engine.create_progress_callback(client, status_msg, "upload")
 
-            _target_chat_id = client.me.id
+            _target_chat_id = route_bot_id or _get_user_session_target_chat_id(client, ctx_target_chat_id)
             _worker = await _wr.get_or_create(
                 user_id=ctx_user_id,
                 session_string=_premium_session_str,
                 bot_id=_target_chat_id,
-                bot_username=getattr(client.me, "username", None),
+                bot_username=getattr(_cached_client_me(client), "username", None),
             )
+            _premium_upload_kwargs = dict(_send_kwargs)
+            _premium_reply_source_id = _premium_upload_kwargs.get("reply_to_message_id")
+            if _premium_reply_source_id is not None:
+                _premium_resolved_reply_id = None
+                try:
+                    _premium_resolved_reply_id = await _worker.resolve_bot_reply_message_id(message)
+                except Exception as _prem_reply_err:
+                    logger.debug(
+                        "Premium direct reply anchor resolve failed for user %d source_id=%s: %s",
+                        ctx_user_id,
+                        _premium_reply_source_id,
+                        _prem_reply_err,
+                    )
+                if _premium_resolved_reply_id is not None:
+                    _premium_upload_kwargs["reply_to_message_id"] = _premium_resolved_reply_id
+                    _premium_upload_kwargs.pop("reply_parameters", None)
+                    logger.info(
+                        "Premium direct upload reply anchor resolved: user=%d bot_msg_id=%s session_msg_id=%s",
+                        ctx_user_id,
+                        _premium_reply_source_id,
+                        _premium_resolved_reply_id,
+                    )
+                else:
+                    _premium_upload_kwargs.pop("reply_to_message_id", None)
+                    _premium_upload_kwargs.pop("reply_parameters", None)
+                    logger.warning(
+                        "Premium direct reply anchor unresolved; sending without reply to avoid wrong thread: user=%d bot_msg_id=%s",
+                        ctx_user_id,
+                        _premium_reply_source_id,
+                    )
+            _upload_send_kwargs, _ = _prepare_upload_send_kwargs(_premium_upload_kwargs, False)
 
             _send_fn = _msf(
                 target_chat_id=_target_chat_id,
@@ -6764,6 +7019,10 @@ async def download_and_send_media(
                         return False
                     _total = len(_chunks)
                     _upload_source_user_id = await _get_user_session_account_id(acc, _uid)
+                    _fallback_split_needs_copy = not _is_direct_user_session_upload(
+                        _upload_source_user_id,
+                        ctx_target_chat_id,
+                    )
                     for _i, _cp in enumerate(_chunks):
                         if await pipeline.check_cancelled():
                             cleanup_chunks(_chunks[_i:])
@@ -6799,14 +7058,20 @@ async def download_and_send_media(
                                 _part_video_kwargs["width"] = _part_video_meta["width"]
                             if _part_video_meta.get("height") is not None:
                                 _part_video_kwargs["height"] = _part_video_meta["height"]
-                            _pre_part_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                            _pre_part_latest_id = (
+                                await get_bot_latest_message_id(client, _upload_source_user_id)
+                                if _fallback_split_needs_copy else None
+                            )
                             _sent_part = await acc.send_video(
                                 split_target_chat_id,
                                 _cp,
                                 **_part_video_kwargs,
                             )
                         else:
-                            _pre_part_latest_id = await get_bot_latest_message_id(client, _upload_source_user_id)
+                            _pre_part_latest_id = (
+                                await get_bot_latest_message_id(client, _upload_source_user_id)
+                                if _fallback_split_needs_copy else None
+                            )
                             _sent_part = await acc.send_document(
                                 split_target_chat_id,
                                 _cp,
@@ -6869,7 +7134,7 @@ async def download_and_send_media(
             )
 
             # target = bot's Telegram user ID as seen from acc's perspective
-            _target_chat_id = client.me.id
+            _target_chat_id = route_bot_id or _get_user_session_target_chat_id(client, ctx_target_chat_id)
             _acc_user_id = ctx_user_id  # key for per-user worker
 
             # VIP-only access to global premium pipeline (pool/SessionManager)
@@ -6935,6 +7200,7 @@ async def download_and_send_media(
                         send_kwargs=_sm_send_kwargs,
                         bot_client=client,
                         bot_user_id=_target_chat_id,
+                        reply_message=message,
                         video_meta=_sm_video_meta,
                         thumb_path=_sm_thumb_path,
                         progress_cb=_sm_upload_cb,
@@ -6963,6 +7229,7 @@ async def download_and_send_media(
             # get higher rate limits from Telegram). User session is the last resort.
             _session_string = None
             _used_pool_idx = None
+            _upload_route = "none"
 
             # Step 1: Try system premium pool first
             if not _sm_handled and _allow_global_premium:
@@ -6972,9 +7239,12 @@ async def download_and_send_media(
                         _pool_entry = await _ru.pool.get_available()
                         if _pool_entry is not None:
                             _used_pool_idx, _session_string = _pool_entry
-                            logger.debug(
-                                "Using system pool session #%d for user %d upload",
-                                _used_pool_idx + 1, _acc_user_id,
+                            _upload_route = f"legacy_pool#{_used_pool_idx + 1}"
+                            logger.info(
+                                "Upload route selected: route=%s request_user=%d session_fp=%s",
+                                _upload_route,
+                                _acc_user_id,
+                                _safe_session_fp(_session_string),
                             )
                             # Update request context with pool session info
                             if _REQUEST_CONTEXT_AVAILABLE:
@@ -6992,6 +7262,13 @@ async def download_and_send_media(
             # Step 2: User's own premium session (if pool unavailable)
             if not _session_string and _premium_session_str:
                 _session_string = _premium_session_str
+                _upload_route = "user_premium"
+                logger.info(
+                    "Upload route selected: route=%s request_user=%d session_fp=%s",
+                    _upload_route,
+                    _acc_user_id,
+                    _safe_session_fp(_session_string),
+                )
                 if _REQUEST_CONTEXT_AVAILABLE:
                     from core.request_context import get_request_context
                     _rctx = get_request_context()
@@ -7003,7 +7280,18 @@ async def download_and_send_media(
 
             # Step 3: User's regular session as last resort
             if not _session_string and not _sm_handled:
-                _session_string = session_string or await acc.export_session_string()
+                if session_string:
+                    _session_string = session_string
+                    _upload_route = "user_session_db"
+                else:
+                    _session_string = await acc.export_session_string()
+                    _upload_route = "user_session_export"
+                logger.info(
+                    "Upload route selected: route=%s request_user=%d session_fp=%s",
+                    _upload_route,
+                    _acc_user_id,
+                    _safe_session_fp(_session_string),
+                )
                 if _REQUEST_CONTEXT_AVAILABLE:
                     from core.request_context import get_request_context
                     _rctx = get_request_context()
@@ -7015,7 +7303,7 @@ async def download_and_send_media(
 
             # Create worker — if pool session has bot blocked, try next pool sessions
             _worker = None
-            _bot_username = getattr(client.me, "username", None)
+            _bot_username = getattr(_cached_client_me(client), "username", None)
             _max_pool_tries = 5
             for _attempt in range(_max_pool_tries if not _sm_handled else 0):
                 try:
@@ -7039,12 +7327,26 @@ async def download_and_send_media(
                             _next = await _ru2.pool.get_available()
                             if _next:
                                 _used_pool_idx, _session_string = _next
+                                _upload_route = f"legacy_pool#{_used_pool_idx + 1}"
+                                logger.info(
+                                    "Upload route switched: route=%s request_user=%d session_fp=%s reason=bot_blocked",
+                                    _upload_route,
+                                    _acc_user_id,
+                                    _safe_session_fp(_session_string),
+                                )
                                 continue
                         except Exception:
                             pass
                     # Not from pool or pool exhausted — try auto-unblock via user session
                     _used_pool_idx = None
                     _session_string = await acc.export_session_string()
+                    _upload_route = "user_session_export_after_pool_blocked"
+                    logger.info(
+                        "Upload route switched: route=%s request_user=%d session_fp=%s reason=pool_blocked_or_exhausted",
+                        _upload_route,
+                        _acc_user_id,
+                        _safe_session_fp(_session_string),
+                    )
                     # Auto-unblock: user sessiyasi orqali botni unblock qilish
                     try:
                         from core.bot_unblock import try_unblock_bot as _try_unblock
@@ -7078,10 +7380,13 @@ async def download_and_send_media(
             if not _sm_handled:
                 logger.info(
                     "Upload via UserWorker: type=%s user=%d target=%d "
-                    "caption_len=%d overflow=%s",
+                    "route=%s session_fp=%s uploader_user_id=%s caption_len=%d overflow=%s",
                     msg_type, _acc_user_id, _target_chat_id,
+                    _upload_route,
+                    _safe_session_fp(_session_string),
+                    getattr(_worker, "session_user_id", None),
                     len(caption) if caption else 0,
-                    "yes" if overflow_text else "no",
+                    "yes" if overflow_chunks else "no",
                 )
 
             # Build send kwargs (caption + entities + reply)
@@ -7129,8 +7434,42 @@ async def download_and_send_media(
             # then bot copies the message to the requesting user.
             # For user's own session: upload goes directly to user's bot chat.
             _is_pool_session = (_used_pool_idx is not None)
+            _effective_send_kwargs = dict(_send_kwargs)
+            if not _is_pool_session and _worker is not None:
+                _reply_source_id = _effective_send_kwargs.get("reply_to_message_id")
+                if _reply_source_id is not None:
+                    _resolved_reply_id = None
+                    try:
+                        _resolved_reply_id = await _worker.resolve_bot_reply_message_id(message)
+                    except Exception as _reply_resolve_err:
+                        logger.debug(
+                            "User-session reply anchor resolve failed for user %d route=%s source_id=%s: %s",
+                            _acc_user_id,
+                            _upload_route,
+                            _reply_source_id,
+                            _reply_resolve_err,
+                        )
+                    if _resolved_reply_id is not None:
+                        _effective_send_kwargs["reply_to_message_id"] = _resolved_reply_id
+                        _effective_send_kwargs.pop("reply_parameters", None)
+                        logger.info(
+                            "User-session upload reply anchor resolved: user=%d route=%s bot_msg_id=%s session_msg_id=%s",
+                            _acc_user_id,
+                            _upload_route,
+                            _reply_source_id,
+                            _resolved_reply_id,
+                        )
+                    else:
+                        _effective_send_kwargs.pop("reply_to_message_id", None)
+                        _effective_send_kwargs.pop("reply_parameters", None)
+                        logger.warning(
+                            "User-session upload reply anchor unresolved; sending without reply to avoid wrong thread: user=%d route=%s bot_msg_id=%s",
+                            _acc_user_id,
+                            _upload_route,
+                            _reply_source_id,
+                        )
             _upload_send_kwargs, _direct_send_kwargs = _prepare_upload_send_kwargs(
-                _send_kwargs,
+                _effective_send_kwargs,
                 _is_pool_session,
             )
 
@@ -7151,9 +7490,66 @@ async def download_and_send_media(
                 _cur_worker = _worker
                 _cur_pool_idx = _used_pool_idx
                 _cur_sess = _session_string
+                _cur_route = _upload_route
+
+                async def _upload_with_user_session(reason):
+                    if session_string:
+                        _fallback_sess = session_string
+                        _fallback_route = "pool_fallback_user_db"
+                    else:
+                        _fallback_sess = await acc.export_session_string()
+                        _fallback_route = "pool_fallback_user_export"
+                    logger.warning(
+                        "Pool upload fallback to user's own session for user %d: route=%s session_fp=%s reason=%s",
+                        _acc_user_id,
+                        _fallback_route,
+                        _safe_session_fp(_fallback_sess),
+                        reason,
+                    )
+                    _fallback_send_fn = _msf(
+                        target_chat_id=_target_chat_id,
+                        msg_type=msg_type,
+                        file_path=file_path,
+                        send_kwargs=_direct_send_kwargs,
+                        video_meta=_video_meta,
+                        thumb_path=_thumb_path,
+                        progress_cb=_upload_cb,
+                        doc_file_name=_doc_file_name,
+                    )
+                    _fb_worker = await _wr.get_or_create(
+                        _acc_user_id,
+                        _fallback_sess,
+                        bot_id=_target_chat_id,
+                        bot_username=_bot_username,
+                    )
+                    logger.info(
+                        "Upload fallback worker ready: route=%s request_user=%d uploader_user_id=%s session_fp=%s",
+                        _fallback_route,
+                        _acc_user_id,
+                        getattr(_fb_worker, "session_user_id", None),
+                        _safe_session_fp(_fallback_sess),
+                    )
+                    return await _enqueue_media_delivery(
+                        worker=_fb_worker,
+                        send_fn=_fallback_send_fn,
+                        task_factory=_UT,
+                        is_pool_session=False,
+                        bot_client=client,
+                        target_user_id=_acc_user_id,
+                        request_message=message,
+                    )
 
                 for _try in range(10):
                     try:
+                        logger.info(
+                            "Upload attempt: route=%s request_user=%d pool_idx=%s uploader_user_id=%s session_fp=%s try=%d",
+                            _cur_route,
+                            _acc_user_id,
+                            (_cur_pool_idx + 1) if _cur_pool_idx is not None else None,
+                            getattr(_cur_worker, "session_user_id", None),
+                            _safe_session_fp(_cur_sess),
+                            _try + 1,
+                        )
                         return await _enqueue_media_delivery(
                             worker=_cur_worker,
                             send_fn=_send_fn,
@@ -7165,6 +7561,11 @@ async def download_and_send_media(
                         )
                     except Exception as _fw:
                         if not is_floodwait_error(_fw):
+                            if _cur_pool_idx is not None:
+                                try:
+                                    return await _upload_with_user_session(_fw)
+                                except Exception as _fb_err:
+                                    logger.warning("Fallback user-session upload failed: %s", _fb_err)
                             raise
                         _fw_wait = get_floodwait_seconds(_fw, default=60)
                         if _cur_pool_idx is not None:
@@ -7173,11 +7574,19 @@ async def download_and_send_media(
                             _nxt = await _ru_main.pool.get_available()
                             if _nxt is not None:
                                 _cur_pool_idx, _cur_sess = _nxt
+                                _cur_route = f"legacy_pool#{_cur_pool_idx + 1}"
                                 try:
                                     _cur_worker = await _wr.get_or_create(
                                         _acc_user_id, _cur_sess,
                                         bot_id=_target_chat_id,
                                         bot_username=_bot_username,
+                                    )
+                                    logger.info(
+                                        "Upload route switched after FloodWait: route=%s request_user=%d uploader_user_id=%s session_fp=%s",
+                                        _cur_route,
+                                        _acc_user_id,
+                                        getattr(_cur_worker, "session_user_id", None),
+                                        _safe_session_fp(_cur_sess),
                                     )
                                     continue
                                 except _WBBlocked:
@@ -7250,32 +7659,8 @@ async def download_and_send_media(
 
                             if _choice == _cb_skip or _choice is None:
                                 # User chose to continue without premium
-                                _fallback_sess = await acc.export_session_string()
                                 try:
-                                    _fallback_send_fn = _msf(
-                                        target_chat_id=_target_chat_id,
-                                        msg_type=msg_type,
-                                        file_path=file_path,
-                                        send_kwargs=_direct_send_kwargs,
-                                        video_meta=_video_meta,
-                                        thumb_path=_thumb_path,
-                                        progress_cb=_upload_cb,
-                                        doc_file_name=_doc_file_name,
-                                    )
-                                    _fb_worker = await _wr.get_or_create(
-                                        _acc_user_id, _fallback_sess,
-                                        bot_id=_target_chat_id,
-                                        bot_username=_bot_username,
-                                    )
-                                    return await _enqueue_media_delivery(
-                                        worker=_fb_worker,
-                                        send_fn=_fallback_send_fn,
-                                        task_factory=_UT,
-                                        is_pool_session=False,
-                                        bot_client=client,
-                                        target_user_id=_acc_user_id,
-                                        request_message=message,
-                                    )
+                                    return await _upload_with_user_session(_fw)
                                 except Exception as _fb_err:
                                     logger.warning("Fallback non-premium upload failed: %s", _fb_err)
                                     raise _fw
@@ -7287,11 +7672,19 @@ async def download_and_send_media(
                                     _nxt2 = await _ru_main.pool.get_available()
                                     if _nxt2 is not None:
                                         _cur_pool_idx, _cur_sess = _nxt2
+                                        _cur_route = f"legacy_pool#{_cur_pool_idx + 1}"
                                         try:
                                             _cur_worker = await _wr.get_or_create(
                                                 _acc_user_id, _cur_sess,
                                                 bot_id=_target_chat_id,
                                                 bot_username=_bot_username,
+                                            )
+                                            logger.info(
+                                                "Upload route switched after wait: route=%s request_user=%d uploader_user_id=%s session_fp=%s",
+                                                _cur_route,
+                                                _acc_user_id,
+                                                getattr(_cur_worker, "session_user_id", None),
+                                                _safe_session_fp(_cur_sess),
                                             )
                                             break
                                         except _WBBlocked:
@@ -7316,32 +7709,37 @@ async def download_and_send_media(
                 await _try_upload_with_pool_fallback()
 
         # Send overflow caption chunks as separate messages.
-        # overflow_text already contains the "📌 Davomi N/total" header from
-        # caption_splitter. overflow_entities are pre-calculated for that text.
+        # Each chunk already contains the "Davomi N/total" header from
+        # caption_splitter and has entities recalculated for that exact text.
         #
         # IMPORTANT: Always send overflow via the BOT client (not user worker).
         # Sending text via user session to the bot would cause the bot to receive
         # the message as an update — if the caption contains Telegram links the
         # bot's link handler would re-process them, creating duplicate posts.
-        if overflow_text:
+        if overflow_chunks:
             try:
                 from core.entity_rebuilder import validate_entities as _validate_ents
-                _ov_ents = _validate_ents(overflow_text, overflow_entities or [])
                 _ov_target = ctx_target_chat_id
 
-                await client.send_message(
-                    _ov_target,
-                    text=overflow_text,
-                    entities=_ov_ents if _ov_ents else None,
-                    parse_mode=ParseMode.DISABLED,
-                    **build_reply_kwargs_from_message(message),
-                )
+                for _ov_chunk in overflow_chunks:
+                    _ov_text = _ov_chunk.text
+                    _ov_ents = _validate_ents(_ov_text, _ov_chunk.entities or [])
+                    await client.send_message(
+                        _ov_target,
+                        text=_ov_text,
+                        entities=_ov_ents if _ov_ents else None,
+                        parse_mode=ParseMode.DISABLED,
+                        **build_reply_kwargs_from_message(message),
+                    )
             except Exception as overflow_err:
                 logger.warning(f"Failed to send overflow caption: {overflow_err}")
                 try:
+                    _fallback_overflow_text = "\n\n".join(
+                        _ov_chunk.text for _ov_chunk in overflow_chunks
+                    )
                     await client.send_message(
                         ctx_target_chat_id,
-                        text=overflow_text[:4000],
+                        text=_fallback_overflow_text[:4000],
                         parse_mode=ParseMode.DISABLED,
                         **build_reply_kwargs_from_message(message),
                     )

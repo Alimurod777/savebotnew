@@ -5,6 +5,148 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-046: Routing almashishi va SessionManager direct reply ID regressiyasi
+**Sana:** 2026-07-03
+**Holat:** Hal qilindi
+
+**Muammo:** Foydalanuvchi cache tozalangandan keyin ham progress/status xabarlari user sessiya orqali ketayotgani, media esa user session -> bot chat yo'liga qat'iy tushmayotganini aytdi. Bundan tashqari SessionManager direct user-owned upload yo'lida bot-side `reply_to_message_id` user sessiya sendiga verify qilinmasdan berilishi mumkin edi.
+
+**Sabab:**
+1. `download_and_send_media()` ichida `client` bot, `acc` user session deb faraz qilingan, lekin runtime'da ular almashsa yoki noto'g'ri client uzatilsa, buni majburan tekshiradigan guard yo'q edi.
+2. `SessionManager.upload_with_session()` non-pool/user-owned sessiyada `reply_to_message_id`ni user-session dialogida text/date bilan resolve qilmasdan media sendiga qaytarib qo'yardi.
+3. Eski/alternate oqimlarda `pipeline_v2.py` va `album_collector_v2.py` media upload uchun bot client send metodlarini ishlatib qolgan joylar bor edi.
+
+**Yechim:**
+1. `RoutingGuardError` va `_ensure_media_route_clients()` qo'shildi: text/progress client bot bo'lishi, media uploader user session bo'lishi shart. Agar `client` va `acc` tasodifan almashib kelgan bo'lsa, lokal ravishda to'g'ri tartibga qaytariladi; boshqa xavfli holatlarda upload to'xtatiladi.
+2. `download_and_send_media()` guarddan chiqqan bot IDni ishlatadi; `client.me.id`ga ko'r-ko'rona tayanmaydi.
+3. `SessionManager` direct user-owned uploadlarda reply anchorni `UserUploadWorker.resolve_bot_reply_message_id()` orqali verify qiladi; topilmasa media replysiz yuboriladi, noto'g'ri xabarga reply qilinmaydi.
+4. `pipeline_v2.py` media sendlari user session orqali bot DMga o'tkazildi; `album_collector_v2.py` photo albumni user session `send_media_group()` bilan yuboradi, overflow text esa bot orqali qoladi.
+5. Regression testlar qo'shildi: routing guard reject/swap, SessionManager direct reply resolve, direct user-session bot copy skip.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py core\session_manager\session_manager.py test_governance_fixes.py TechVJ\album_collector_v2.py TechVJ\pipeline_v2.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "media_route_guard or user_owned_upload or own_user_session_upload_skips_bot_copy or session_manager_pool_copy"` - 8 passed
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/session_manager/session_manager.py`, `TechVJ/pipeline_v2.py`, `TechVJ/album_collector_v2.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-045: Own user-session media bot `copy_message` bilan bot-authored bo'lib qoladi
+**Sana:** 2026-07-01
+**Holat:** Hal qilindi
+
+**Muammo:** Oldingi routing qoidasiga ko'ra progress/status/text bot client orqali, media esa user session orqali ketishi kerak. Split chunk, album, location/venue kabi ayrim yo'llarda user session media bot DMga yuborilgandan keyin bot `copy_message` bilan yana userga ko'chirardi. Natijada media user sessiondan emas, botdan kelgandek ko'rinardi.
+
+**Sabab:** Source context/reply fixlarida bot-side `copy_message` mexanizmi direct own user-session uploadlariga ham qo'llanib qolgan. Bu pool/global sessiyalar uchun kerak, lekin uploader account aynan target user bo'lsa kerak emas.
+
+**Yechim:**
+1. `_is_direct_user_session_upload(source_user_id, target_user_id)` helper qo'shildi.
+2. `_copy_user_session_upload_to_user()` own user-session holatida bot copy/delete qilmasdan user-session yuborgan xabarni success deb qaytaradi.
+3. Album, fallback photo, location, venue, standard split va premium-failure split fallback yo'llarida own user-session bo'lsa bot watermark/history o'qish va copy qilinmaydi.
+4. Pool/global/system yoki uploader boshqa account bo'lsa bot `copy_message` saqlanadi, chunki target user media ko'rishi uchun shart.
+5. Regression test qo'shildi: own user-session media bot copy qilinmasligi tekshirildi.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-044: Telegram ulangan qurilmalarda `Shahzod, Pyrogram 2.3.69` chiqishi
+**Sana:** 2026-07-01
+**Holat:** Hal qilindi
+
+**Muammo:** User session ulanayotganda Telegram "connected devices" ro'yxatida `Shahzod, Pyrogram 2.3.69` ko'rinayotganini aytdi va `Shahzod` so'zi chiqmasligi kerakligini so'radi.
+
+**Sabab:** Repo va `.env` ichida `Shahzod` hardcode topilmadi. Pyrogram default qiymatlari esa `app_version="Pyrogram 2.3.69"`, `device_model=platform.python_implementation() + platform.python_version()` bo'lib, ayrim helper `Client(...)` chaqiruvlari explicit fingerprint bermagan. `Shahzod` birinchi qismi Telegram API app name yoki eski authorization paytida saqlangan nom bo'lishi mumkin; mavjud authorization nomi serverda re-login qilinmaguncha o'zgarmasligi mumkin.
+
+**Yechim:**
+1. Default desktop fingerprint `device_model="Telegram Desktop"`, `system_version="Windows 11"`, `app_version="5.9.0 x64"` qilib neytrallashtirildi.
+2. `album_collector_v2`, `comment_stats`, `info_command`, `database/session_manager` va `debug_chatid` ichidagi helper user-session clientlarga `get_client_params()` qo'shildi.
+3. Yangi login/QR login va yangi yaratiladigan helper clientlar Pyrogram default `Pyrogram 2.3.69` fingerprintiga tushib qolmaydi.
+
+**Eslatma:** Eski Telegram authorization yozuvlari darhol rename bo'lmasligi mumkin. Agar `Shahzod` API app name bo'lsa, uni faqat `my.telegram.org`dagi API app nomini o'zgartirish yoki boshqa API_ID/API_HASH bilan yangi sessiya yaratish orqali yo'qotish mumkin.
+
+**O'zgartirilgan fayllar:** `config.py`, `TechVJ/album_collector_v2.py`, `TechVJ/comment_stats.py`, `TechVJ/info_command.py`, `database/session_manager.py`, `debug_chatid.py`
+
+---
+
+## BUG-043: User-session media upload noto'g'ri xabarga reply qiladi
+**Sana:** 2026-07-01
+**Holat:** Hal qilindi
+
+**Muammo:** Single post yuborilganda `Manba:` xabari to'g'ri alohida chiqsa ham, keyingi media ba'zan o'sha source headerga emas, boshqa xabarga reply bo'lib ketdi. Runtime log `route=user_session_db`, `session_fp=13467438a7`, `session_user_id=7256358665` ekanini ko'rsatdi: upload pool/bot sessiya emas, foydalanuvchining DB sessiyasi orqali ketayotgan edi.
+
+**Sabab:** Bot client yuborgan source header `message_id`si user MTProto sessiyasi ko'rayotgan bot-chat message ID bilan har doim xavfsiz mos keladi deb faraz qilingan. User session upload call'iga tekshirilmagan `reply_to_message_id` berilganda Telegram uni user-session dialogidagi boshqa xabarga ulashi mumkin.
+
+**Yechim:**
+1. `UserUploadWorker.resolve_bot_reply_message_id()` qo'shildi: bot-authored source anchorni user sessiya ko'rayotgan bot chatida text/date bilan verify qiladi.
+2. Source anchor text/date topilmasa yoki mos xabar topilmasa, user-session media replysiz yuboriladi — noto'g'ri xabarga reply qilishdan ko'ra xavfsiz.
+3. `download_and_send_media()` user-session direct va premium direct yo'llarida reply anchorni worker orqali resolve qiladi; pool/copy yo'llari bot-side reply bilan qoladi.
+4. `_make_reply_target_message()` synthetic anchorlarga source message text/date metadata qo'shadi.
+5. `source_context_msg = ... or message` fallbacklari olib tashlandi: source header yaratilmasa ham delivery eski user link xabariga reply qilmaydi, replysiz ketadi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py core\user_upload_worker.py core\session_manager\session_manager.py` - OK
+- `git diff --check` - OK
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/user_upload_worker.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-042: Pool-first media delivery bot history o'qishda yiqiladi
+**Sana:** 2026-06-30
+**Holat:** Hal qilindi
+
+**Muammo:** Pool sessiya bor bo'lsa ham kichik photo/media yuborishda task `download_and_send_media returned False` bilan tugadi. Logda pool/user worker media upload qilgani ko'rindi, lekin keyin bot `messages.GetHistory` chaqiruviga `[400 BOT_METHOD_INVALID]` oldi va delivery to'xtadi.
+
+**Sabab:**
+1. Pool/global sessiya media upload qilgandan keyin bot real receiver-side message IDni topish uchun `get_chat_history()` ishlatardi.
+2. Pyrofork bot client bu muhitda private DM history o'qiy olmaydi (`BOT_METHOD_INVALID`), shuning uchun pool upload yetib kelgan bo'lsa ham copy bosqichi ishlamasdi.
+3. Non-pool/user-owned upload ham ayrim yo'llarda keraksiz bot-history/copy resolve yo'liga kirib qolishi mumkin edi.
+
+**Yechim:**
+1. Pool-first routing saqlandi: avval tizim pool/global sessiya tekshiriladi; pool bor bo'lsa media user-session worker orqali pool akkauntdan bot DMga upload qilinadi.
+2. `core.copy_utils.BotUploadUpdateWaiter` qo'shildi: bot history o'qish o'rniga pool akkauntdan kelgan yangi media update fingerprint bilan ushlanadi va real bot-side `message_id` olinadi.
+3. `TechVJ/save.py` va `SessionManager` pool/global copy yo'llari avval update waiter ishlatadi; history faqat listener ishga tushmasa zaxira fallback.
+4. User-owned/non-pool uploadlarda reply kwargs saqlanadi va bot history/copy ishlatilmaydi.
+5. Pool delivery kutilmagan xato bilan yiqilsa, o'sha post yo'qolmasligi uchun user's own session fallback ishlaydi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py core\copy_utils.py core\session_manager\session_manager.py core\caption_splitter.py test_governance_fixes.py` - OK
+- `git diff --check` - OK
+- Fokus testlar: `test_bot_upload_update_waiter_resolves_without_history`, `test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success`, `test_session_manager_pool_copy_failure_returns_none_without_delete`, `test_session_manager_user_owned_upload_does_not_use_bot_history_or_copy` - 4 passed
+- To'liq `python -m pytest -q test_governance_fixes.py`: 29 passed, 2 failed faqat lokal muhitda `psutil` yo'qligi sabab `TechVJ.save` import bo'lmagan.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/copy_utils.py`, `core/session_manager/session_manager.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-041: Single post source context preview va bot-side copy source mismatch
+**Sana:** 2026-06-30
+**Holat:** Hal qilindi
+
+**Muammo:** Bitta private/public post yuborilganda `Manba:` xabari source post caption previewi bilan juda katta bo'lib chiqardi va o'zi original link xabariga reply bo'lardi. Keyingi media shu source contextga reply bo'lishi kerak edi. Shu bilan birga ayrim kichik photo postlar `download_and_send_media returned False` bilan yuborilmay qoldi, post esa o'qilgan va media mavjud edi.
+
+**Sabab:**
+1. `_send_source_context_message()` oddiy postlarda `Post:` previewini ham source contextga qo'shardi va source contextning o'zini original link xabariga reply qilib yuborardi.
+2. User session bot DMga upload qilganda `sent_msg.chat.id` ko'pincha bot ID bo'lishi mumkin; copy/delete esa bot nuqtai nazaridan uploader user ID dialogidan qilinishi kerak. Fallback sifatida bot chat ID tanlanishi copy source mismatch yoki bot-side message resolve failurega olib kelardi.
+3. Caption overflow bir nechta chunk bo'lsa, keyingi overflow chunklari bitta textga qo'shib yuborilar va entity offsetlari shu yangi textga qayta hisoblanmasdi.
+4. Caption splitter link ichidagi splitda link entitylarini qisman chunkga tushirib qo'yishi mumkin edi.
+
+**Yechim:**
+1. `_send_source_context_message()` endi oddiy postlar uchun faqat `Manba: <title>` yuboradi; discussion/thread previewlari saqlanadi.
+2. Source context xabari standalone yuboriladi, original link xabariga reply qilmaydi. Keyingi media/textlar shu source contextga reply qiladi.
+3. `get_bot_copy_source_chat_id()` explicit fallback uploader IDni `sent_msg.chat.id`dan oldin ishlatadi; `save.py` legacy delivery va `SessionManager` endi fallback sifatida uploader account IDni uzatadi.
+4. Caption overflow chunklari alohida yuboriladi, har biri o'z entitylari bilan validate qilinadi.
+5. `core/caption_splitter.py` TEXT_LINK/URL entitylarini qisman chunk sifatida yubormaydi; link sig'sa butunicha keyingi chunkga o'tadi.
+
+**Tekshiruv:**
+- `git diff --check` - OK
+- Runtime compile/test bajarilmadi: bu muhitda `py` "No installed Python found", `venv\Scripts\python.exe` esa o'chirilgan `C:\Users\User\AppData\Local\Programs\Python\Python310\python.exe` yo'liga bog'langan.
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `core/copy_utils.py`, `core/session_manager/session_manager.py`, `core/caption_splitter.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-040: Source context va user-session upload reply anchori yo'qoladi
 **Sana:** 2026-06-29
 **Holat:** Hal qilindi

@@ -2,7 +2,14 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from core.copy_utils import get_bot_copy_source_chat_id, get_bot_real_message_id
+from pyrogram.enums import MessageEntityType
+from pyrogram.types import MessageEntity
+
+from core.copy_utils import (
+    get_bot_copy_source_chat_id,
+    get_bot_real_message_id,
+    start_bot_upload_update_waiter,
+)
 from core.channel_monitor import MonitoredChannel, channel_monitor
 from core.failure_classifier import (
     FailureCategory,
@@ -181,13 +188,88 @@ def test_copy_source_falls_back_to_message_chat_id():
     assert get_bot_copy_source_chat_id(sent) == 222
 
 
+def test_copy_source_prefers_explicit_fallback_over_bot_chat_id():
+    sent = SimpleNamespace(chat=SimpleNamespace(id=999_000), from_user=None)
+
+    assert get_bot_copy_source_chat_id(sent, fallback_chat_id=333) == 333
+
+
+def test_source_context_message_is_standalone_header():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _send_source_context_message
+
+        class FakeClient:
+            def __init__(self):
+                self.kwargs = None
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(id=10, chat=SimpleNamespace(id=chat_id), text=text)
+
+        request = SimpleNamespace(
+            id=55,
+            chat=SimpleNamespace(id=123),
+            reply_to_message_id=None,
+        )
+        parsed = SimpleNamespace(channel_id=-1001, topic_id=None, thread_id=None)
+        client = FakeClient()
+
+        msg = await _send_source_context_message(
+            client,
+            user_id=123,
+            parsed=parsed,
+            source_chat=SimpleNamespace(title="Maqsad Club"),
+            source_msg=SimpleNamespace(text="Post preview"),
+            request_message=request,
+        )
+
+        assert msg is not None
+        assert "reply_to_message_id" not in client.kwargs
+        assert "reply_parameters" not in client.kwargs
+
+    asyncio.run(run())
+
+
+def test_caption_splitter_does_not_partialize_text_link_entity():
+    from core.caption_splitter import CAPTION_LIMIT, split_caption
+    from core.utf16_utils import char_to_utf16_offset, utf16_len
+
+    prefix = "a" * (CAPTION_LIMIT - 10)
+    link_text = "L" * 40
+    suffix = " end"
+    text = prefix + link_text + suffix
+    entity = MessageEntity(
+        type=MessageEntityType.TEXT_LINK,
+        offset=char_to_utf16_offset(text, len(prefix)),
+        length=utf16_len(link_text),
+        url="https://example.com/path",
+    )
+
+    primary, overflow = split_caption(text, [entity])
+
+    assert primary.text == prefix.rstrip()
+    assert primary.entities == []
+    assert overflow
+    assert overflow[0].entities
+    assert overflow[0].entities[0].type == MessageEntityType.TEXT_LINK
+
+
 def test_copy_utils_resolves_location_and_venue_fingerprints():
     async def run():
         sent_location = SimpleNamespace(
             id=10,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             chat=SimpleNamespace(id=777),
-            from_user=SimpleNamespace(id=333),
+            from_user=SimpleNamespace(id=333, username=None),
             location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
             caption=None,
         )
@@ -195,7 +277,7 @@ def test_copy_utils_resolves_location_and_venue_fingerprints():
             id=20,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             chat=SimpleNamespace(id=333),
-            from_user=SimpleNamespace(id=333),
+            from_user=SimpleNamespace(id=333, username=None),
             location=SimpleNamespace(latitude=41.311081, longitude=69.240562),
             caption=None,
         )
@@ -241,6 +323,95 @@ def test_copy_utils_resolves_location_and_venue_fingerprints():
     asyncio.run(run())
 
 
+def test_bot_upload_update_waiter_resolves_without_history():
+    async def run():
+        bot_side = SimpleNamespace(
+            id=77,
+            chat=SimpleNamespace(id=333, username=None),
+            from_user=SimpleNamespace(id=333),
+            document=SimpleNamespace(file_unique_id="waiter", file_size=456, file_name="w.bin"),
+            caption=None,
+        )
+        sent = SimpleNamespace(
+            id=12,
+            chat=SimpleNamespace(id=777, username=None),
+            from_user=SimpleNamespace(id=333),
+            document=SimpleNamespace(file_unique_id="waiter", file_size=456, file_name="w.bin"),
+            caption=None,
+        )
+
+        class FakeBot:
+            def __init__(self):
+                self.handler = None
+                self.group = None
+
+            def add_handler(self, handler, group=0):
+                self.handler = handler
+                self.group = group
+                return (handler, group)
+
+            def remove_handler(self, handler, group=0):
+                assert handler is self.handler
+                assert group == self.group
+
+            def get_chat_history(self, chat_id, limit=1):
+                raise AssertionError("waiter must not read bot history")
+
+            async def emit(self, message):
+                try:
+                    await self.handler.original_callback(self, message)
+                except Exception as err:
+                    if err.__class__.__name__ != "StopPropagation":
+                        raise
+
+        bot = FakeBot()
+        waiter = await start_bot_upload_update_waiter(bot, 333, timeout=1)
+        wait_task = asyncio.create_task(waiter.wait_for(sent))
+        await asyncio.sleep(0)
+        await bot.emit(bot_side)
+
+        assert await wait_task == 77
+        await waiter.close()
+
+    asyncio.run(run())
+
+
+def test_own_user_session_upload_skips_bot_copy():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _copy_user_session_upload_to_user
+
+        sent = SimpleNamespace(id=10)
+
+        class FakeBot:
+            async def copy_message(self, **kwargs):
+                raise AssertionError("own user-session media must not be bot-copied")
+
+            async def delete_messages(self, *args, **kwargs):
+                raise AssertionError("own user-session media must not be deleted by bot")
+
+        result = await _copy_user_session_upload_to_user(
+            bot_client=FakeBot(),
+            sent_message=sent,
+            source_user_id=123,
+            target_user_id=123,
+            request_message=SimpleNamespace(),
+            pre_upload_latest_id=None,
+        )
+
+        assert result is sent
+
+    asyncio.run(run())
+
+
 def test_priority_queue_spills_over_idle_capacity():
     async def run():
         pq = PriorityQueue()
@@ -278,15 +449,15 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             id=10,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             chat=SimpleNamespace(id=777),
-            from_user=SimpleNamespace(id=222),
+                from_user=SimpleNamespace(id=222, username=None),
             document=SimpleNamespace(file_unique_id="u1", file_size=123, file_name="a.bin"),
             caption=None,
         )
         bot_side = SimpleNamespace(
             id=99,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            chat=SimpleNamespace(id=222),
-            from_user=SimpleNamespace(id=222),
+            chat=SimpleNamespace(id=222, username=None),
+            from_user=SimpleNamespace(id=222, username=None),
             document=SimpleNamespace(file_unique_id="u1", file_size=123, file_name="a.bin"),
             caption=None,
         )
@@ -300,6 +471,8 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             caption=None,
         )
 
+        bot = None
+
         class FakeBridge:
             def build_send_fn(self, **kwargs):
                 return lambda client: None
@@ -309,6 +482,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
 
             async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
                 assert owner_user_id == 123
+                await bot.emit(bot_side)
                 return sent
 
         class FakeBot:
@@ -316,6 +490,17 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
                 self.me = SimpleNamespace(id=777)
                 self.copy_calls = []
                 self.delete_calls = []
+                self.handler = None
+                self.group = None
+
+            def add_handler(self, handler, group=0):
+                self.handler = handler
+                self.group = group
+                return (handler, group)
+
+            def remove_handler(self, handler, group=0):
+                assert handler is self.handler
+                assert group == self.group
 
             async def copy_message(self, **kwargs):
                 self.copy_calls.append(kwargs)
@@ -324,15 +509,16 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             async def delete_messages(self, chat_id, message_ids):
                 self.delete_calls.append((chat_id, message_ids))
 
-            def get_chat_history(self, chat_id, limit=1):
-                async def gen():
-                    if limit == 1:
-                        yield old_bot_side
-                    else:
-                        yield bot_side
-                        yield old_bot_side
+            async def emit(self, message):
+                await asyncio.sleep(0)
+                try:
+                    await self.handler.original_callback(self, message)
+                except Exception as err:
+                    if err.__class__.__name__ != "StopPropagation":
+                        raise
 
-                return gen()
+            def get_chat_history(self, chat_id, limit=1):
+                raise AssertionError("pool copy should resolve from bot update, not history")
 
         manager = SessionManager()
         manager._initialized = True
@@ -368,21 +554,238 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
     asyncio.run(run())
 
 
+def test_session_manager_user_owned_upload_does_not_use_bot_history_or_copy():
+    async def run():
+        sent = SimpleNamespace(
+            id=12,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=777),
+            from_user=SimpleNamespace(id=123),
+            photo=SimpleNamespace(file_unique_id="p1", file_size=123),
+            caption=None,
+        )
+
+        class FakeBridge:
+            def __init__(self):
+                self.send_kwargs = None
+
+            def build_send_fn(self, **kwargs):
+                self.send_kwargs = dict(kwargs["send_kwargs"])
+                return lambda client: None
+
+            async def get_worker(self, record, user_id):
+                class FakeWorker:
+                    session_user_id = 123
+
+                    async def resolve_bot_reply_message_id(self, message):
+                        return None
+
+                return FakeWorker()
+
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+                assert owner_user_id == 123
+                return sent
+
+        class FakeBot:
+            def __init__(self):
+                self.me = SimpleNamespace(id=777)
+                self.copy_calls = []
+
+            async def copy_message(self, **kwargs):
+                self.copy_calls.append(kwargs)
+                raise AssertionError("non-pool upload must not copy")
+
+            def get_chat_history(self, chat_id, limit=1):
+                raise AssertionError("non-pool upload must not read bot history")
+
+        manager = SessionManager()
+        manager._initialized = True
+        bridge = FakeBridge()
+        manager._bridge = bridge
+        record = SessionRecord(
+            session_id="test-user-owned-direct",
+            session_string="session",
+            phone="",
+            type=SessionType.USER_OWNED,
+            owner_user_id=123,
+            max_parallel_tasks=1,
+        )
+        bot = FakeBot()
+
+        result = await manager.upload_with_session(
+            record=record,
+            user_id=123,
+            target_chat_id=123,
+            msg_type="Photo",
+            file_path="photo.jpg",
+            send_kwargs={"reply_to_message_id": 55},
+            bot_client=bot,
+            bot_user_id=777,
+        )
+
+        assert result is sent
+        assert "reply_to_message_id" not in bridge.send_kwargs
+        assert bot.copy_calls == []
+        assert record.current_tasks == 0
+
+    asyncio.run(run())
+
+
+def test_session_manager_user_owned_upload_resolves_reply_anchor_before_send():
+    async def run():
+        sent = SimpleNamespace(
+            id=12,
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=777),
+            from_user=SimpleNamespace(id=123),
+            photo=SimpleNamespace(file_unique_id="p1", file_size=123),
+            caption=None,
+        )
+        reply_anchor = SimpleNamespace(id=55, text="Manba: Maqsad Club")
+
+        class FakeWorker:
+            session_user_id = 123
+
+            async def resolve_bot_reply_message_id(self, message):
+                assert message is reply_anchor
+                return 88
+
+        class FakeBridge:
+            def __init__(self):
+                self.send_kwargs = None
+
+            def build_send_fn(self, **kwargs):
+                self.send_kwargs = dict(kwargs["send_kwargs"])
+                return lambda client: None
+
+            async def get_worker(self, record, user_id):
+                return FakeWorker()
+
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+                assert owner_user_id == 123
+                return sent
+
+        class FakeBot:
+            def __init__(self):
+                self.me = SimpleNamespace(id=777)
+
+            async def copy_message(self, **kwargs):
+                raise AssertionError("direct user session upload must not bot-copy")
+
+            def get_chat_history(self, chat_id, limit=1):
+                raise AssertionError("direct user session upload must not read bot history")
+
+        manager = SessionManager()
+        manager._initialized = True
+        bridge = FakeBridge()
+        manager._bridge = bridge
+        record = SessionRecord(
+            session_id="test-user-owned-reply-resolve",
+            session_string="session",
+            phone="",
+            type=SessionType.USER_OWNED,
+            owner_user_id=123,
+            max_parallel_tasks=1,
+        )
+
+        result = await manager.upload_with_session(
+            record=record,
+            user_id=123,
+            target_chat_id=123,
+            msg_type="Photo",
+            file_path="photo.jpg",
+            send_kwargs={"reply_to_message_id": 55},
+            bot_client=FakeBot(),
+            bot_user_id=777,
+            reply_message=reply_anchor,
+        )
+
+        assert result is sent
+        assert bridge.send_kwargs["reply_to_message_id"] == 88
+        assert record.current_tasks == 0
+
+    asyncio.run(run())
+
+
+def test_media_route_guard_rejects_user_client_for_text_route():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import RoutingGuardError, _ensure_media_route_clients
+
+        user_client = SimpleNamespace(me=SimpleNamespace(id=123, is_bot=False))
+        user_session = SimpleNamespace(me=SimpleNamespace(id=123, is_bot=False))
+
+        try:
+            await _ensure_media_route_clients(
+                user_client,
+                user_session,
+                user_id=123,
+                target_chat_id=123,
+                msg_type="Photo",
+            )
+        except RoutingGuardError as err:
+            assert "Bot client is not verified" in str(err)
+        else:
+            raise AssertionError("routing guard must reject non-bot text/status client")
+
+    asyncio.run(run())
+
+
+def test_media_route_guard_swaps_accidental_bot_user_order():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _ensure_media_route_clients
+
+        user_session = SimpleNamespace(me=SimpleNamespace(id=123, is_bot=False))
+        bot_client = SimpleNamespace(me=SimpleNamespace(id=777, is_bot=True))
+
+        fixed_client, fixed_acc, bot_id, uploader_id = await _ensure_media_route_clients(
+            user_session,
+            bot_client,
+            user_id=123,
+            target_chat_id=123,
+            msg_type="Video",
+        )
+
+        assert fixed_client is bot_client
+        assert fixed_acc is user_session
+        assert bot_id == 777
+        assert uploader_id == 123
+
+    asyncio.run(run())
+
+
 def test_session_manager_pool_copy_failure_returns_none_without_delete():
     async def run():
         sent = SimpleNamespace(
             id=11,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
             chat=SimpleNamespace(id=777),
-            from_user=SimpleNamespace(id=333),
+                from_user=SimpleNamespace(id=333, username=None),
             document=SimpleNamespace(file_unique_id="u2", file_size=456, file_name="b.bin"),
             caption=None,
         )
         bot_side = SimpleNamespace(
             id=88,
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            chat=SimpleNamespace(id=333),
-            from_user=SimpleNamespace(id=333),
+            chat=SimpleNamespace(id=333, username=None),
+            from_user=SimpleNamespace(id=333, username=None),
             document=SimpleNamespace(file_unique_id="u2", file_size=456, file_name="b.bin"),
             caption=None,
         )
@@ -395,6 +798,8 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
             caption=None,
         )
 
+        bot = None
+
         class FakeBridge:
             def build_send_fn(self, **kwargs):
                 return lambda client: None
@@ -404,6 +809,7 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
 
             async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
                 assert owner_user_id == 123
+                await bot.emit(bot_side)
                 return sent
 
         class FakeBot:
@@ -411,6 +817,17 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
                 self.me = SimpleNamespace(id=777)
                 self.copy_calls = []
                 self.delete_calls = []
+                self.handler = None
+                self.group = None
+
+            def add_handler(self, handler, group=0):
+                self.handler = handler
+                self.group = group
+                return (handler, group)
+
+            def remove_handler(self, handler, group=0):
+                assert handler is self.handler
+                assert group == self.group
 
             async def copy_message(self, **kwargs):
                 self.copy_calls.append(kwargs)
@@ -419,15 +836,16 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
             async def delete_messages(self, chat_id, message_ids):
                 self.delete_calls.append((chat_id, message_ids))
 
-            def get_chat_history(self, chat_id, limit=1):
-                async def gen():
-                    if limit == 1:
-                        yield old_bot_side
-                    else:
-                        yield bot_side
-                        yield old_bot_side
+            async def emit(self, message):
+                await asyncio.sleep(0)
+                try:
+                    await self.handler.original_callback(self, message)
+                except Exception as err:
+                    if err.__class__.__name__ != "StopPropagation":
+                        raise
 
-                return gen()
+            def get_chat_history(self, chat_id, limit=1):
+                raise AssertionError("pool copy should resolve from bot update, not history")
 
         manager = SessionManager()
         manager._initialized = True
@@ -499,6 +917,9 @@ def test_session_manager_pool_copy_does_not_fallback_to_sender_id_when_unresolve
                 self.me = SimpleNamespace(id=777)
                 self.copy_calls = []
                 self.delete_calls = []
+
+            def add_handler(self, handler, group=0):
+                raise RuntimeError("listener unavailable")
 
             async def copy_message(self, **kwargs):
                 self.copy_calls.append(kwargs)

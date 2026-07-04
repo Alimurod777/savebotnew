@@ -42,6 +42,7 @@ FloodWait:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import random
 import time
@@ -56,6 +57,11 @@ from config import API_ID, API_HASH, get_client_params
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 
 logger = logging.getLogger(__name__)
+
+
+def _session_fingerprint(session_string: str) -> str:
+    """Safe short identifier for logs; never log raw session strings."""
+    return hashlib.sha256((session_string or "").encode("utf-8")).hexdigest()[:10]
 
 # ── Timing constants (base values — adaptive throttle scales these) ───────────
 TEXT_MIN_GAP   = 0.3   # seconds between text sends
@@ -225,6 +231,7 @@ class UserUploadWorker:
         bot_username: str = None,
     ):
         self._session_string = session_string
+        self._session_fp = _session_fingerprint(session_string)
         self._user_id = user_id
         self._bot_id = bot_id
         self._bot_username = bot_username
@@ -267,6 +274,138 @@ class UserUploadWorker:
     def session_user_id(self) -> Optional[int]:
         return self._session_user_id
 
+    @property
+    def session_fingerprint(self) -> str:
+        return self._session_fp
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        text = (
+            getattr(message, "text", None)
+            or getattr(message, "caption", None)
+            or getattr(message, "message", None)
+            or ""
+        )
+        return str(text).strip()
+
+    @staticmethod
+    def _message_timestamp(message: Any) -> Optional[float]:
+        date_value = getattr(message, "date", None)
+        if date_value is None:
+            return None
+        try:
+            return float(date_value.timestamp())
+        except Exception:
+            return None
+
+    async def resolve_bot_reply_message_id(
+        self,
+        reply_message: Any,
+        *,
+        history_limit: int = 50,
+        max_age_seconds: int = 900,
+    ) -> Optional[int]:
+        """
+        Resolve a bot-authored reply anchor as seen by this user session.
+
+        Bot API message IDs and MTProto user-session message IDs can drift in
+        bot private chats. Sending media with an unchecked reply_to_message_id
+        can therefore reply to an unrelated message. We first verify the ID by
+        text, then search recent bot-chat history for the exact source header.
+        """
+        if self._client is None:
+            return None
+
+        expected_id = getattr(reply_message, "id", None) or getattr(reply_message, "message_id", None)
+        expected_text = self._message_text(reply_message)
+        expected_ts = self._message_timestamp(reply_message)
+        if not expected_text:
+            logger.warning(
+                "UserUploadWorker[%d] reply anchor has no text; refusing unchecked id-only reply bot_msg_id=%s session_fp=%s",
+                self._user_id,
+                expected_id,
+                self._session_fp,
+            )
+            return None
+
+        peer = self._bot_username.lstrip("@") if self._bot_username else self._bot_id
+        if peer is None:
+            return None
+
+        def _matches(candidate: Any) -> bool:
+            if getattr(candidate, "empty", False):
+                return False
+            if expected_text and self._message_text(candidate) != expected_text:
+                return False
+            if expected_ts is not None:
+                candidate_ts = self._message_timestamp(candidate)
+                if candidate_ts is not None and abs(candidate_ts - expected_ts) > max_age_seconds:
+                    return False
+            return True
+
+        if expected_id is not None:
+            try:
+                candidate = await self._client.get_messages(peer, int(expected_id))
+                if candidate and _matches(candidate):
+                    logger.debug(
+                        "UserUploadWorker[%d] reply anchor verified by id: bot_msg_id=%s session_msg_id=%s session_fp=%s",
+                        self._user_id,
+                        expected_id,
+                        getattr(candidate, "id", None),
+                        self._session_fp,
+                    )
+                    return int(getattr(candidate, "id"))
+            except Exception as err:
+                logger.debug(
+                    "UserUploadWorker[%d] reply anchor id lookup failed: bot_msg_id=%s session_fp=%s error=%s",
+                    self._user_id,
+                    expected_id,
+                    self._session_fp,
+                    err,
+                )
+
+        if not expected_text:
+            return None
+
+        best = None
+        best_score = None
+        try:
+            async for candidate in self._client.get_chat_history(peer, limit=history_limit):
+                if not _matches(candidate):
+                    continue
+                candidate_ts = self._message_timestamp(candidate)
+                time_score = abs(candidate_ts - expected_ts) if candidate_ts is not None and expected_ts is not None else 0
+                id_score = abs(int(getattr(candidate, "id", 0)) - int(expected_id or 0)) if expected_id is not None else 0
+                score = (time_score, id_score)
+                if best is None or score < best_score:
+                    best = candidate
+                    best_score = score
+            if best is not None:
+                logger.info(
+                    "UserUploadWorker[%d] reply anchor resolved: bot_msg_id=%s session_msg_id=%s session_fp=%s",
+                    self._user_id,
+                    expected_id,
+                    getattr(best, "id", None),
+                    self._session_fp,
+                )
+                return int(getattr(best, "id"))
+        except Exception as err:
+            logger.warning(
+                "UserUploadWorker[%d] reply anchor history lookup failed: bot_msg_id=%s session_fp=%s error=%s",
+                self._user_id,
+                expected_id,
+                self._session_fp,
+                err,
+            )
+
+        logger.warning(
+            "UserUploadWorker[%d] reply anchor not resolved: bot_msg_id=%s session_fp=%s",
+            self._user_id,
+            expected_id,
+            self._session_fp,
+        )
+        return None
+
     async def enqueue(self, task: UploadTask) -> Any:
         """
         Put a task on the queue and wait for it to complete.
@@ -303,8 +442,20 @@ class UserUploadWorker:
             me_id = getattr(me, "id", None)
             if me_id is not None:
                 self._session_user_id = int(me_id)
+                logger.info(
+                    "UserUploadWorker[%d] connected: session_fp=%s session_user_id=%s bot_id=%s",
+                    self._user_id,
+                    self._session_fp,
+                    self._session_user_id,
+                    self._bot_id,
+                )
         except Exception as err:
-            logger.warning("UserUploadWorker[%d] get_me failed: %s", self._user_id, err)
+            logger.warning(
+                "UserUploadWorker[%d] get_me failed: session_fp=%s error=%s",
+                self._user_id,
+                self._session_fp,
+                err,
+            )
 
         # Pre-resolve bot peer (PEER_ID_INVALID prevention for fresh in_memory sessions)
         resolved = False
@@ -527,8 +678,12 @@ class UserUploadWorker:
                                 task.future.set_exception(retry_err)
                             return
                 logger.warning(
-                    "UserUploadWorker[%d] send error: %s: %s",
-                    self._user_id, type(e).__name__, e,
+                    "UserUploadWorker[%d] send error: session_fp=%s session_user_id=%s error=%s: %s",
+                    self._user_id,
+                    self._session_fp,
+                    self._session_user_id,
+                    type(e).__name__,
+                    e,
                 )
                 if not task.future.done():
                     task.future.set_exception(e)
@@ -625,9 +780,16 @@ class UserWorkerRegistry:
     ) -> UserUploadWorker:
         self._ensure_reaper()
         key = (user_id, session_string[:16])
+        session_fp = _session_fingerprint(session_string)
         async with self._lock:
             worker = self._workers.get(key)
             if worker is None or not worker._running:
+                logger.info(
+                    "UserWorkerRegistry: creating worker request_user=%d session_fp=%s bot_id=%s",
+                    user_id,
+                    session_fp,
+                    bot_id,
+                )
                 worker = UserUploadWorker(
                     session_string, user_id,
                     bot_id=bot_id,
@@ -637,6 +799,12 @@ class UserWorkerRegistry:
                 self._workers[key] = worker
             else:
                 worker._last_activity = time.monotonic()
+                logger.debug(
+                    "UserWorkerRegistry: reusing worker request_user=%d session_fp=%s session_user_id=%s",
+                    user_id,
+                    session_fp,
+                    worker.session_user_id,
+                )
             return worker
 
     async def remove(self, user_id: int) -> None:

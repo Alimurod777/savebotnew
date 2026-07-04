@@ -375,7 +375,10 @@ async def download_and_send_media(
     check_cancelled: Callable,
 ) -> bool:
     """
-    Download media from source and send via bot.
+    Download media from source and upload via user session.
+
+    Text/progress/status stays on bot client. Media goes through user session
+    and is sent to the bot's Telegram user id so it lands in the user's bot DM.
     
     Guarantees cleanup of downloaded file.
     """
@@ -421,34 +424,36 @@ async def download_and_send_media(
                 # Truncate long caption (overflow handling would need separate message)
                 caption_kwargs['caption'] = caption[:CAPTION_LIMIT-3] + "..."
         
-        # Send based on type - NEVER use parse_mode with caption_entities
+        upload_chat_id = getattr(getattr(bot_client, "me", None), "id", None) or target_chat_id
+
+        # Send based on type via user session - NEVER use parse_mode with caption_entities.
+        # Bot-side reply ids are not safe for user-session media sends.
         if msg_type == "Photo":
-            await bot_client.send_photo(target_chat_id, file_path, reply_to_message_id=reply_to_message_id, **caption_kwargs)
+            await user_session.send_photo(upload_chat_id, file_path, **caption_kwargs)
         elif msg_type == "Video":
             if msg.video and msg.video.thumbs:
                 try:
                     thumb_path = await user_session.download_media(msg.video.thumbs[0].file_id)
                 except Exception:
                     pass
-            await bot_client.send_video(
-                target_chat_id, file_path,
+            await user_session.send_video(
+                upload_chat_id, file_path,
                 duration=msg.video.duration if msg.video else None,
                 thumb=thumb_path,
-                reply_to_message_id=reply_to_message_id,
                 **caption_kwargs
             )
         elif msg_type == "Audio":
-            await bot_client.send_audio(target_chat_id, file_path, reply_to_message_id=reply_to_message_id, **caption_kwargs)
+            await user_session.send_audio(upload_chat_id, file_path, **caption_kwargs)
         elif msg_type == "Voice":
-            await bot_client.send_voice(target_chat_id, file_path, reply_to_message_id=reply_to_message_id, **caption_kwargs)
+            await user_session.send_voice(upload_chat_id, file_path, **caption_kwargs)
         elif msg_type == "VideoNote":
-            await bot_client.send_video_note(target_chat_id, file_path, reply_to_message_id=reply_to_message_id)
+            await user_session.send_video_note(upload_chat_id, file_path)
         elif msg_type == "Animation":
-            await bot_client.send_animation(target_chat_id, file_path, reply_to_message_id=reply_to_message_id, **caption_kwargs)
+            await user_session.send_animation(upload_chat_id, file_path, **caption_kwargs)
         elif msg_type == "Sticker":
-            await bot_client.send_sticker(target_chat_id, file_path, reply_to_message_id=reply_to_message_id)
+            await user_session.send_sticker(upload_chat_id, file_path)
         else:  # Document
-            await bot_client.send_document(target_chat_id, file_path, reply_to_message_id=reply_to_message_id, **caption_kwargs)
+            await user_session.send_document(upload_chat_id, file_path, **caption_kwargs)
         
         return True
         

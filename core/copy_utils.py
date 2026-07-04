@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
+_ACTIVE_UPLOAD_WAITERS: dict[int, List["BotUploadUpdateWaiter"]] = {}
 
 _MEDIA_ATTRS = (
     "photo",
@@ -24,6 +25,165 @@ _MEDIA_ATTRS = (
 
 class BotMessageResolutionError(RuntimeError):
     """Raised when a bot-side DM message id cannot be resolved safely."""
+
+
+class BotUploadUpdateWaiter:
+    """
+    Wait for the bot-side update created by a user-session upload.
+
+    Bot API/pyrofork bots can receive incoming private messages as updates even
+    when ``get_chat_history`` is not allowed for bots. Pool delivery uses this
+    waiter to resolve the real bot-side message id without polling history.
+    """
+
+    def __init__(self, bot_client: Any, chat_id: int, timeout: float = 20.0) -> None:
+        self.bot_client = bot_client
+        self.chat_id = int(chat_id)
+        self.timeout = float(timeout)
+        self._handler = None
+        self._registered = None
+        self._group = -997
+        self._target_fp = None
+        self._future: Optional[asyncio.Future] = None
+        self._candidates: List[Any] = []
+        self._started = False
+
+    async def start(self) -> "BotUploadUpdateWaiter":
+        if self._started:
+            return self
+
+        from pyrogram import filters
+        from pyrogram.handlers import MessageHandler
+
+        try:
+            from pyrogram import StopPropagation
+        except Exception:  # pragma: no cover - depends on pyrogram flavor
+            StopPropagation = None
+
+        async def _handler(_, message):
+            if not self._is_candidate(message):
+                return
+
+            for waiter in list(_ACTIVE_UPLOAD_WAITERS.get(self.chat_id, [])):
+                waiter._remember_candidate(message)
+
+            # Pool uploads are internal transport messages. Stop unrelated bot
+            # handlers from processing them as user-submitted media.
+            if StopPropagation is not None:
+                raise StopPropagation
+
+        self._handler = MessageHandler(
+            _handler,
+            filters.private & filters.chat(self.chat_id),
+        )
+        _ACTIVE_UPLOAD_WAITERS.setdefault(self.chat_id, []).append(self)
+        try:
+            registered = self.bot_client.add_handler(self._handler, group=self._group)
+            if asyncio.iscoroutine(registered):
+                registered = await registered
+            self._registered = registered
+            self._started = True
+        except Exception:
+            waiters = _ACTIVE_UPLOAD_WAITERS.get(self.chat_id, [])
+            if self in waiters:
+                waiters.remove(self)
+            if not waiters:
+                _ACTIVE_UPLOAD_WAITERS.pop(self.chat_id, None)
+            raise
+        return self
+
+    async def wait_for(self, sent_msg: Any) -> int:
+        if not self._started:
+            await self.start()
+
+        target_fp = _media_fingerprint(sent_msg)
+        if not target_fp:
+            raise BotMessageResolutionError("sent message has no stable media fingerprint")
+
+        loop = asyncio.get_running_loop()
+        self._target_fp = target_fp
+        self._future = loop.create_future()
+
+        for candidate in list(self._candidates):
+            if _media_fingerprint(candidate) == target_fp:
+                msg_id = getattr(candidate, "id", None)
+                if msg_id is None:
+                    raise BotMessageResolutionError("bot-side upload update has no message id")
+                return int(msg_id)
+
+        try:
+            message = await asyncio.wait_for(self._future, timeout=self.timeout)
+        except asyncio.TimeoutError as exc:
+            raise BotMessageResolutionError(
+                f"timed out waiting for bot-side upload update from chat {self.chat_id}"
+            ) from exc
+
+        msg_id = getattr(message, "id", None)
+        if msg_id is None:
+            raise BotMessageResolutionError("bot-side upload update has no message id")
+        return int(msg_id)
+
+    async def close(self) -> None:
+        if not self._started:
+            return
+        try:
+            if isinstance(self._registered, tuple):
+                result = self.bot_client.remove_handler(*self._registered)
+            elif self._handler is not None:
+                result = self.bot_client.remove_handler(self._handler, self._group)
+            else:
+                result = None
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as err:
+            logger.debug("BotUploadUpdateWaiter cleanup failed: %s", err)
+        finally:
+            self._started = False
+            waiters = _ACTIVE_UPLOAD_WAITERS.get(self.chat_id, [])
+            if self in waiters:
+                waiters.remove(self)
+            if not waiters:
+                _ACTIVE_UPLOAD_WAITERS.pop(self.chat_id, None)
+            if self._future is not None and not self._future.done():
+                self._future.cancel()
+
+    def _is_candidate(self, message: Any) -> bool:
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat_id is not None and int(chat_id) != self.chat_id:
+            return False
+
+        from_user = getattr(message, "from_user", None)
+        from_user_id = getattr(from_user, "id", None)
+        if from_user_id is not None and int(from_user_id) != self.chat_id:
+            return False
+
+        return _media_fingerprint(message) is not None
+
+    def _remember(self, message: Any) -> None:
+        msg_id = getattr(message, "id", None)
+        if msg_id is not None:
+            for candidate in self._candidates:
+                if getattr(candidate, "id", None) == msg_id:
+                    return
+        self._candidates.append(message)
+        if len(self._candidates) > 20:
+            self._candidates = self._candidates[-20:]
+
+    def _remember_candidate(self, message: Any) -> None:
+        self._remember(message)
+        matched = self._target_fp is not None and _media_fingerprint(message) == self._target_fp
+        if matched and self._future is not None and not self._future.done():
+            self._future.set_result(message)
+
+
+async def start_bot_upload_update_waiter(
+    bot_client: Any,
+    chat_id: int,
+    timeout: float = 20.0,
+) -> BotUploadUpdateWaiter:
+    waiter = BotUploadUpdateWaiter(bot_client, chat_id, timeout=timeout)
+    return await waiter.start()
 
 
 def _media_fingerprint(message: Any) -> Optional[Tuple[str, str, Optional[int], Optional[str], str]]:
@@ -115,12 +275,15 @@ def get_bot_copy_source_chat_id(sent_message, fallback_chat_id: Optional[int] = 
     if sender_chat_id is not None:
         return int(sender_chat_id)
 
+    if fallback_chat_id is not None:
+        return int(fallback_chat_id)
+
     chat = getattr(sent_message, "chat", None)
     chat_id = getattr(chat, "id", None)
     if chat_id is not None:
         return int(chat_id)
 
-    return int(fallback_chat_id) if fallback_chat_id is not None else None
+    return None
 
 
 async def get_bot_latest_message_id(bot_client, chat_id: int) -> Optional[int]:

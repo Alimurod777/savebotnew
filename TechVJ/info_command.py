@@ -23,7 +23,7 @@ from pyrogram.enums import ChatType
 from core.reply_compat import build_reply_kwargs_from_message
 from pyrogram.raw import functions, types
 
-from config import API_ID, API_HASH, OWNER_ID
+from config import API_ID, API_HASH, OWNER_ID, get_client_params
 from database.async_db import async_db
 
 
@@ -44,6 +44,7 @@ async def create_user_client(session_string: str, name: str = "info_client"):
     """
     import uuid
     try:
+        fp = get_client_params()
         client = Client(
             f"{name}_{uuid.uuid4().hex[:8]}",
             session_string=session_string,
@@ -51,7 +52,11 @@ async def create_user_client(session_string: str, name: str = "info_client"):
             api_id=API_ID,
             no_updates=True,
             in_memory=True,
-            sleep_threshold=30
+            sleep_threshold=30,
+            device_model=fp["device_model"],
+            system_version=fp["system_version"],
+            app_version=fp["app_version"],
+            lang_code=fp["lang_code"],
         )
         await client.connect()
         return client, None

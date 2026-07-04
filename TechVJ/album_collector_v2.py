@@ -40,7 +40,7 @@ from pyrogram.errors import (
     RPCError,
 )
 
-from config import API_ID, API_HASH
+from config import API_ID, API_HASH, get_client_params
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,7 @@ async def task_scoped_session(
     client_name = f"task_{user_id}_{uuid.uuid4().hex[:8]}"
     
     try:
+        fp = get_client_params(user_id)
         client = Client(
             client_name,
             api_id=API_ID,
@@ -178,6 +179,10 @@ async def task_scoped_session(
             no_updates=True,
             sleep_threshold=30,
             max_concurrent_transmissions=10,
+            device_model=fp["device_model"],
+            system_version=fp["system_version"],
+            app_version=fp["app_version"],
+            lang_code=fp["lang_code"],
         )
         
         # Start with timeout
@@ -561,6 +566,7 @@ async def download_album_photos(
 
 async def send_album(
     bot_client: Client,
+    user_session: Client,
     album: CollectedAlbum,
     target_chat_id: int,
     reply_to_message_id: int,
@@ -621,7 +627,10 @@ async def send_album(
     if await check_cancelled():
         return False
     
-    # Send in batches of 10 (Telegram limit)
+    upload_chat_id = getattr(getattr(bot_client, "me", None), "id", None) or target_chat_id
+
+    # Send in batches of 10 (Telegram limit). Media is uploaded by user session;
+    # text overflow below remains bot-authored.
     try:
         for i in range(0, len(media_list), 10):
             if await check_cancelled():
@@ -629,30 +638,11 @@ async def send_album(
             
             batch = media_list[i:i+10]
             sent = False
-            
-            # Attempt 1: With reply (only for first batch)
-            if i == 0 and reply_to_message_id and not sent:
-                try:
-                    await bot_client.send_media_group(
-                        target_chat_id,
-                        batch,
-                        reply_to_message_id=reply_to_message_id
-                    )
-                    sent = True
-                except TypeError as te:
-                    # Pyrofork Messages compatibility issue - ignore and continue
-                    if 'topics' in str(te):
-                        logger.debug(f"Pyrofork topics warning (ignored): {te}")
-                        sent = True  # Message was likely sent despite error
-                    else:
-                        pass  # Try without reply
-                except Exception:
-                    pass  # Try without reply
-            
-            # Attempt 2: Without reply (fallback or non-first batch)
+
+            # Do not pass bot-side reply ids to user-session media sends.
             if not sent:
                 try:
-                    await bot_client.send_media_group(target_chat_id, batch)
+                    await user_session.send_media_group(upload_chat_id, batch)
                     sent = True
                 except TypeError as te:
                     # Pyrofork Messages compatibility issue - ignore
@@ -665,7 +655,8 @@ async def send_album(
             if i + 10 < len(media_list):
                 await asyncio.sleep(1)  # Delay between batches
         
-        # Send overflow caption as separate message if exists (from SmartRenderer)
+        # Send overflow caption as separate message if exists (from SmartRenderer).
+        # Overflow is text, so it stays on bot client.
         if overflow_chunks:
             for idx, chunk_kwargs in enumerate(overflow_chunks):
                 try:
@@ -772,9 +763,9 @@ async def process_album_with_session(
         if await check_cancelled():
             return False, "cancelled", boundary
         
-        # Step 5: Send album via bot client
+        # Step 5: Upload album via user session; bot sends only text overflow.
         send_success = await send_album(
-            bot_client, album, target_chat_id, reply_to_message_id, check_cancelled
+            bot_client, acc, album, target_chat_id, reply_to_message_id, check_cancelled
         )
         
         if not send_success:

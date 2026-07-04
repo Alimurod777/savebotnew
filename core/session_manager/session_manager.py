@@ -30,6 +30,7 @@ from core.copy_utils import (
     get_bot_copy_source_chat_id,
     get_bot_latest_message_id,
     get_bot_real_message_id,
+    start_bot_upload_update_waiter,
 )
 
 from .borrow_manager import borrow_manager
@@ -184,6 +185,7 @@ class SessionManager:
         bot_user_id: Optional[int] = None,
         doc_file_name: Optional[str] = None,
         force_copy: bool = False,
+        reply_message: Optional[Any] = None,
     ) -> Optional[Any]:
         """
         Attempt to upload via *record*.
@@ -202,6 +204,7 @@ class SessionManager:
             return None
 
         try:
+            update_waiter = None
             bridge = self._bridge
             if bridge is None:
                 return None
@@ -220,6 +223,42 @@ class SessionManager:
             _upload_kwargs = dict(send_kwargs)
             _reply_to_id = _upload_kwargs.pop("reply_to_message_id", None)
             _upload_kwargs.pop("reply_parameters", None)
+            is_pool_upload = force_copy or self._is_pool_session(record, user_id)
+
+            worker = await bridge.get_worker(record, user_id)
+            if worker is None:
+                return None
+
+            if not is_pool_upload and _reply_to_id is not None:
+                _resolved_reply_id = None
+                resolver = getattr(worker, "resolve_bot_reply_message_id", None)
+                if reply_message is not None and callable(resolver):
+                    try:
+                        _resolved_reply_id = await resolver(reply_message)
+                    except Exception as reply_err:
+                        logger.debug(
+                            "SessionManager: direct reply anchor resolve failed user=%d session=%s bot_msg_id=%s: %s",
+                            user_id,
+                            record.session_id[:8],
+                            _reply_to_id,
+                            reply_err,
+                        )
+                if _resolved_reply_id is not None:
+                    _upload_kwargs["reply_to_message_id"] = _resolved_reply_id
+                    logger.info(
+                        "SessionManager: direct reply anchor resolved user=%d session=%s bot_msg_id=%s session_msg_id=%s",
+                        user_id,
+                        record.session_id[:8],
+                        _reply_to_id,
+                        _resolved_reply_id,
+                    )
+                else:
+                    logger.warning(
+                        "SessionManager: direct reply anchor unresolved; sending without reply user=%d session=%s bot_msg_id=%s",
+                        user_id,
+                        record.session_id[:8],
+                        _reply_to_id,
+                    )
 
             send_fn = bridge.build_send_fn(
                 target_chat_id=upload_chat_id,
@@ -232,12 +271,18 @@ class SessionManager:
                 doc_file_name=doc_file_name,
             )
 
-            worker = await bridge.get_worker(record, user_id)
-            if worker is None:
-                return None
-
             expected_source_chat_id = getattr(worker, "session_user_id", None)
             copy_source_chat_id = int(expected_source_chat_id) if expected_source_chat_id is not None else None
+            logger.info(
+                "SessionManager upload route: session=%s type=%s owner=%s request_user=%d is_pool=%s uploader_user_id=%s session_fp=%s",
+                record.session_id[:8],
+                record.type.value,
+                record.owner_user_id,
+                user_id,
+                is_pool_upload,
+                copy_source_chat_id,
+                getattr(worker, "session_fingerprint", "-"),
+            )
             pre_upload_latest_id = None
             if copy_source_chat_id is None:
                 logger.error(
@@ -246,26 +291,39 @@ class SessionManager:
                 )
                 return None
 
-            pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
-            if pre_upload_latest_id is None:
-                logger.error(
-                    "SessionManager: could not read bot-side watermark for session %s chat=%s",
-                    record.session_id[:8],
-                    copy_source_chat_id,
-                )
-                return None
+            if is_pool_upload:
+                try:
+                    update_waiter = await start_bot_upload_update_waiter(
+                        bot_client,
+                        copy_source_chat_id,
+                    )
+                except Exception as waiter_err:
+                    logger.warning(
+                        "SessionManager: could not start bot-side upload waiter for session %s chat=%s: %s",
+                        record.session_id[:8],
+                        copy_source_chat_id,
+                        waiter_err,
+                    )
+                    pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
 
-            sent_msg = await bridge.enqueue_task(
-                worker,
-                send_fn,
-                is_media=True,
-                owner_user_id=user_id,
-            )
+            try:
+                sent_msg = await bridge.enqueue_task(
+                    worker,
+                    send_fn,
+                    is_media=True,
+                    owner_user_id=user_id,
+                )
+            finally:
+                if not is_pool_upload and update_waiter is not None:
+                    await update_waiter.close()
+
+            if not is_pool_upload:
+                return sent_msg
 
             # Copy from uploader-bot DM to user chat so reply context is applied.
             copied_msg = None
             if sent_msg is not None:
-                detected_source_chat_id = get_bot_copy_source_chat_id(sent_msg, upload_chat_id)
+                detected_source_chat_id = get_bot_copy_source_chat_id(sent_msg, copy_source_chat_id)
                 if copy_source_chat_id is None:
                     copy_source_chat_id = detected_source_chat_id
                 elif detected_source_chat_id is not None and int(detected_source_chat_id) != int(copy_source_chat_id):
@@ -284,12 +342,17 @@ class SessionManager:
                     return None
 
                 try:
-                    real_msg_id = await get_bot_real_message_id(
-                        bot_client,
-                        copy_source_chat_id,
-                        sent_msg,
-                        min_message_id=pre_upload_latest_id,
-                    )
+                    if update_waiter is not None:
+                        real_msg_id = await update_waiter.wait_for(sent_msg)
+                    else:
+                        if pre_upload_latest_id is None:
+                            raise BotMessageResolutionError("Could not read bot-side upload watermark")
+                        real_msg_id = await get_bot_real_message_id(
+                            bot_client,
+                            copy_source_chat_id,
+                            sent_msg,
+                            min_message_id=pre_upload_latest_id,
+                        )
                 except BotMessageResolutionError as resolve_err:
                     logger.error(
                         "SessionManager: blocked unsafe copy for session %s chat=%s sent_id=%s: %s",
@@ -366,6 +429,8 @@ class SessionManager:
             return None
 
         finally:
+            if update_waiter is not None:
+                await update_waiter.close()
             await borrow_manager.release(record, user_id)
 
     # ── Multi-session upload with rotation ────────────────────────────────────
@@ -384,6 +449,7 @@ class SessionManager:
         max_attempts: int = 8,
         doc_file_name: Optional[str] = None,
         bot_user_id: Optional[int] = None,
+        reply_message: Optional[Any] = None,
     ) -> bool:
         """
         Try to upload for *user_id*, rotating sessions on failure.
@@ -421,6 +487,7 @@ class SessionManager:
                 progress_cb=progress_cb,
                 bot_user_id=bot_user_id,
                 doc_file_name=doc_file_name,
+                reply_message=reply_message,
             )
             if result is not None:
                 logger.info(

@@ -53,7 +53,8 @@ from config import (
     CLEANUP_INTERVAL_HOURS,
     MAX_CONCURRENT_VALIDATIONS,
     VALIDATION_DELAY_SECONDS,
-    MONGODB_OPERATION_DELAY
+    MONGODB_OPERATION_DELAY,
+    get_client_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -356,13 +357,18 @@ class SessionManager:
         """Perform actual Pyrogram validation"""
         client = None
         try:
+            fp = get_client_params(user_id)
             client = Client(
                 f"validation_{user_id}",
                 api_id=API_ID,
                 api_hash=API_HASH,
                 session_string=session_string,
                 in_memory=True,
-                no_updates=True
+                no_updates=True,
+                device_model=fp["device_model"],
+                system_version=fp["system_version"],
+                app_version=fp["app_version"],
+                lang_code=fp["lang_code"],
             )
             
             await client.start()

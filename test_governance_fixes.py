@@ -771,6 +771,105 @@ def test_media_route_guard_swaps_accidental_bot_user_order():
     asyncio.run(run())
 
 
+def test_split_part_upload_retries_peer_invalid_with_bot_username():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _send_split_part_with_peer_retry
+
+        class FakeAcc:
+            def __init__(self):
+                self.targets = []
+                self.started = []
+                self.unblocked = []
+
+            async def send_video(self, target, path, **kwargs):
+                self.targets.append(target)
+                if len(self.targets) == 1:
+                    raise RuntimeError("Telegram says: [400 PEER_ID_INVALID]")
+                return SimpleNamespace(id=90, chat=SimpleNamespace(id=target), caption=kwargs.get("caption"))
+
+            async def get_chat(self, username):
+                return SimpleNamespace(id=777, username=username)
+
+            async def unblock_user(self, username):
+                self.unblocked.append(username)
+
+            async def send_message(self, username, text):
+                self.started.append((username, text))
+
+        bot = SimpleNamespace(me=SimpleNamespace(id=777, is_bot=True, username="kursbotactiv"))
+        acc = FakeAcc()
+
+        sent = await _send_split_part_with_peer_retry(
+            acc=acc,
+            target_chat_id=777,
+            bot_client=bot,
+            msg_type="Video",
+            chunk_path="part1.mp4",
+            send_kwargs={"caption": "Part 1/2"},
+        )
+
+        assert sent.id == 90
+        assert acc.targets == [777, "kursbotactiv"]
+        assert acc.started == [("kursbotactiv", "/start")]
+        assert acc.unblocked == ["kursbotactiv"]
+
+    asyncio.run(run())
+
+
+def test_split_bot_peer_resolve_is_cached_per_session():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _ensure_user_session_bot_peer
+
+        class FakeAcc:
+            def __init__(self):
+                self.get_chat_calls = 0
+                self.started = []
+
+            async def get_chat(self, username):
+                self.get_chat_calls += 1
+                return SimpleNamespace(id=777, username=username)
+
+            async def unblock_user(self, username):
+                return None
+
+            async def send_message(self, username, text):
+                self.started.append((username, text))
+
+            async def resolve_peer(self, peer_id):
+                return SimpleNamespace(user_id=peer_id)
+
+        bot = SimpleNamespace(me=SimpleNamespace(id=777, is_bot=True, username="kursbotactiv"))
+        acc = FakeAcc()
+
+        first = await _ensure_user_session_bot_peer(acc, bot, 777)
+        second = await _ensure_user_session_bot_peer(acc, bot, 777)
+
+        assert first == (777, "kursbotactiv")
+        assert second == (777, "kursbotactiv")
+        assert acc.started == [("kursbotactiv", "/start")]
+        assert acc.get_chat_calls == 2
+
+    asyncio.run(run())
+
+
 def test_session_manager_pool_copy_failure_returns_none_without_delete():
     async def run():
         sent = SimpleNamespace(

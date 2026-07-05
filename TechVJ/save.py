@@ -802,6 +802,131 @@ def _get_user_session_target_chat_id(bot_client: Client, fallback_chat_id: int) 
     return int(fallback_chat_id)
 
 
+def _is_peer_invalid_error(error: Any) -> bool:
+    text = f"{type(error).__name__}: {error}".upper()
+    markers = (
+        "PEER_ID_INVALID",
+        "USERNAME_INVALID",
+        "USER_IS_BLOCKED",
+        "BOT WAS BLOCKED",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _bot_peer_cache_key(bot_id: int, bot_username: Optional[str]) -> Tuple[int, str]:
+    return int(bot_id), (str(bot_username).lstrip("@").lower() if bot_username else "")
+
+
+async def _ensure_user_session_bot_peer(
+    acc,
+    bot_client: Client,
+    bot_id: int,
+    *,
+    force: bool = False,
+) -> Tuple[int, Optional[str]]:
+    """
+    Warm up the user session's bot dialog before direct split uploads.
+
+    Split fallback uses the caller's active MTProto session directly instead of
+    UserUploadWorker, so it must do the same minimal bot peer preparation here.
+    """
+    bot_id = int(bot_id)
+    bot_username = getattr(_cached_client_me(bot_client), "username", None)
+    cache_key = _bot_peer_cache_key(bot_id, bot_username)
+    try:
+        resolved_cache = getattr(acc, "_techvj_bot_peer_resolved", None)
+        if resolved_cache is None:
+            resolved_cache = set()
+            setattr(acc, "_techvj_bot_peer_resolved", resolved_cache)
+        if not force and cache_key in resolved_cache:
+            return bot_id, str(bot_username).lstrip("@") if bot_username else None
+    except Exception:
+        resolved_cache = None
+
+    if bot_username:
+        uname = str(bot_username).lstrip("@")
+        try:
+            await acc.get_chat(uname)
+        except Exception as err:
+            logger.debug("Split upload bot username get_chat skipped @%s: %s", uname, err)
+        try:
+            await acc.unblock_user(uname)
+        except Exception:
+            pass
+        try:
+            await acc.send_message(uname, "/start")
+        except Exception as err:
+            logger.debug("Split upload bot /start skipped @%s: %s", uname, err)
+        try:
+            chat = await acc.get_chat(uname)
+            chat_id = getattr(chat, "id", None)
+            if chat_id:
+                try:
+                    if resolved_cache is not None:
+                        resolved_cache.add(cache_key)
+                except Exception:
+                    pass
+                return int(chat_id), uname
+        except Exception as err:
+            logger.debug("Split upload bot username final resolve failed @%s: %s", uname, err)
+
+    try:
+        await acc.resolve_peer(bot_id)
+        try:
+            if resolved_cache is not None:
+                resolved_cache.add(cache_key)
+        except Exception:
+            pass
+    except Exception as err:
+        logger.debug("Split upload bot id resolve skipped id=%s: %s", bot_id, err)
+    return bot_id, str(bot_username).lstrip("@") if bot_username else None
+
+
+async def _send_split_part_with_peer_retry(
+    *,
+    acc,
+    target_chat_id: Any,
+    bot_client: Client,
+    bot_id: Optional[int] = None,
+    msg_type: str,
+    chunk_path: str,
+    send_kwargs: dict,
+) -> Message:
+    """
+    Send one split chunk via the user session, retrying once after peer warm-up.
+    """
+    async def _send(dest):
+        if msg_type != "Document" and is_video_file(chunk_path):
+            return await acc.send_video(dest, chunk_path, **send_kwargs)
+        return await acc.send_document(dest, chunk_path, **send_kwargs)
+
+    try:
+        return await _send(target_chat_id)
+    except Exception as first_err:
+        if not _is_peer_invalid_error(first_err):
+            raise
+        retry_bot_id = bot_id
+        if retry_bot_id is None:
+            try:
+                retry_bot_id = int(target_chat_id)
+            except Exception:
+                retry_bot_id = _get_user_session_target_chat_id(bot_client, 0)
+        refreshed_chat_id, bot_username = await _ensure_user_session_bot_peer(
+            acc,
+            bot_client,
+            int(retry_bot_id),
+            force=True,
+        )
+        logger.warning(
+            "Split part upload peer refresh after %s; retrying target=%s username=%s",
+            type(first_err).__name__,
+            refreshed_chat_id,
+            bot_username,
+        )
+        retry_target = bot_username or refreshed_chat_id
+        return await _send(retry_target)
+
+
 def _positive_int(value) -> Optional[int]:
     """Return a positive int or None for empty/zero values."""
     try:
@@ -6656,7 +6781,7 @@ async def download_and_send_media(
         if await pipeline.check_cancelled():
             return False
 
-        split_target_chat_id = _get_user_session_target_chat_id(client, ctx_target_chat_id)
+        split_target_chat_id = route_bot_id or _get_user_session_target_chat_id(client, ctx_target_chat_id)
         local_video_meta = None
         if msg_type == "Video" and is_video_file(file_path):
             local_video_meta, thumb_path = await _get_local_video_artifacts(file_path, msg)
@@ -6729,6 +6854,12 @@ async def download_and_send_media(
                     total_parts = len(chunk_paths)
                     upload_source_user_id = await _get_user_session_account_id(acc, user_id)
                     split_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, ctx_target_chat_id)
+                    split_resolved_bot_id, split_bot_username = await _ensure_user_session_bot_peer(
+                        acc,
+                        client,
+                        split_target_chat_id,
+                    )
+                    split_upload_target_chat_id = split_bot_username or split_resolved_bot_id
 
                     for i, chunk_path in enumerate(chunk_paths):
                         if await pipeline.check_cancelled():
@@ -6772,20 +6903,31 @@ async def download_and_send_media(
                                 await get_bot_latest_message_id(client, upload_source_user_id)
                                 if split_needs_copy else None
                             )
-                            _sent_part = await acc.send_video(
-                                split_target_chat_id,
-                                chunk_path,
-                                **part_video_kwargs,
+                            _sent_part = await _send_split_part_with_peer_retry(
+                                acc=acc,
+                                target_chat_id=split_upload_target_chat_id,
+                                bot_client=client,
+                                bot_id=split_target_chat_id,
+                                msg_type=msg_type,
+                                chunk_path=chunk_path,
+                                send_kwargs=part_video_kwargs,
                             )
                         else:
                             _pre_part_latest_id = (
                                 await get_bot_latest_message_id(client, upload_source_user_id)
                                 if split_needs_copy else None
                             )
-                            _sent_part = await acc.send_document(
-                                split_target_chat_id, chunk_path,
-                                caption=part_caption,
-                                force_document=True,
+                            _sent_part = await _send_split_part_with_peer_retry(
+                                acc=acc,
+                                target_chat_id=split_upload_target_chat_id,
+                                bot_client=client,
+                                bot_id=split_target_chat_id,
+                                msg_type="Document",
+                                chunk_path=chunk_path,
+                                send_kwargs={
+                                    "caption": part_caption,
+                                    "force_document": True,
+                                },
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -7023,6 +7165,12 @@ async def download_and_send_media(
                         _upload_source_user_id,
                         ctx_target_chat_id,
                     )
+                    _split_resolved_bot_id, _split_bot_username = await _ensure_user_session_bot_peer(
+                        acc,
+                        client,
+                        split_target_chat_id,
+                    )
+                    _split_upload_target_chat_id = _split_bot_username or _split_resolved_bot_id
                     for _i, _cp in enumerate(_chunks):
                         if await pipeline.check_cancelled():
                             cleanup_chunks(_chunks[_i:])
@@ -7062,21 +7210,31 @@ async def download_and_send_media(
                                 await get_bot_latest_message_id(client, _upload_source_user_id)
                                 if _fallback_split_needs_copy else None
                             )
-                            _sent_part = await acc.send_video(
-                                split_target_chat_id,
-                                _cp,
-                                **_part_video_kwargs,
+                            _sent_part = await _send_split_part_with_peer_retry(
+                                acc=acc,
+                                target_chat_id=_split_upload_target_chat_id,
+                                bot_client=client,
+                                bot_id=split_target_chat_id,
+                                msg_type=msg_type,
+                                chunk_path=_cp,
+                                send_kwargs=_part_video_kwargs,
                             )
                         else:
                             _pre_part_latest_id = (
                                 await get_bot_latest_message_id(client, _upload_source_user_id)
                                 if _fallback_split_needs_copy else None
                             )
-                            _sent_part = await acc.send_document(
-                                split_target_chat_id,
-                                _cp,
-                                caption=_pcap,
-                                force_document=True,
+                            _sent_part = await _send_split_part_with_peer_retry(
+                                acc=acc,
+                                target_chat_id=_split_upload_target_chat_id,
+                                bot_client=client,
+                                bot_id=split_target_chat_id,
+                                msg_type="Document",
+                                chunk_path=_cp,
+                                send_kwargs={
+                                    "caption": _pcap,
+                                    "force_document": True,
+                                },
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,

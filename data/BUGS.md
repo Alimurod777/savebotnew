@@ -5,6 +5,29 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-047: Split fallback user session bot peer tayyorlamagani uchun PEER_ID_INVALID
+**Sana:** 2026-07-05
+**Holat:** Hal qilindi
+
+**Muammo:** 2GB limitdan katta postlar split fallback yo'liga tushganda ayrim foydalanuvchilarda `download_and_send_media returned False` qaytdi. Real reportlarda 2.00 GB video (`2148893485` bytes, Telegram 2000 MiB limitidan katta) va 3.91 GB document split upload vaqtida `[400 PEER_ID_INVALID]` berdi.
+
+**Sabab:** Oddiy/premium worker upload yo'llari bot peerini `bot_id`/`bot_username` bilan tayyorlaydi va kerak bo'lsa `/start` yuboradi. Split fallback esa chunklarni bevosita `acc.send_video()` / `acc.send_document()` bilan numeric bot IDga yuborardi. Fresh yoki bot dialogi cache'da bo'lmagan user session numeric bot peer/access_hashni resolve qila olmasa `PEER_ID_INVALID` chiqardi va butun post `False` bo'lib ketardi.
+
+**Yechim:**
+1. Split upload uchun `_ensure_user_session_bot_peer()` qo'shildi: split loop boshlanishidan oldin user session ichida bot peer username orqali tayyorlanadi (`get_chat`, `unblock_user`, `/start`, final `get_chat`).
+2. Resolve natijasi `acc._techvj_bot_peer_resolved` ichida per bot ID/username cache qilinadi, shuning uchun har chunk oldidan `/start` ketmaydi.
+3. `_send_split_part_with_peer_retry()` qo'shildi: agar chunk send paytida baribir `PEER_ID_INVALID`/blocked xato chiqsa cache chetlab o'tilib `force=True` bilan peer qayta tayyorlanadi va username target bilan bir marta retry qilinadi.
+4. Standard split path va direct premium upload failure'dan keyingi split fallback ikkalasi ham loopdan oldin ensure qiladi va chunk send helperidan foydalanadi.
+5. Split target endi routing guard qaytargan `route_bot_id`ni birinchi ishlatadi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session or media_route_guard or own_user_session_upload_skips_bot_copy"` - 5 passed
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-046: Routing almashishi va SessionManager direct reply ID regressiyasi
 **Sana:** 2026-07-03
 **Holat:** Hal qilindi

@@ -5,6 +5,31 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 24 (2026-07-05) - Split fallback PEER_ID_INVALID fix
+
+### So'rov:
+Foydalanuvchi production failure report berdi: 2.00 GB video va 3.91 GB document bitta post sifatida o'qilgan, user kanalga a'zo, lekin `download_and_send_media returned False` qaytgan. Ikkinchi reportda split fallback userga `Failed to split large file: ... [400 PEER_ID_INVALID]` ko'rsatgan.
+
+### Natija:
+- **BUG-047** qo'shildi va hal qilindi.
+- 2.00 GB reportdagi fayl `2148893485` bytes bo'lgani uchun Telegram 2000 MiB limitidan katta va split fallback yo'liga tushishi kerakligi aniqlandi.
+- Split fallback bevosita `acc.send_video()` / `acc.send_document()` bilan numeric bot IDga yuborayotgani, lekin worker yo'lidagi bot peer tayyorlash (`get_chat`, `/start`, username resolve) yo'qligi topildi.
+- `_ensure_user_session_bot_peer()` helper qo'shildi: split loop boshlanishidan oldin user session ichida bot peer username orqali tayyorlanadi va per-session cache qilinadi.
+- `_send_split_part_with_peer_retry()` helper qo'shildi: chunk send vaqtida baribir `PEER_ID_INVALID` yoki bot blocked xatosi chiqsa `force=True` bilan peer qayta tayyorlanadi va username target bilan bir marta retry qilinadi.
+- Standard split path va direct premium failure'dan keyingi split fallback loopdan oldin ensure qiladi va chunk helperidan foydalanadi.
+
+### Tekshiruv:
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session or media_route_guard or own_user_session_upload_skips_bot_copy"` - 5 passed
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+---
+
 ## Sessiya 23 (2026-07-03) - Runtime routing guard va SessionManager reply fix
 
 ### So'rov:

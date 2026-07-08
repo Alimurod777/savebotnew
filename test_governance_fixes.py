@@ -386,6 +386,95 @@ def test_public_copy_caption_too_long_falls_back_to_captionless_copy_and_text():
     asyncio.run(run())
 
 
+def test_parse_native_comment_link_preserves_source_post_for_discussion_route():
+    import sys
+
+    sys.modules.setdefault(
+        "psutil",
+        SimpleNamespace(
+            virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+        ),
+    )
+
+    from TechVJ.save import parse_telegram_url
+
+    parsed, error = parse_telegram_url("https://t.me/zapislar_efir/218?comment=901")
+
+    assert error is None
+    assert parsed.url_type == "thread"
+    assert parsed.channel_id == "zapislar_efir"
+    assert parsed.post_ids == [901]
+    assert parsed.thread_id is None
+    assert parsed.thread_source_chat_id == "zapislar_efir"
+    assert parsed.thread_source_post_id == 218
+
+
+def test_prepare_discussion_route_joins_linked_group_from_channel_post():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _prepare_discussion_thread_route
+
+        discussion_chat = SimpleNamespace(id=-100777, username="zapislar_chat")
+        discussion_root = SimpleNamespace(id=345, chat=discussion_chat, empty=False)
+        source_chat = SimpleNamespace(id=-100111, title="Zapislar")
+
+        class FakeAcc:
+            def __init__(self):
+                self.joined = []
+                self.resolved = []
+
+            async def get_chat(self, chat_id):
+                if chat_id == "zapislar_efir":
+                    return source_chat
+                if chat_id == -100777:
+                    return discussion_chat
+                raise RuntimeError(f"unexpected chat {chat_id}")
+
+            async def get_discussion_message(self, chat_id, message_id):
+                assert chat_id == "zapislar_efir"
+                assert message_id == 218
+                return discussion_root
+
+            async def join_chat(self, chat_id):
+                self.joined.append(chat_id)
+                return discussion_chat
+
+            async def resolve_peer(self, peer_id):
+                self.resolved.append(peer_id)
+                return SimpleNamespace(channel_id=abs(int(peer_id)))
+
+        acc = FakeAcc()
+
+        result = await _prepare_discussion_thread_route(
+            acc,
+            source_chat_id="zapislar_efir",
+            source_post_id=218,
+            fallback_discussion_chat_id="zapislar_efir",
+            fallback_thread_id=None,
+            context=None,
+        )
+
+        discussion_chat_id, thread_id, resolved_source_chat, root_msg, join_status = result
+
+        assert discussion_chat_id == -100777
+        assert thread_id == 345
+        assert resolved_source_chat is source_chat
+        assert root_msg is discussion_root
+        assert join_status == "joined"
+        assert acc.joined == ["zapislar_chat"]
+        assert acc.resolved == [-100777]
+
+    asyncio.run(run())
+
+
 def test_caption_splitter_does_not_partialize_text_link_entity():
     from core.caption_splitter import CAPTION_LIMIT, split_caption
     from core.utf16_utils import char_to_utf16_offset, utf16_len

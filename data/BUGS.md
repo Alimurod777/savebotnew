@@ -5,6 +5,34 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-050: Channel comment link discussion groupga a'zo bo'lmaganda yuklanmaydi
+**Sana:** 2026-07-08
+**Holat:** Hal qilindi
+
+**Muammo:** Foydalanuvchi kanal comment qismidagi post havolasini yuborganda, media real xabar linked discussion/muhokama guruhida bo'lgani uchun user session u guruhga a'zo bo'lmasa commentni yuklab ola olmadi.
+
+**Sabab:**
+1. `?thread=` comment linklari discussion group chat ID bilan keladi, lekin user session bu groupga a'zo bo'lmasa `get_messages()` access xatosi beradi.
+2. Native Telegram `?comment=` linklari channel postga ishora qiladi; actual comment chat/root esa runtime'da `get_discussion_message(channel, post)` orqali topilishi kerak edi.
+3. Eski flow comment fetchdan oldin linked discussion groupni join/resolve qilmasdi.
+
+**Yechim:**
+1. `parse_comment_url()` qo'shildi: `https://t.me/<channel>/<post>?comment=<comment>` va `/c/<channel>/<post>?comment=<comment>` linklar `thread` flowga yo'naltiriladi, source channel post metadata saqlanadi.
+2. `_prepare_discussion_thread_route()` qo'shildi: source channel postdan `acc.get_discussion_message()` bilan discussion root message olinadi, discussion chat ID va thread root aniqlanadi.
+3. `_join_chat_best_effort()` qo'shildi: discussion group public username yoki invite link orqali user sessionni avtomatik qo'shishga urinadi; already-member OK, join-request bo'lsa userga aniq status beriladi.
+4. `process_thread_comments()` fetch chatini source channeldan resolved discussion groupga o'tkazadi; album/media processing context ham discussion chat ID bilan davom etadi.
+
+**Cheklov:** Faqat private `/c/<discussion_group>/<comment>?thread=<root>` linkda source channel post yoki public username/invite bo'lmasa, Telegram API orqali guruhga avtomatik qo'shilish uchun target yetarli bo'lmasligi mumkin. Bunday holatda userga muhokama guruhiga qo'shilib qayta urinish haqida aniq xabar beriladi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "native_comment_link or prepare_discussion_route or public_copy_caption_too_long or source_context_message_replies"` - 4 passed
+- `git diff --check` - OK
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-049: Public bot-only copy uzun captionda MEDIA_CAPTION_TOO_LONG
 **Sana:** 2026-07-08
 **Holat:** Hal qilindi

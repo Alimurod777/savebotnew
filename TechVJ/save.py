@@ -9,7 +9,15 @@ import random
 import uuid
 import pyrogram
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
+from pyrogram.errors import (
+    FloodWait,
+    UserIsBlocked,
+    InputUserDeactivated,
+    UserAlreadyParticipant,
+    InviteHashExpired,
+    UsernameNotOccupied,
+    InviteRequestSent,
+)
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
@@ -230,6 +238,142 @@ async def _resolve_peer_safe(acc, peer_id: int, context: Optional[TaskContext] =
             e,
         )
         return None
+
+
+def _chat_join_candidates(chat_ref: Any, chat_obj: Any = None) -> List[Any]:
+    candidates: List[Any] = []
+    username = getattr(chat_obj, "username", None) if chat_obj is not None else None
+    invite_link = getattr(chat_obj, "invite_link", None) if chat_obj is not None else None
+    if username:
+        candidates.append(str(username).lstrip("@"))
+    if invite_link:
+        candidates.append(invite_link)
+    if chat_ref is not None:
+        candidates.append(chat_ref)
+
+    seen = set()
+    result = []
+    for item in candidates:
+        key = str(item)
+        if key and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _discussion_access_error_text(error: Any) -> str:
+    return f"{error.__class__.__name__}: {error}".upper()
+
+
+async def _join_chat_best_effort(acc, chat_ref: Any, chat_obj: Any = None) -> Tuple[bool, str]:
+    """
+    Try to join a discussion group with the current user session.
+
+    Returns:
+        (ok, status)
+        status: joined | already | request_sent | no_target | failed
+    """
+    candidates = _chat_join_candidates(chat_ref, chat_obj)
+    if not candidates:
+        return False, "no_target"
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            await acc.join_chat(candidate)
+            return True, "joined"
+        except UserAlreadyParticipant:
+            return True, "already"
+        except InviteRequestSent:
+            return False, "request_sent"
+        except Exception as err:
+            err_text = _discussion_access_error_text(err)
+            if "USER_ALREADY_PARTICIPANT" in err_text or "ALREADY_PARTICIPANT" in err_text:
+                return True, "already"
+            if "INVITE_REQUEST_SENT" in err_text or "REQUEST_SENT" in err_text:
+                return False, "request_sent"
+            last_error = err
+            logger.debug("Discussion auto-join candidate failed target=%s: %s", candidate, err)
+
+    return False, f"failed:{last_error}" if last_error else "failed"
+
+
+async def _prepare_discussion_thread_route(
+    acc,
+    *,
+    source_chat_id: Any,
+    source_post_id: Optional[int],
+    fallback_discussion_chat_id: Any,
+    fallback_thread_id: Optional[int],
+    context: Optional[TaskContext] = None,
+) -> Tuple[Any, Optional[int], Optional[Any], Optional[Any], Optional[str]]:
+    """
+    Resolve and prepare access to the linked discussion group for a comment link.
+
+    Native Telegram comment links point at the channel post (`?comment=`). The
+    actual comment media lives in the linked discussion group. This helper asks
+    Telegram for the discussion root message, joins the linked group if possible,
+    and returns the chat/thread ids to fetch comments from.
+    """
+    discussion_chat_id = fallback_discussion_chat_id
+    thread_id = fallback_thread_id
+    source_chat = None
+    thread_root_msg = None
+    join_status = None
+
+    try:
+        if source_chat_id is not None:
+            source_chat = await acc.get_chat(source_chat_id)
+    except Exception as chat_err:
+        logger.debug("Discussion source chat lookup skipped source=%s: %s", source_chat_id, chat_err)
+
+    if source_post_id is not None and source_chat_id is not None:
+        try:
+            thread_root_msg = await acc.get_discussion_message(source_chat_id, int(source_post_id))
+            if thread_root_msg and not getattr(thread_root_msg, "empty", False):
+                discussion_chat = getattr(thread_root_msg, "chat", None)
+                discussion_chat_id = getattr(discussion_chat, "id", None) or discussion_chat_id
+                thread_id = getattr(thread_root_msg, "id", None) or thread_id
+                ok, join_status = await _join_chat_best_effort(acc, discussion_chat_id, discussion_chat)
+                logger.debug(
+                    "Discussion route resolved task=%s source=%s/%s discussion=%s thread=%s join=%s ok=%s",
+                    getattr(context, "task_id", "?"),
+                    source_chat_id,
+                    source_post_id,
+                    discussion_chat_id,
+                    thread_id,
+                    join_status,
+                    ok,
+                )
+        except Exception as discussion_err:
+            logger.debug(
+                "Discussion message lookup skipped task=%s source=%s/%s: %s",
+                getattr(context, "task_id", "?"),
+                source_chat_id,
+                source_post_id,
+                discussion_err,
+            )
+
+    if thread_root_msg is None and discussion_chat_id is not None:
+        discussion_chat = None
+        try:
+            discussion_chat = await acc.get_chat(discussion_chat_id)
+        except Exception as discussion_chat_err:
+            logger.debug("Discussion chat lookup skipped chat=%s: %s", discussion_chat_id, discussion_chat_err)
+
+        ok, join_status = await _join_chat_best_effort(acc, discussion_chat_id, discussion_chat)
+        logger.debug(
+            "Discussion route fallback join task=%s discussion=%s join=%s ok=%s",
+            getattr(context, "task_id", "?"),
+            discussion_chat_id,
+            join_status,
+            ok,
+        )
+
+    if discussion_chat_id is not None:
+        await _resolve_peer_safe(acc, discussion_chat_id, context)
+
+    return discussion_chat_id, thread_id, source_chat, thread_root_msg, join_status
 
 
 async def _get_forum_topic_raw(acc, raw_peer, topic_id: int):
@@ -1125,6 +1269,8 @@ class ParsedURL:
         thread_id: int = None,
         topic_range_anchor: Optional[Tuple[int, int]] = None,
         thread_root_id: Optional[int] = None,
+        thread_source_chat_id: Any = None,
+        thread_source_post_id: Optional[int] = None,
     ):
         self.channel_id = channel_id
         self.post_ids = post_ids
@@ -1133,6 +1279,8 @@ class ParsedURL:
         self.thread_id = thread_id  # For thread links: ?thread=ID
         self.topic_range_anchor = topic_range_anchor
         self.thread_root_id = thread_root_id
+        self.thread_source_chat_id = thread_source_chat_id
+        self.thread_source_post_id = thread_source_post_id
     
     @property
     def is_topic(self) -> bool:
@@ -1152,6 +1300,10 @@ class ParsedURL:
             extra += f", topic_range_anchor={self.topic_range_anchor}"
         if self.thread_root_id:
             extra += f", thread_root_id={self.thread_root_id}"
+        if self.thread_source_chat_id is not None:
+            extra += f", thread_source_chat_id={self.thread_source_chat_id}"
+        if self.thread_source_post_id is not None:
+            extra += f", thread_source_post_id={self.thread_source_post_id}"
         return f"ParsedURL(channel_id={self.channel_id}, post_ids={self.post_ids}, type={self.url_type}{extra})"
 
 
@@ -1328,6 +1480,69 @@ def parse_thread_url(url: str) -> Optional[ParsedURL]:
     return None
 
 
+def parse_comment_url(url: str) -> Optional[ParsedURL]:
+    """
+    Parse native Telegram channel comment links.
+
+    Supported formats:
+        https://t.me/<channel>/<post_id>?comment=<comment_id>
+        https://t.me/c/<channel_id>/<post_id>?comment=<comment_id>
+        https://t.me/<channel>/<post_id>?comment=<comment_id>&range=<start>-<end>
+        https://t.me/c/<channel_id>/<post_id>?comment=<comment_id>&range=<start>-<end>
+
+    The path chat/post identify the channel post. The comment id belongs to the
+    linked discussion group, whose chat/root id is resolved at runtime with
+    get_discussion_message().
+    """
+    url = url.strip()
+
+    private_match = re.match(
+        r'^https?://t\.me/c/(\d+)/(\d+)\?comment=(\d+)(?:&range=?(\d+)-(\d+))?$',
+        url,
+    )
+    if private_match:
+        source_chat_id = int("-100" + private_match.group(1))
+        source_post_id = int(private_match.group(2))
+        comment_id = int(private_match.group(3))
+        if private_match.group(4) and private_match.group(5):
+            range_start = int(private_match.group(4))
+            range_end = int(private_match.group(5))
+            post_ids = list(range(range_start, range_end + 1)) if range_start <= range_end else list(range(range_start, range_end - 1, -1))
+        else:
+            post_ids = [comment_id]
+        return ParsedURL(
+            source_chat_id,
+            post_ids,
+            "thread",
+            thread_source_chat_id=source_chat_id,
+            thread_source_post_id=source_post_id,
+        )
+
+    public_match = re.match(
+        r'^https?://t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})/(\d+)\?comment=(\d+)(?:&range=?(\d+)-(\d+))?$',
+        url,
+    )
+    if public_match:
+        source_chat_id = public_match.group(1)
+        source_post_id = int(public_match.group(2))
+        comment_id = int(public_match.group(3))
+        if public_match.group(4) and public_match.group(5):
+            range_start = int(public_match.group(4))
+            range_end = int(public_match.group(5))
+            post_ids = list(range(range_start, range_end + 1)) if range_start <= range_end else list(range(range_start, range_end - 1, -1))
+        else:
+            post_ids = [comment_id]
+        return ParsedURL(
+            source_chat_id,
+            post_ids,
+            "thread",
+            thread_source_chat_id=source_chat_id,
+            thread_source_post_id=source_post_id,
+        )
+
+    return None
+
+
 def parse_multi_post_url(url: str) -> Optional[ParsedURL]:
     """
     Parse URL with comma-separated post IDs.
@@ -1485,11 +1700,12 @@ def parse_telegram_url(url: str) -> Tuple[Optional[ParsedURL], Optional[str]]:
     
     Order of parsing (most specific first):
     1. Topic links (3 path segments)
-    2. Thread links (?thread=)
-    3. QuizBot links
-    4. Comma-separated post IDs
-    5. Range format (from-to)
-    6. Single post format
+    2. Native comment links (?comment=)
+    3. Thread links (?thread=)
+    4. QuizBot links
+    5. Comma-separated post IDs
+    6. Range format (from-to)
+    7. Single post format
     
     Returns:
         Tuple of (ParsedURL or None, error_message or None)
@@ -1504,27 +1720,32 @@ def parse_telegram_url(url: str) -> Tuple[Optional[ParsedURL], Optional[str]]:
     if result:
         return result, None
     
-    # 2. Try thread format (?thread=)
+    # 2. Try native channel comment format (?comment=)
+    result = parse_comment_url(url)
+    if result:
+        return result, None
+
+    # 3. Try thread format (?thread=)
     result = parse_thread_url(url)
     if result:
         return result, None
     
-    # 3. Try QuizBot
+    # 4. Try QuizBot
     result = parse_quizbot_url(url)
     if result:
         return result, None
     
-    # 4. Try comma-separated format
+    # 5. Try comma-separated format
     result = parse_multi_post_url(url)
     if result:
         return result, None
     
-    # 5. Try range format
+    # 6. Try range format
     result = parse_range_url(url)
     if result:
         return result, None
     
-    # 6. Try single post format
+    # 7. Try single post format
     result = parse_single_post_url(url)
     if result:
         return result, None
@@ -1536,6 +1757,7 @@ def parse_telegram_url(url: str) -> Tuple[Optional[ParsedURL], Optional[str]]:
         "• `https://t.me/c/123456/101` (single)\n"
         "• `https://t.me/c/123456/5/101` (topic)\n"
         "• `https://t.me/c/123456/101?thread=5` (thread)\n"
+        "• `https://t.me/username/101?comment=202` (channel comment)\n"
         "• `https://t.me/username/101` (public single)\n"
         "• `https://t.me/username/101-110` (public range)\n"
         "• `https://t.me/username/101,102,103` (public comma)\n"
@@ -4471,6 +4693,8 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             session_string = user_data['session']
             thread_id = parsed.thread_id
             channel_id = ctx.source_chat_id or parsed.channel_id
+            source_channel_id = getattr(parsed, "thread_source_chat_id", None) or channel_id
+            source_post_id = getattr(parsed, "thread_source_post_id", None)
             
             # CRITICAL: Determine mode based on post_ids
             # - Single ID without range parameter = SINGLE COMMENT MODE
@@ -4482,9 +4706,15 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             if has_range:
                 range_start = min(parsed.post_ids)
                 range_end = max(parsed.post_ids)
-                status_text = f"Fetching comments {range_start}-{range_end} from thread {thread_id}..."
+                if thread_id is not None:
+                    status_text = f"Fetching comments {range_start}-{range_end} from thread {thread_id}..."
+                else:
+                    status_text = f"Fetching comments {range_start}-{range_end}..."
             else:
-                status_text = f"Fetching comment {single_comment_id} from thread {thread_id}..."
+                if thread_id is not None:
+                    status_text = f"Fetching comment {single_comment_id} from thread {thread_id}..."
+                else:
+                    status_text = f"Fetching comment {single_comment_id}..."
             
             status_msg = await client.send_message(
                 user_id, status_text,
@@ -4497,19 +4727,59 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
-                await _resolve_peer_safe(acc, channel_id, ctx)
                 try:
                     source_chat = None
                     thread_root_msg = None
+                    route_join_status = None
+                    (
+                        channel_id,
+                        thread_id,
+                        route_source_chat,
+                        route_thread_root_msg,
+                        route_join_status,
+                    ) = await _prepare_discussion_thread_route(
+                        acc,
+                        source_chat_id=source_channel_id,
+                        source_post_id=source_post_id,
+                        fallback_discussion_chat_id=channel_id,
+                        fallback_thread_id=thread_id,
+                        context=ctx,
+                    )
+                    if channel_id is None:
+                        channel_id = ctx.source_chat_id or parsed.channel_id
+                    comments_ctx = replace(ctx, source_chat_id=channel_id)
+                    if getattr(parsed, "thread_id", None) is None and thread_id is not None:
+                        parsed.thread_id = thread_id
+                    if route_join_status == "request_sent":
+                        await client.edit_message_text(
+                            user_id,
+                            status_msg.id,
+                            "Muhokama guruhiga qo'shilish so'rovi yuborildi. Guruh admini tasdiqlagandan keyin qayta urinib ko'ring.",
+                        )
+                        return
+                    if source_post_id is not None and (
+                        thread_id is None or str(channel_id) == str(source_channel_id)
+                    ):
+                        await client.edit_message_text(
+                            user_id,
+                            status_msg.id,
+                            "Muhokama guruhi aniqlanmadi yoki unga avtomatik qo'shilib bo'lmadi. Kanal comment linkini qayta yuboring yoki muhokama guruhiga qo'shilib qayta urinib ko'ring.",
+                        )
+                        return
+                    source_chat = route_source_chat
+                    thread_root_msg = route_thread_root_msg
                     try:
-                        source_chat = await acc.get_chat(channel_id)
+                        if source_chat is None:
+                            source_chat = await acc.get_chat(source_channel_id)
                     except Exception as chat_err:
                         logger.debug("Thread source chat lookup skipped: %s", chat_err)
                     try:
-                        root_id = getattr(parsed, "thread_root_id", None) or thread_id
-                        thread_root_msg = await acc.get_messages(channel_id, root_id)
-                        if thread_root_msg and getattr(thread_root_msg, "empty", False):
-                            thread_root_msg = None
+                        if thread_root_msg is None:
+                            root_id = thread_id or getattr(parsed, "thread_root_id", None)
+                            if root_id is not None:
+                                thread_root_msg = await acc.get_messages(channel_id, root_id)
+                                if thread_root_msg and getattr(thread_root_msg, "empty", False):
+                                    thread_root_msg = None
                     except Exception as root_err:
                         logger.debug("Thread root message lookup skipped: %s", root_err)
                     source_context_msg = await _send_source_context_message(
@@ -4679,7 +4949,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                             temp_dir,
                                             pipeline,
                                             session_string=session_string,
-                                            context=ctx,
+                                            context=comments_ctx,
                                             reply_target_message=source_context_msg,
                                         )
                                     elif _is_photo_only_group(album_msgs):
@@ -4687,7 +4957,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                             client, acc, user_id, album_msgs, temp_dir, pipeline,
                                             request_message=source_context_msg,
                                             session_string=session_string,
-                                            context=ctx,
+                                            context=comments_ctx,
                                         )
                                     else:
                                         album_success = await _process_media_group_sequential(
@@ -4699,7 +4969,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                             pipeline,
                                             request_message=source_context_msg,
                                             session_string=session_string,
-                                            context=ctx,
+                                            context=comments_ctx,
                                         )
                                     if album_success:
                                         processed += 1
@@ -4714,7 +4984,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                     client, acc, user_id, comment, temp_dir, pipeline,
                                     request_message=source_context_msg,
                                     session_string=session_string,
-                                    context=ctx,
+                                    context=comments_ctx,
                                 )
                                 
                                 if success:

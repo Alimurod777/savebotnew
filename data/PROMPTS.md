@@ -5,6 +5,35 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 27 (2026-07-08) - Comment discussion auto-join
+
+### So'rov:
+Foydalanuvchi kanal comment qismidagi post havolasi yuborilganda user session muhokama guruhiga a'zo bo'lmasa comment yuklanmayotganini aytdi. Kerakli yechim: user channel comment link yuborganda muhokama guruhiga avtomatik qo'shilib, keyin yuklab olishga urinish.
+
+### Natija:
+- **BUG-050** qo'shildi va hal qilindi.
+- `parse_comment_url()` qo'shildi: native `?comment=` linklar thread flowga yo'naltiriladi va source channel post metadata saqlanadi.
+- `_prepare_discussion_thread_route()` source channel postdan `get_discussion_message()` orqali linked discussion group va thread rootni aniqlaydi.
+- `_join_chat_best_effort()` user sessionni discussion groupga public username/invite orqali qo'shishga urinadi; already-member OK, join-request holatida userga aniq xabar beriladi.
+- `process_thread_comments()` comment/media fetchni resolved discussion chat ID orqali davom ettiradi.
+- Regression testlar qo'shildi.
+
+### Cheklov:
+Faqat `/c/<discussion_group>/<comment>?thread=<root>` linkda source channel post yoki join username/invite bo'lmasa Telegram API orqali auto-join qilish uchun yetarli target bo'lmasligi mumkin. Bunday holatda userga muhokama guruhiga qo'shilib qayta urinish aytiladi.
+
+### Tekshiruv:
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "native_comment_link or prepare_discussion_route or public_copy_caption_too_long or source_context_message_replies"` - 4 passed
+- `git diff --check` - OK
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+---
+
 ## Sessiya 26 (2026-07-08) - Public copy uzun caption fallback
 
 ### So'rov:

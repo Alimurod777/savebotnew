@@ -5,6 +5,58 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 26 (2026-07-08) - Public copy uzun caption fallback
+
+### So'rov:
+Foydalanuvchi production failure report berdi: `https://t.me/zapislar_efir/218` public bot-only yo'lida `MediaCaptionTooLong: [400 MEDIA_CAPTION_TOO_LONG]` xatosi chiqdi va post `No messages retrieved` deb yakunlandi.
+
+### Natija:
+- **BUG-049** qo'shildi va hal qilindi.
+- Public bot-only `copy_message()` yo'liga `_copy_public_message_with_caption_fallback()` qo'shildi.
+- Agar original media caption Telegram limitidan uzun bo'lsa, media `caption=""` bilan captionsiz copy qilinadi.
+- Original caption alohida bot text xabarlari sifatida entity-safe chunklarga bo'linib yuboriladi.
+- Reply chain saqlandi: media va caption textlar bitta `Manba` xabariga reply bo'ladi.
+- Regression test qo'shildi.
+
+### Tekshiruv:
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "public_copy_caption_too_long or source_context_message_replies or send_source_name_message or split_part_progress_callback or split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session"` - 6 passed
+- `git diff --check` - OK
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+---
+
+## Sessiya 25 (2026-07-05) - Source reply zanjiri va split progress
+
+### So'rov:
+Foydalanuvchi ikki bog'liq muammoni tuzatishni so'radi: 2GB+ split qilingan fayllar upload progressi qism bo'yicha real vaqt ko'rinishi kerak, va reply zanjiri `user link -> Manba xabari -> content` shaklida bo'lishi kerak. Range/comma ko'p postlarda bitta umumiy `Manba` xabari yuborilib, barcha content shu xabarga reply bo'lishi talab qilindi.
+
+### Natija:
+- **BUG-048** qo'shildi va hal qilindi.
+- `send_source_name_message()` helperi qo'shildi: source nomi user session `acc.get_chat()` orqali olinadi, matn bot client orqali original link xabariga reply qilinadi.
+- `_send_source_context_message()` source-only ko'rinishga o'tdi: `📡 Manba: <nom>`, request messagega reply.
+- `download_and_send_media()`ga `reply_target_message=None` parametri qo'shildi; ichki status, copy, overflow va worker reply anchorlari `reply_target_message or message` orqali yuradi.
+- Split uploadlar uchun `_create_split_part_progress_callback()` qo'shildi: `progress=` callback status xabarni 4s throttle bilan `Qism N/T - X/Y MB (Z%)` formatida yangilaydi.
+- Standard split va premium direct failure split fallback ikkalasida video/document chunk uploadga progress callback ulandi.
+
+### Tekshiruv:
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "source_context_message_replies or send_source_name_message or split_part_progress_callback or split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session"` - 5 passed
+- `git diff --check` - OK
+
+### O'zgartirilgan fayllar:
+- `TechVJ/save.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+---
+
 ## Sessiya 24 (2026-07-05) - Split fallback PEER_ID_INVALID fix
 
 ### So'rov:

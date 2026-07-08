@@ -5,6 +5,56 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-049: Public bot-only copy uzun captionda MEDIA_CAPTION_TOO_LONG
+**Sana:** 2026-07-08
+**Holat:** Hal qilindi
+
+**Muammo:** Public link bot-only yo'lida user session bo'lmaganda `client.copy_message()` uzun media captionli postda `MEDIA_CAPTION_TOO_LONG` bilan yiqildi. Natijada bitta o'qilishi mumkin bo'lgan post ham `No messages retrieved` bo'lib ko'rindi.
+
+**Sabab:** `copy_message()` caption parametri berilmasa original captionni saqlaydi. Agar source media captioni Telegram limitidan uzun bo'lsa, copy operatsiyasi media yuborish bosqichida xato beradi. Bu yo'lda caption split/overflow fallback yo'q edi.
+
+**Yechim:**
+1. `_copy_public_message_with_caption_fallback()` qo'shildi: avval oddiy `copy_message`, faqat `MEDIA_CAPTION_TOO_LONG` bo'lsa `caption=""` bilan media captionsiz copy qiladi.
+2. `_send_public_caption_text_chunks()` qo'shildi: original captionni `core.text_renderer.extract_to_renderer()` orqali 4096 limitli entity-safe text chunklarga bo'lib bot client orqali yuboradi.
+3. Public bot-only loop `client.copy_message()` o'rniga yangi safe helperdan foydalanadi; reply anchor `Manba` xabarida qoladi.
+4. Regression test qo'shildi: uzun caption xatosidan keyin captionsiz copy va caption text fallback ishlashi tekshirildi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "public_copy_caption_too_long or source_context_message_replies or send_source_name_message or split_part_progress_callback or split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session"` - 6 passed
+- `git diff --check` - OK
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
+## BUG-048: Source reply zanjiri va split part upload progressi yo'qolishi
+**Sana:** 2026-07-05
+**Holat:** Hal qilindi
+
+**Muammo:** Katta fayllar split qilinganda qism upload progressi real vaqt yangilanmasdi. Bundan tashqari source header/content reply zanjiri qat'iy emas edi: source xabari original havola xabariga reply bo'lmasdi, ayrim media/copy/overflow yo'llari esa source header o'rniga eski request messagega tayanishi mumkin edi.
+
+**Sabab:**
+1. `_send_source_context_message()` source headerni standalone yuborardi.
+2. `download_and_send_media()` ichida reply anchor faqat `message` parametridan olinardi; explicit `reply_target_message` yo'q edi.
+3. Split chunk uploadlarda `send_video/send_document` progress callback ulanmagan edi, faqat qism boshlanishida status edit qilinardi.
+
+**Yechim:**
+1. `send_source_name_message(client, acc, target_chat_id, source_chat_id, reply_to_message_id)` qo'shildi. Source nomi avval user session `acc.get_chat()` orqali olinadi, matn bot client orqali original link xabariga reply qilib yuboriladi.
+2. `_send_source_context_message()` endi faqat `📡 Manba: <nom>` yuboradi va `request_message`ga reply qiladi.
+3. `download_and_send_media(..., reply_target_message=None)` qo'shildi. Ichkaridagi status, text fallback, media upload reply, copy delivery va overflow caption replylari `reply_target_message or message` orqali bir xil anchor ishlatadi.
+4. Split uploadlar uchun `_create_split_part_progress_callback()` qo'shildi: `Qism N/T - X/Y MB (Z%)` formatida 4 soniyalik throttle bilan status xabarni yangilaydi.
+5. Split video/document va premium direct failure'dan keyingi split fallback progress callbackni `progress=` sifatida `acc.send_video/send_document`ga uzatadi.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\save.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "source_context_message_replies or send_source_name_message or split_part_progress_callback or split_part_upload_retries_peer_invalid_with_bot_username or split_bot_peer_resolve_is_cached_per_session"` - 5 passed
+- `git diff --check` - OK
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-047: Split fallback user session bot peer tayyorlamagani uchun PEER_ID_INVALID
 **Sana:** 2026-07-05
 **Holat:** Hal qilindi

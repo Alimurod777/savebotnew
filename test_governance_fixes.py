@@ -194,7 +194,7 @@ def test_copy_source_prefers_explicit_fallback_over_bot_chat_id():
     assert get_bot_copy_source_chat_id(sent, fallback_chat_id=333) == 333
 
 
-def test_source_context_message_is_standalone_header():
+def test_source_context_message_replies_to_original_link_with_source_name_only():
     async def run():
         import sys
 
@@ -233,8 +233,155 @@ def test_source_context_message_is_standalone_header():
         )
 
         assert msg is not None
-        assert "reply_to_message_id" not in client.kwargs
+        assert msg.text == "📡 Manba: Maqsad Club"
+        assert client.kwargs.get("reply_to_message_id") == 55
         assert "reply_parameters" not in client.kwargs
+
+    asyncio.run(run())
+
+
+def test_send_source_name_message_uses_user_session_title_and_replies():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import send_source_name_message
+
+        class FakeBot:
+            def __init__(self):
+                self.sent = None
+
+            async def get_chat(self, chat_id):
+                raise AssertionError("bot get_chat should not be needed when user session resolves")
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent = (chat_id, text, kwargs)
+                return SimpleNamespace(id=77, chat=SimpleNamespace(id=chat_id), text=text)
+
+        class FakeAcc:
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(title="Courses Hub")
+
+        bot = FakeBot()
+        msg = await send_source_name_message(
+            bot,
+            FakeAcc(),
+            target_chat_id=123,
+            source_chat_id=-1001823169797,
+            reply_to_message_id=55,
+        )
+
+        assert msg.text == "📡 Manba: Courses Hub"
+        assert bot.sent[0] == 123
+        assert bot.sent[2].get("reply_to_message_id") == 55
+
+    asyncio.run(run())
+
+
+def test_split_part_progress_callback_edits_status_with_throttle():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _create_split_part_progress_callback
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text):
+                self.edits.append((chat_id, message_id, text))
+
+        client = FakeClient()
+        callback = _create_split_part_progress_callback(
+            client=client,
+            chat_id=123,
+            status_msg=SimpleNamespace(id=88),
+            part_num=2,
+            total_parts=4,
+            part_size=10 * 1024 * 1024,
+            interval=100.0,
+        )
+
+        callback(1 * 1024 * 1024, 10 * 1024 * 1024)
+        await asyncio.sleep(0.05)
+        callback(2 * 1024 * 1024, 10 * 1024 * 1024)
+        await asyncio.sleep(0.05)
+        callback(10 * 1024 * 1024, 10 * 1024 * 1024)
+        await asyncio.sleep(0.05)
+
+        assert len(client.edits) == 2
+        assert client.edits[0] == (123, 88, "Qism 2/4 - 1.0/10.0 MB (10.0%)")
+        assert client.edits[1] == (123, 88, "Qism 2/4 - 10.0/10.0 MB (100.0%)")
+
+    asyncio.run(run())
+
+
+def test_public_copy_caption_too_long_falls_back_to_captionless_copy_and_text():
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+            ),
+        )
+
+        from TechVJ.save import _copy_public_message_with_caption_fallback
+
+        class FakeBot:
+            def __init__(self):
+                self.copy_calls = []
+                self.send_calls = []
+
+            async def copy_message(self, **kwargs):
+                self.copy_calls.append(kwargs)
+                if len(self.copy_calls) == 1:
+                    raise RuntimeError(
+                        'Telegram says: [400 MEDIA_CAPTION_TOO_LONG] (caused by "messages.SendMedia")'
+                    )
+                return SimpleNamespace(id=99, chat=SimpleNamespace(id=kwargs["chat_id"]))
+
+            async def send_message(self, **kwargs):
+                self.send_calls.append(kwargs)
+                return SimpleNamespace(id=100 + len(self.send_calls), chat=SimpleNamespace(id=kwargs["chat_id"]))
+
+        caption = "Long caption " * 120
+        source_msg = SimpleNamespace(
+            id=218,
+            chat=SimpleNamespace(id="zapislar_efir"),
+            caption=caption,
+            caption_entities=None,
+        )
+        source_anchor = SimpleNamespace(id=55, chat=SimpleNamespace(id=123))
+        bot = FakeBot()
+
+        copied = await _copy_public_message_with_caption_fallback(
+            bot,
+            target_chat_id=123,
+            source_msg=source_msg,
+            reply_target_message=source_anchor,
+        )
+
+        assert copied.id == 99
+        assert "caption" not in bot.copy_calls[0]
+        assert bot.copy_calls[1]["caption"] == ""
+        assert bot.copy_calls[1]["reply_to_message_id"] == 55
+        assert bot.send_calls[0]["text"] == caption
+        assert bot.send_calls[0]["reply_to_message_id"] == 55
 
     asyncio.run(run())
 

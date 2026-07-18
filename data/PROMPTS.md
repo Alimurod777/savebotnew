@@ -5,6 +5,36 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 29 (2026-07-18) - Account-specific upload FloodPremiumWait va stuck worker fix
+
+### So'rov:
+Foydalanuvchi `user_worker_8883410579` aynan katta media uploadining oxirida `FLOOD_PREMIUM_WAIT_X` (`upload.SaveBigFilePart`, 11 soniya) olayotganini, boshqa akkauntlar floodga tushmayotganini va shu logdan keyin process uzoq vaqt siljimay qolayotganini tekshirishni so'radi. User sessiyasi production DBda mavjudligi aytildi.
+
+### Natija:
+- **BUG-052** qo'shildi va hal qilindi.
+- Flood account-specific ekani, Pyrofork bitta katta fayl ichida 4 ta partni parallel yuklashi va `max_concurrent_transmissions=1` bu ichki parallellikni cheklamasligi aniqlandi.
+- Pyrofork 2.3.69 `save_file()` worker exceptionlarini log qilib yutishi topildi; shu sabab tashqi adaptive throttle va session rotation floodni ko'rmasdi.
+- Opt-in flood-safe `save_file()` patch qo'shildi: qisqa waitda aynan xato bergan part bounded retry qilinadi, birinchi flooddan keyin qolgan upload seriallashadi, uzun/takroriy flood tashqariga uzatiladi.
+- User worker file-part parallelligi 4 dan 2 ga tushirildi; flood callback mavjud adaptive throttle'ga ulandi.
+- 10 daqiqalik idle reaper faol uploadni queue bo'sh deb o'chirib yuborishi mumkinligi topildi; `_busy` guard qo'shildi.
+- Regression testlar qisqa/uzun premium flood, to'liq file-part ketma-ketligi va active reaper guardni qamrab oldi.
+
+### Tekshiruv:
+- `python -m py_compile core\pyrofork_compat.py core\user_upload_worker.py test_governance_fixes.py` - OK
+- Fokus regression: 6 passed
+
+### O'zgartirilgan fayllar:
+- `core/pyrofork_compat.py`
+- `core/user_upload_worker.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+### UMUMIY YO'NALISH yangilanishi:
+- Katta MTProto uploadlarda message-level throttle yetarli emas; file-part concurrency, per-part flood retry va active-worker lifecycle birga boshqarilishi kerak.
+
+---
+
 ## Sessiya 28 (2026-07-18) - Private album PEER_ID_INVALID fix
 
 ### So'rov:

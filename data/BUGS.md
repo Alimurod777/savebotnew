@@ -5,6 +5,33 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-052: FloodPremiumWait file part ichida yutilib, katta upload qotib qoladi
+**Sana:** 2026-07-18
+**Holat:** Hal qilindi
+
+**Muammo:** Aynan ayrim user sessiyalar katta media uploadining oxirgi qismida `FLOOD_PREMIUM_WAIT_X` (`upload.SaveBigFilePart`) oldi. Log 10-11 soniya kutishni ko'rsatganidan keyin task uzoq vaqt yakunlanmay, process qotib qolgandek ko'rindi. Boshqa akkauntlarda shu holat takrorlanmadi.
+
+**Sabab:**
+1. Telegram upload flood limiti account-specific; ko'p yoki katta upload qilgan sessiya boshqalardan oldin limitga tegishi mumkin.
+2. Pyrofork 2.3.69 katta faylning bitta uploadi ichida 4 ta part workerni parallel ishlatadi. `Client(max_concurrent_transmissions=1)` bitta fayl ichidagi bu 4 workerga ta'sir qilmaydi.
+3. Pyrofork `save_file.py` ichki worker exceptionini faqat log qilib, tashqariga uzatmasdi. `FloodPremiumWait` bergan part bounded retry qilinmay yo'qolishi va tashqi `UserUploadWorker` flood controller ishlamasligi mumkin edi.
+4. `UserWorkerRegistry` faqat queue bo'shligini tekshirardi. 10 daqiqadan uzun faol upload queue'dan olingan bo'lgani uchun idle deb topilib, reaper clientni upload o'rtasida uzishi mumkin edi.
+
+**Yechim:**
+1. `core/pyrofork_compat.py`ga faqat opt-in user worker clientlari uchun flood-safe `save_file()` patch qo'shildi. Qisqa flood waitda aynan xato bergan part kutib qayta yuboriladi; exception yutilmaydi.
+2. User worker uploadi 2 ta parallel part bilan boshlanadi. Birinchi flood signalidan keyin shu faylning qolgan partlari serial yuboriladi va client uchun vaqtinchalik serial cooldown saqlanadi.
+3. 60+ soniyalik, 5 retrydan yoki jami 180 soniya kutishdan oshgan flood tashqi workerga uzatiladi; mavjud session rotation/flood controller ishlaydi.
+4. Workerga `_busy` holati qo'shildi. Faol upload idle reaper tomonidan o'chirilmaydi; worker loop unexpected exception/cancellationda task future'ni yakunlaydi.
+5. Regression testlar qisqa retry, uzun flood propagation, file partlar yo'qolmasligi va active-worker reaper guardni tekshiradi.
+
+**Tekshiruv:**
+- `python -m py_compile core\pyrofork_compat.py core\user_upload_worker.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "pyrofork_upload_part or pyrofork_flood_safe or flood_safe_part_upload or reaper_skips_active or retry_utils_detects_flood_premium"` - 6 passed
+
+**O'zgartirilgan fayllar:** `core/pyrofork_compat.py`, `core/user_upload_worker.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-051: Private photo album user session bot peerini bilmaganda yuborilmaydi
 **Sana:** 2026-07-18
 **Holat:** Hal qilindi

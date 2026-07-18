@@ -74,6 +74,9 @@ IDLE_TIMEOUT   = 600   # seconds of inactivity before worker is reaped (10 min)
 REAP_INTERVAL  = 120   # seconds between reaper sweeps (2 min)
 JITTER_MAX     = 0.3   # max random jitter added to each send (prevents burst sync)
 RECOVERY_BATCHES = 3   # consecutive clean batches to halve flood_scale
+UPLOAD_PART_WORKERS = 2
+UPLOAD_PART_FLOOD_RETRIES = 5
+UPLOAD_PART_MAX_TOTAL_WAIT = 180
 
 # Global upload concurrency cap — prevents N workers from uploading simultaneously
 # Adaptive: starts at default, shrinks under flood pressure, grows back when clear
@@ -244,6 +247,7 @@ class UserUploadWorker:
         self._last_activity = time.monotonic()  # for idle reaper
         self._batch_count = 0
         self._bot_prepared = False
+        self._busy = False
         self._throttle = _AdaptiveThrottle()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -436,6 +440,15 @@ class UserUploadWorker:
             app_version=fp["app_version"],
             lang_code=fp["lang_code"],
         )
+        # Pyrofork 2.3.69 swallows SaveBigFilePart errors in save_file().
+        # Opt this client into the compatibility uploader: two parts run in
+        # parallel until the first flood signal, then the file is serialized.
+        self._client._techvj_flood_safe_upload = True
+        self._client._techvj_upload_part_workers = UPLOAD_PART_WORKERS
+        self._client._techvj_upload_part_flood_retries = UPLOAD_PART_FLOOD_RETRIES
+        self._client._techvj_upload_part_max_total_wait = UPLOAD_PART_MAX_TOTAL_WAIT
+        self._client._techvj_upload_part_long_wait = FLOOD_LONG_SEC
+        self._client._techvj_upload_flood_callback = self._throttle.record_flood
         await self._client.start()
         try:
             me = await self._client.get_me()
@@ -583,9 +596,26 @@ class UserUploadWorker:
         while True:
             task = await self._queue.get()
             if task is None:                    # sentinel → exit
+                self._queue.task_done()
                 break
-            await self._run_task(task)
-            self._queue.task_done()
+            self._busy = True
+            try:
+                await self._run_task(task)
+            except asyncio.CancelledError:
+                if not task.future.done():
+                    task.future.cancel()
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "UserUploadWorker[%d] task loop failed unexpectedly",
+                    self._user_id,
+                )
+                if not task.future.done():
+                    task.future.set_exception(exc)
+            finally:
+                self._busy = False
+                self._last_activity = time.monotonic()
+                self._queue.task_done()
 
     async def _run_task(self, task: UploadTask) -> None:
         """Execute one upload task with adaptive rate-limiting and FloodWait handling."""
@@ -743,6 +773,11 @@ class UserWorkerRegistry:
         if self._reaper_task is None or self._reaper_task.done():
             self._reaper_task = asyncio.ensure_future(self._reap_idle_workers())
 
+    @staticmethod
+    def _should_reap(worker: UserUploadWorker, now: float) -> bool:
+        idle = now - worker._last_activity
+        return idle >= IDLE_TIMEOUT and not worker._busy and worker._queue.empty()
+
     async def _reap_idle_workers(self) -> None:
         """Background loop: stop workers idle for > IDLE_TIMEOUT seconds."""
         while True:
@@ -752,8 +787,7 @@ class UserWorkerRegistry:
                 to_reap: list = []
                 async with self._lock:
                     for key, worker in list(self._workers.items()):
-                        idle = now - worker._last_activity
-                        if idle >= IDLE_TIMEOUT and worker._queue.empty():
+                        if self._should_reap(worker, now):
                             to_reap.append((key, worker))
                     for key, _ in to_reap:
                         del self._workers[key]

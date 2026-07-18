@@ -1916,3 +1916,228 @@ def test_retry_utils_detects_flood_premium_wait_text():
 
     assert is_floodwait_error(err)
     assert get_floodwait_seconds(err) == 11
+
+
+def test_pyrofork_upload_part_retries_same_part_after_premium_flood():
+    import core.pyrofork_compat as compat
+
+    class FloodPremiumWait(Exception):
+        def __init__(self, seconds):
+            self.value = seconds
+            super().__init__(
+                f'Telegram says: [420 FLOOD_PREMIUM_WAIT_{seconds}] '
+                '(caused by "upload.SaveBigFilePart")'
+            )
+
+    class FakeQuery:
+        QUALNAME = "upload.SaveBigFilePart"
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+            self.thresholds = []
+
+        async def invoke(self, query, sleep_threshold=None):
+            assert isinstance(query, FakeQuery)
+            self.calls += 1
+            self.thresholds.append(sleep_threshold)
+            if self.calls == 1:
+                raise FloodPremiumWait(11)
+            return True
+
+    async def run():
+        session = FakeSession()
+        sleeps = []
+        floods = []
+        original_sleep = compat.asyncio.sleep
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        compat.asyncio.sleep = fake_sleep
+        try:
+            result = await compat._invoke_upload_part_with_retry(
+                session,
+                FakeQuery(),
+                client_name="user_worker_8883410579",
+                on_flood=floods.append,
+            )
+        finally:
+            compat.asyncio.sleep = original_sleep
+
+        assert result is True
+        assert session.calls == 2
+        assert session.thresholds == [0, 0]
+        assert sleeps == [12.0]
+        assert floods == [11]
+
+    asyncio.run(run())
+
+
+def test_pyrofork_upload_part_surfaces_long_premium_flood_without_sleeping():
+    import core.pyrofork_compat as compat
+
+    class FloodPremiumWait(Exception):
+        def __init__(self, seconds):
+            self.value = seconds
+            super().__init__(
+                f'Telegram says: [420 FLOOD_PREMIUM_WAIT_{seconds}] '
+                '(caused by "upload.SaveBigFilePart")'
+            )
+
+    class FakeQuery:
+        QUALNAME = "upload.SaveBigFilePart"
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def invoke(self, query, sleep_threshold=None):
+            self.calls += 1
+            raise FloodPremiumWait(60)
+
+    async def run():
+        session = FakeSession()
+        sleeps = []
+        original_sleep = compat.asyncio.sleep
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        compat.asyncio.sleep = fake_sleep
+        try:
+            try:
+                await compat._invoke_upload_part_with_retry(
+                    session,
+                    FakeQuery(),
+                    client_name="user_worker_8883410579",
+                )
+                assert False, "long FloodPremiumWait must be surfaced"
+            except FloodPremiumWait as exc:
+                assert exc.value == 60
+        finally:
+            compat.asyncio.sleep = original_sleep
+
+        assert session.calls == 1
+        assert sleeps == []
+
+    asyncio.run(run())
+
+
+def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
+    import core.pyrofork_compat as compat
+
+    class FloodPremiumWait(Exception):
+        def __init__(self, seconds):
+            self.value = seconds
+            super().__init__(
+                f'Telegram says: [420 FLOOD_PREMIUM_WAIT_{seconds}] '
+                '(caused by "upload.SaveFilePart")'
+            )
+
+    class FakeStorage:
+        async def dc_id(self):
+            return 2
+
+        async def auth_key(self):
+            return b"auth-key"
+
+        async def test_mode(self):
+            return False
+
+    class FakeSession:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.calls = []
+            self.stopped = False
+            self.__class__.instances.append(self)
+
+        async def start(self):
+            return None
+
+        async def invoke(self, query, sleep_threshold=None):
+            self.calls.append((query.file_part, sleep_threshold))
+            if len(self.calls) == 1:
+                raise FloodPremiumWait(11)
+            return True
+
+        async def stop(self):
+            self.stopped = True
+
+    class FakeClient:
+        def __init__(self):
+            self.save_file_semaphore = asyncio.Semaphore(1)
+            self.me = SimpleNamespace(is_premium=False)
+            self.storage = FakeStorage()
+            self.loop = asyncio.get_running_loop()
+            self.executor = None
+            self.name = "user_worker_8883410579"
+            self._techvj_upload_part_workers = 2
+            self._techvj_upload_part_flood_retries = 5
+            self._techvj_upload_part_max_total_wait = 180
+            self._techvj_upload_part_long_wait = 60
+            self.floods = []
+            self._techvj_upload_flood_callback = self.floods.append
+
+        @staticmethod
+        def rnd_id():
+            return 123456789
+
+    async def run():
+        with TemporaryDirectory() as tmp_dir:
+            file_path = Path(tmp_dir) / "upload.bin"
+            file_path.write_bytes(b"x" * (1024 * 1024 + 17))
+            client = FakeClient()
+            sleeps = []
+            original_session = compat.PyrogramSession
+            original_sleep = compat.asyncio.sleep
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+
+            compat.PyrogramSession = FakeSession
+            compat.asyncio.sleep = fake_sleep
+            try:
+                result = await compat._flood_safe_save_file(client, str(file_path))
+            finally:
+                compat.PyrogramSession = original_session
+                compat.asyncio.sleep = original_sleep
+
+            session = FakeSession.instances[-1]
+            assert result.parts == 3
+            assert [part for part, _ in session.calls] == [0, 0, 1, 2]
+            assert all(threshold == 0 for _, threshold in session.calls)
+            assert sleeps == [12.0]
+            assert client.floods == [11]
+            assert session.stopped is True
+
+    asyncio.run(run())
+
+
+def test_user_upload_worker_enables_flood_safe_part_upload_defaults():
+    from core import user_upload_worker as worker_module
+    from pyrogram import Client
+    from pyrogram.methods.advanced.save_file import SaveFile
+
+    assert worker_module.UPLOAD_PART_WORKERS == 2
+    assert worker_module.UPLOAD_PART_FLOOD_RETRIES == 5
+    assert worker_module.UPLOAD_PART_MAX_TOTAL_WAIT == 180
+    assert getattr(SaveFile.save_file, "_techvj_flood_safe", False) is True
+    assert getattr(Client.save_file, "_techvj_flood_safe", False) is True
+
+
+def test_user_upload_worker_reaper_skips_active_upload():
+    from core.user_upload_worker import IDLE_TIMEOUT, UserWorkerRegistry
+
+    worker = SimpleNamespace(
+        _last_activity=0.0,
+        _busy=True,
+        _queue=SimpleNamespace(empty=lambda: True),
+    )
+    now = float(IDLE_TIMEOUT + 1)
+
+    assert UserWorkerRegistry._should_reap(worker, now) is False
+
+    worker._busy = False
+    assert UserWorkerRegistry._should_reap(worker, now) is True

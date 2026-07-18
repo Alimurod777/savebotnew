@@ -564,6 +564,39 @@ async def download_album_photos(
     return valid_count >= 2
 
 
+def _is_bot_peer_error(error: Exception) -> bool:
+    """Return True when a user session needs to resolve/reopen the bot peer."""
+    error_text = f"{type(error).__name__}: {error}".upper()
+    return any(marker in error_text for marker in (
+        "PEER_ID_INVALID",
+        "PEERIDINVALID",
+        "USER_IS_BLOCKED",
+        "USERISBLOCKED",
+        "BOT WAS BLOCKED",
+    ))
+
+
+async def _prepare_album_bot_peer(user_session: Client, bot_username: str) -> None:
+    """Resolve and reopen the bot dialog before retrying an album upload."""
+    username = str(bot_username).lstrip("@")
+    try:
+        await user_session.get_chat(username)
+    except Exception as error:
+        logger.debug("Album bot peer get_chat skipped @%s: %s", username, error)
+    try:
+        await user_session.unblock_user(username)
+    except Exception:
+        pass
+    try:
+        await user_session.send_message(username, "/start")
+    except Exception as error:
+        logger.debug("Album bot peer /start skipped @%s: %s", username, error)
+    try:
+        await user_session.get_chat(username)
+    except Exception as error:
+        logger.debug("Album bot peer final resolve failed @%s: %s", username, error)
+
+
 async def send_album(
     bot_client: Client,
     user_session: Client,
@@ -627,7 +660,21 @@ async def send_album(
     if await check_cancelled():
         return False
     
-    upload_chat_id = getattr(getattr(bot_client, "me", None), "id", None) or target_chat_id
+    bot_me = getattr(bot_client, "me", None)
+    if not bot_me:
+        try:
+            bot_me = await bot_client.get_me()
+        except Exception as error:
+            logger.debug("Album bot identity lookup failed: %s", error)
+
+    bot_id = getattr(bot_me, "id", None)
+    bot_username = getattr(bot_me, "username", None)
+    if bot_username:
+        bot_username = str(bot_username).lstrip("@")
+
+    # A task-scoped in-memory user session may not know the bot's numeric peer
+    # access hash yet. A public username can be resolved without peer cache.
+    upload_chat_id = bot_username or bot_id or target_chat_id
 
     # Send in batches of 10 (Telegram limit). Media is uploaded by user session;
     # text overflow below remains bot-authored.
@@ -637,20 +684,29 @@ async def send_album(
                 return False
             
             batch = media_list[i:i+10]
-            sent = False
-
-            # Do not pass bot-side reply ids to user-session media sends.
-            if not sent:
+            async def _send_batch(destination) -> None:
                 try:
-                    await user_session.send_media_group(upload_chat_id, batch)
-                    sent = True
+                    await user_session.send_media_group(destination, batch)
                 except TypeError as te:
-                    # Pyrofork Messages compatibility issue - ignore
+                    # Pyrofork may raise while parsing a successful response.
                     if 'topics' in str(te):
                         logger.debug(f"Pyrofork topics warning (ignored): {te}")
-                        sent = True  # Message was likely sent
-                    else:
-                        raise
+                        return
+                    raise
+
+            # Do not pass bot-side reply ids to user-session media sends.
+            try:
+                await _send_batch(upload_chat_id)
+            except Exception as first_error:
+                if not bot_username or not _is_bot_peer_error(first_error):
+                    raise
+                await _prepare_album_bot_peer(user_session, bot_username)
+                logger.warning(
+                    "Album upload peer refresh after %s; retrying @%s",
+                    type(first_error).__name__,
+                    bot_username,
+                )
+                await _send_batch(bot_username)
             
             if i + 10 < len(media_list):
                 await asyncio.sleep(1)  # Delay between batches

@@ -5,6 +5,34 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 28 (2026-07-18) - Private album PEER_ID_INVALID fix
+
+### So'rov:
+Foydalanuvchi bir nechta production failure report berdi. Private kanallardagi photo album postlar mavjud, user session kanalga a'zo va postlar o'qiladi, lekin `private_album` bosqichi `status=send_failed` bilan tugaydi. Runtime logdagi aniq xato: Pyrofork `send_media_group()` uchun `[400 PEER_ID_INVALID]`.
+
+### Natija:
+- **BUG-051** qo'shildi va hal qilindi.
+- `album_collector_v2.send_album()` numeric bot ID o'rniga imkon bo'lsa bot username'ini upload target sifatida ishlatadi.
+- Peer invalid yoki bot blocked xatosida user session bot dialogini `get_chat`, unblock, `/start`, final resolve orqali tayyorlaydi.
+- Xato bergan media-group batch username target bilan bir marta retry qilinadi.
+- Media routing qoidasi saqlandi: album user session orqali, overflow caption text bot client orqali yuboriladi.
+- Regression test qo'shildi va mavjud split peer-recovery testlari bilan birga o'tkazildi.
+
+### Tekshiruv:
+- `python -m py_compile TechVJ\album_collector_v2.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "album_send_retries_peer_invalid or split_part_upload_retries_peer_invalid or split_bot_peer_resolve_is_cached"` - 3 passed
+
+### O'zgartirilgan fayllar:
+- `TechVJ/album_collector_v2.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+### UMUMIY YO'NALISH yangilanishi:
+- Task-scoped user sessiyalar botga media yuborishdan oldin bot peerini username orqali resolve qilishi yoki peer xatosida bounded retry qilishi kerak.
+
+---
+
 ## Sessiya 27 (2026-07-08) - Comment discussion auto-join
 
 ### So'rov:

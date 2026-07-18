@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from pyrogram.enums import MessageEntityType
@@ -1102,6 +1104,73 @@ def test_split_bot_peer_resolve_is_cached_per_session():
         assert second == (777, "kursbotactiv")
         assert acc.started == [("kursbotactiv", "/start")]
         assert acc.get_chat_calls == 2
+
+    asyncio.run(run())
+
+
+def test_album_send_retries_peer_invalid_with_bot_username():
+    async def run():
+        from TechVJ.album_collector_v2 import AlbumPhoto, CollectedAlbum, send_album
+
+        class FakeUserSession:
+            def __init__(self):
+                self.targets = []
+                self.started = []
+                self.unblocked = []
+
+            async def send_media_group(self, target, media):
+                self.targets.append(target)
+                if len(self.targets) == 1:
+                    raise RuntimeError("Telegram says: [400 PEER_ID_INVALID]")
+                return [SimpleNamespace(id=91)]
+
+            async def get_chat(self, username):
+                return SimpleNamespace(id=777, username=username)
+
+            async def unblock_user(self, username):
+                self.unblocked.append(username)
+
+            async def send_message(self, username, text):
+                self.started.append((username, text))
+
+        async def not_cancelled():
+            return False
+
+        with TemporaryDirectory() as temp_dir:
+            photo_paths = []
+            for index in range(2):
+                photo_path = Path(temp_dir) / f"photo_{index}.jpg"
+                photo_path.write_bytes(b"test-photo")
+                photo_paths.append(str(photo_path))
+
+            album = CollectedAlbum(
+                media_group_id="album-1",
+                first_message_id=10,
+                last_message_id=11,
+                photos=[
+                    AlbumPhoto(message_id=10, file_path=photo_paths[0], order_index=0),
+                    AlbumPhoto(message_id=11, file_path=photo_paths[1], order_index=1),
+                ],
+                temp_dir=temp_dir,
+            )
+            bot = SimpleNamespace(
+                me=SimpleNamespace(id=777, is_bot=True, username="kursbotactiv")
+            )
+            user_session = FakeUserSession()
+
+            sent = await send_album(
+                bot,
+                user_session,
+                album,
+                target_chat_id=123,
+                reply_to_message_id=1,
+                check_cancelled=not_cancelled,
+            )
+
+            assert sent is True
+            assert user_session.targets == ["kursbotactiv", "kursbotactiv"]
+            assert user_session.started == [("kursbotactiv", "/start")]
+            assert user_session.unblocked == ["kursbotactiv"]
 
     asyncio.run(run())
 

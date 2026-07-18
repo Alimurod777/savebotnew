@@ -5,6 +5,28 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-051: Private photo album user session bot peerini bilmaganda yuborilmaydi
+**Sana:** 2026-07-18
+**Holat:** Hal qilindi
+
+**Muammo:** Bir nechta private kanaldagi o'qilishi va yuklab olinishi tasdiqlangan photo album postlar `private_album` bosqichida `status=send_failed` bilan tugadi. Production logda `send_media_group()` `[400 PEER_ID_INVALID]` qaytardi.
+
+**Sabab:** `album_collector_v2.send_album()` media groupni user session orqali botning faqat numeric ID siga yuborardi. Task-scoped `in_memory=True` sessiyada bot peer/access-hash hali cache'da bo'lmasa numeric ID resolve qilinmaydi. Split upload pipeline bu holatni bot username'i bilan peer warm-up va retry orqali boshqarardi, album pipeline esa retry qilmasdi.
+
+**Yechim:**
+1. Album upload targeti bot username'i mavjud bo'lsa username orqali resolve qilinadi; numeric ID fallback sifatida qoladi.
+2. `PEER_ID_INVALID` yoki bot blocked xatosida user session `get_chat`, `unblock_user`, `/start`, final `get_chat` bilan bot dialogini tayyorlaydi.
+3. Xato bergan album batch bot username'iga bir marta qayta yuboriladi; boshqa xatolar avvalgidek failure sifatida qaytadi.
+4. Regression test yangi in-memory sessiya holatini simulyatsiya qiladi: birinchi `send_media_group` peer xatosi, keyingi username retry muvaffaqiyatli.
+
+**Tekshiruv:**
+- `python -m py_compile TechVJ\album_collector_v2.py test_governance_fixes.py` - OK
+- `python -m pytest -q test_governance_fixes.py -k "album_send_retries_peer_invalid or split_part_upload_retries_peer_invalid or split_bot_peer_resolve_is_cached"` - 3 passed
+
+**O'zgartirilgan fayllar:** `TechVJ/album_collector_v2.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-050: Channel comment link discussion groupga a'zo bo'lmaganda yuklanmaydi
 **Sana:** 2026-07-08
 **Holat:** Hal qilindi

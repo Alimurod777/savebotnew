@@ -5,6 +5,39 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 30 (2026-07-19) - Ban storage sync va cancellable background `/grab`
+
+### So'rov:
+Owner `/ban` va `/unban` komandalarini RoleManager, role fayli, local DB va legacy `banned_users` bo'yicha to'liq sinxron qilish; ownerni ban qilishni taqiqlash; uzoq `/grab` ishlayotganida `/cancel`, `/stop` va boshqa komandalarni darhol ishlatish; regression testlar, hujjatlar, commit va `origin/main` push.
+
+### Natija:
+- **BUG-053** qo'shildi va hal qilindi.
+- Role update local-first storage va legacy ban jadvali bilan bitta awaited oqimga birlashtirildi.
+- Mongo write uchun `immediate_sync=True` qo'shildi: bir darhol urinish bajariladi, failure pending sync queue'da saqlanadi.
+- Ban diagnostikasi runtime/file/local DB bilan birga local va resolved legacy ban holatini ham tekshiradi.
+- Owner `/ban` orqali ban qilinmaydi va `RoleManager` darajasida ham doim `vip_user`.
+- `/grab` target user ID ostida task managerga background task sifatida yoziladi; handler uzoq `save()`ni await qilmaydi.
+- `/stop` va `/cancel` delegated `/grab`ning aynan target user taskini cancel qiladi.
+- Task done callback exceptionni consume/log qiladi; background `/grab` xatosi bot client orqali userga yuboriladi.
+- Async regression uzoq `/grab` davomida boshqa owner command darhol bajarilishini isbotlaydi.
+
+### O'zgartirilgan fayllar:
+- `TechVJ/owner_commands.py`
+- `TechVJ/save.py`
+- `TechVJ/task_manager.py`
+- `core/role_manager.py`
+- `database/async_db.py`
+- `test_governance_fixes.py`
+- `data/BUGS.md`
+- `data/PROMPTS.md`
+
+### UMUMIY YO'NALISH yangilanishi:
+- Owner governance komandlari barcha local/runtime/legacy qatlamlarni javobdan oldin izchil yangilashi kerak.
+- Uzoq owner orchestration ishlari dispatcher handlerida await qilinmaydi; user-keyed task manager orqali cancellable background task bo'ladi.
+- Har bir fire-and-forget task terminal exceptionini consume va log qilishi shart.
+
+---
+
 ## Sessiya 29 (2026-07-18) - Account-specific upload FloodPremiumWait va stuck worker fix
 
 ### So'rov:

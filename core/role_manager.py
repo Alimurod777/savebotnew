@@ -137,48 +137,29 @@ class RoleManager:
         # read roles via LocalStorage/Mongo can see the change without waiting.
         try:
             from database.async_db import async_db
-            await async_db.update_user(user_id, {"role": role.value})
+            await async_db.update_user(
+                user_id,
+                {"role": role.value},
+                immediate_sync=True,
+            )
         except Exception as e:
             logger.debug("RoleManager: async_db role persist failed (non-fatal): %s", e)
 
-        # Best-effort Mongo sync for ban state.
+        # Keep the legacy ban table in lockstep with the role. Command guards
+        # still consult this table in a few compatibility paths, so this local
+        # write must complete before /ban or /unban reports success.
         try:
-            from database.sync_manager import sync_manager
+            from database.async_db import async_db
             if role == UserRole.BANNED:
-                try:
-                    from config import OWNER_ID
-                    sync_manager.background_sync(
-                        "banned_users",
-                        {"user_id": user_id},
-                        {"user_id": user_id, "banned_by": OWNER_ID, "banned": True}
-                    )
-                except Exception:
-                    pass
-            else:
-                # Unban: mark banned=False in Mongo
-                sync_manager.background_sync(
-                    "banned_users",
-                    {"user_id": user_id},
-                    {"banned": False}
+                await async_db.ban_user(
+                    user_id,
+                    owner_id or 0,
+                    immediate_sync=True,
                 )
+            else:
+                await async_db.unban_user(user_id, immediate_sync=True)
         except Exception as e:
-            logger.debug("RoleManager: background sync failed (non-fatal): %s", e)
-            # Fallback: try direct Mongo write
-            try:
-                from database.async_db import async_db
-                if role == UserRole.BANNED:
-                    try:
-                        from config import OWNER_ID
-                        await async_db.ban_user(user_id, OWNER_ID)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        await async_db.unban_user(user_id)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            logger.warning("RoleManager: legacy ban state persist failed: %s", e)
 
     async def is_banned(self, user_id: int) -> bool:
         return (await self.get_role(user_id)) == UserRole.BANNED

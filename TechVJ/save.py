@@ -3390,7 +3390,11 @@ def check_banned(func):
         user_id = message.from_user.id
         if user_id == OWNER_ID:
             return await func(client, message)
-        if await async_db.is_banned(user_id):
+        if _GOVERNANCE_AVAILABLE:
+            banned = await _role_manager.is_banned(user_id)
+        else:
+            banned = await async_db.is_banned(user_id)
+        if banned:
             await message.reply(BANNED_MESSAGE)
             return
         return await func(client, message)
@@ -3403,7 +3407,11 @@ def check_banned_callback(func):
         user_id = callback_query.from_user.id
         if user_id == OWNER_ID:
             return await func(client, callback_query)
-        if await async_db.is_banned(user_id):
+        if _GOVERNANCE_AVAILABLE:
+            banned = await _role_manager.is_banned(user_id)
+        else:
+            banned = await async_db.is_banned(user_id)
+        if banned:
             await callback_query.answer(BANNED_MESSAGE, show_alert=True)
             return
         return await func(client, callback_query)

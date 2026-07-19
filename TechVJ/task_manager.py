@@ -125,14 +125,32 @@ class TaskManager:
         task.add_done_callback(lambda t: self._task_done_callback(user_id, t))
     
     def _task_done_callback(self, user_id: int, task: asyncio.Task) -> None:
-        """Callback when a task completes"""
+        """Remove a completed task and consume/log its terminal exception."""
         if user_id in self._user_contexts:
             self._user_contexts[user_id].tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("TaskManager: failed to inspect completed task for user %s", user_id)
+            return
+        if error is not None:
+            logger.error(
+                "TaskManager: background task failed for user %s: %s",
+                user_id,
+                error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
     
     async def create_task(self, user_id: int, coro, name: Optional[str] = None) -> asyncio.Task:
         """Create and register a task for a user"""
+        context = await self.get_context(user_id)
         task = asyncio.create_task(coro, name=name)
-        await self.register_task(user_id, task)
+        context.tasks.add(task)
+        task.add_done_callback(lambda t: self._task_done_callback(user_id, t))
         return task
     
     async def cancel_all_tasks(self, user_id: int) -> int:

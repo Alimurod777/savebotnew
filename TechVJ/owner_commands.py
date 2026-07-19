@@ -108,6 +108,8 @@ async def _collect_user_state(uid: int) -> dict:
         "resolved_db_role": None,
         "local_db_role": None,
         "mongo_db_role": None,
+        "local_banned": None,
+        "legacy_banned": None,
         "resolved_role": None,
         "resolved_user": None,
         "local_user": None,
@@ -125,6 +127,7 @@ async def _collect_user_state(uid: int) -> dict:
 
         if is_local_storage_available():
             state["local_user"] = await LocalStorage.find_user(uid)
+            state["local_banned"] = await LocalStorage.is_banned(uid)
     except Exception as e:
         state["sync_ok"] = False
         state["notes"].append(f"local_db_read_failed={e}")
@@ -141,6 +144,7 @@ async def _collect_user_state(uid: int) -> dict:
 
     try:
         state["resolved_user"] = await async_db.find_user(uid)
+        state["legacy_banned"] = await async_db.is_banned(uid)
     except Exception as e:
         state["sync_ok"] = False
         state["notes"].append(f"resolved_db_read_failed={e}")
@@ -230,6 +234,12 @@ async def _collect_user_state(uid: int) -> dict:
         state["sync_ok"] = False
         state["notes"].append("file_role_mismatch")
 
+    expected_banned = state["runtime_role"] == UserRole.BANNED.value
+    for key in ("local_banned", "legacy_banned"):
+        if state[key] is not None and bool(state[key]) != expected_banned:
+            state["sync_ok"] = False
+            state["notes"].append(f"{key}_mismatch")
+
     if (
         state["local_db_role"]
         and state["mongo_db_role"]
@@ -267,6 +277,8 @@ def _format_user_state(state: dict, title: Optional[str] = None) -> str:
         f"File role: `{state['file_role'] or 'N/A'}`",
         f"DB role: `{state['db_role'] or 'N/A'}`",
         f"DB source: `{state.get('selected_db_source', 'none')}`",
+        f"Local ban: `{'yes' if state['local_banned'] else 'no'}`",
+        f"Legacy ban: `{'yes' if state['legacy_banned'] else 'no'}`",
         f"Logged in: `{'yes' if state['logged_in'] else 'no'}`",
         f"Session: `{'present' if state['has_session'] else 'missing'}`",
         _describe_db("Local DB", state.get("local_user"), state.get("local_db_role")),
@@ -302,6 +314,9 @@ async def cmd_ban(client: Client, message: Message):
     except ValueError:
         await message.reply("user_id must be an integer.")
         return
+    if uid == OWNER_ID:
+        await message.reply("Owner account cannot be banned.", parse_mode=ParseMode.DISABLED)
+        return
     await role_manager.set_role(uid, UserRole.BANNED)
     role_manager.invalidate(uid)
     state = await _collect_user_state(uid)
@@ -325,6 +340,9 @@ async def cmd_unban(client: Client, message: Message):
         uid = int(parts[1])
     except ValueError:
         await message.reply("user_id must be an integer.")
+        return
+    if uid == OWNER_ID:
+        await message.reply("Owner account is always vip_user.", parse_mode=ParseMode.DISABLED)
         return
     await role_manager.set_role(uid, UserRole.NORMAL_USER)
     role_manager.invalidate(uid)
@@ -1347,11 +1365,24 @@ async def cmd_grab_v2(client: Client, message: Message):
 
     proxy_message.reply = _proxy_reply
 
-    try:
-        from TechVJ.save import save
-        await save(client, proxy_message)
-    except Exception as e:
-        await message.reply(
-            f"Xatolik: {type(e).__name__}: {e}",
-            parse_mode=ParseMode.DISABLED,
-        )
+    async def _run_grab():
+        try:
+            from TechVJ.save import save
+            await save(client, proxy_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("grab: background task failed for user %s", target_user_id)
+            await client.send_message(
+                target_user_id,
+                f"Xatolik: {type(e).__name__}: {e}",
+                parse_mode=ParseMode.DISABLED,
+            )
+
+    from TechVJ.task_manager import task_manager
+
+    await task_manager.create_task(
+        target_user_id,
+        _run_grab(),
+        name=f"grab-{target_user_id}-{anchor_id or 'no-anchor'}",
+    )

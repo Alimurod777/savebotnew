@@ -5,6 +5,40 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-053: `/ban` storage qatlamlari ajraladi va `/grab` dispatcher workerini band qiladi
+**Sana:** 2026-07-19
+**Holat:** Hal qilindi
+
+**Muammo:**
+1. `/ban` va `/unban` role fayli/runtime rolini yangilardi, lekin local user role, local legacy `banned_users` va Mongo sync natijasi command javobidan oldin bir xil holatga kelishi kafolatlanmagan edi.
+2. Ownerni ban qilishga qarshi handler-level aniq rad javobi yo'q edi.
+3. `/grab` uzoq `save()` coroutine'ini to'g'ridan-to'g'ri await qilib, dispatcher workerini band qilardi.
+4. Background task yakunidagi exception olinmasa `Task exception was never retrieved` chiqishi mumkin edi.
+
+**Sabab:**
+1. `RoleManager.set_role()` legacy ban yozuvini faqat background Mongo sync sifatida yuborardi; local-first ban API bilan bitta oqimda ishlamasdi.
+2. `/grab` task managerga target user ID bilan ro'yxatdan o'tkazilmagan edi.
+3. `TaskManager` done callback faqat taskni setdan olib tashlar, `task.exception()`ni consume qilmasdi.
+
+**Yechim:**
+1. `RoleManager.set_role()` role fayli/cache, local sessions role va legacy `banned_users`ni ketma-ket yangilaydi.
+2. `async_db` write APIlariga backward-compatible `immediate_sync=True` qo'shildi: owner role komandlari Mongo uchun bir darhol urinishni kutadi, muvaffaqiyatsiz yozuv pending queue'ga tushadi.
+3. `/ban` owner IDni rad qiladi; owner roli har doim `vip_user`.
+4. Ban diagnostikasi local va resolved legacy ban holatini ham ko'rsatadi.
+5. `/grab` `task_manager.create_task(target_user_id, ...)` orqali fonga o'tkazildi. `/stop` va `/cancel` aynan shu target user taskini bekor qiladi.
+6. Task done callback cancellationni ajratadi, exceptionni consume qiladi va traceback bilan loglaydi. `/grab` ichki xatosi bot client orqali target userga yuboriladi.
+
+**Regression testlar:**
+- Ban/unban: runtime role, role fayli, local user role, local/resolved legacy ban va Mongo sync operationlari.
+- Ownerni ban qilib bo'lmasligi.
+- `/grab` handleri darhol qaytishi va uzoq save davomida boshqa owner command ishlashi.
+- `/stop` va `/cancel` delegated target user taskini bekor qilishi.
+- Background task exceptioni olinib loglanishi.
+
+**O'zgartirilgan fayllar:** `TechVJ/owner_commands.py`, `TechVJ/save.py`, `TechVJ/task_manager.py`, `core/role_manager.py`, `database/async_db.py`, `test_governance_fixes.py`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-052: FloodPremiumWait file part ichida yutilib, katta upload qotib qoladi
 **Sana:** 2026-07-18
 **Holat:** Hal qilindi

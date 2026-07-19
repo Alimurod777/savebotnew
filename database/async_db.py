@@ -203,7 +203,14 @@ class AsyncDatabase:
         return None
 
     @classmethod
-    async def update_user(cls, chat_id: int, data: dict = None, **kwargs):
+    async def update_user(
+        cls,
+        chat_id: int,
+        data: dict = None,
+        *,
+        immediate_sync: bool = False,
+        **kwargs,
+    ):
         """Update user info and invalidate cache.
 
         Accepts EITHER a dict or keyword arguments:
@@ -240,11 +247,18 @@ class AsyncDatabase:
         # 2. Background sync to MongoDB (non-blocking)
         try:
             from database.sync_manager import sync_manager
-            sync_manager.background_sync(
-                "sessions",
-                {"chat_id": chat_id},
-                mongo_update
-            )
+            if immediate_sync:
+                await sync_manager.enqueue_and_try(
+                    "sessions",
+                    {"chat_id": chat_id},
+                    mongo_update,
+                )
+            else:
+                sync_manager.background_sync(
+                    "sessions",
+                    {"chat_id": chat_id},
+                    mongo_update,
+                )
         except Exception as _se:
             # Fallback: try direct Mongo write if sync_manager unavailable
             coll = get_sessions_collection()
@@ -377,7 +391,7 @@ class AsyncDatabase:
     # ==================== Ban System Operations ====================
     
     @classmethod
-    async def ban_user(cls, user_id: int, banned_by: int):
+    async def ban_user(cls, user_id: int, banned_by: int, *, immediate_sync: bool = False):
         """Ban a user - stores in banned_users collection"""
         local = cls._get_local()
         if local:
@@ -389,21 +403,30 @@ class AsyncDatabase:
         try:
             from database.sync_manager import sync_manager
 
-            sync_manager.background_sync(
-                "banned_users",
-                {'user_id': user_id},
-                {
-                    'user_id': user_id,
-                    'banned_by': banned_by,
-                    'banned': True,
-                },
-                op="set",
-            )
+            update = {
+                'user_id': user_id,
+                'banned_by': banned_by,
+                'banned': True,
+            }
+            if immediate_sync:
+                await sync_manager.enqueue_and_try(
+                    "banned_users",
+                    {'user_id': user_id},
+                    update,
+                    op="set",
+                )
+            else:
+                sync_manager.background_sync(
+                    "banned_users",
+                    {'user_id': user_id},
+                    update,
+                    op="set",
+                )
         except Exception as e:
             _async_db_logger.warning(f"MongoDB ban_user enqueue failed: {e}")
 
     @classmethod
-    async def unban_user(cls, user_id: int):
+    async def unban_user(cls, user_id: int, *, immediate_sync: bool = False):
         """Unban a user - removes from banned_users collection"""
         local = cls._get_local()
         if local:
@@ -415,12 +438,20 @@ class AsyncDatabase:
         try:
             from database.sync_manager import sync_manager
 
-            sync_manager.background_sync(
-                "banned_users",
-                {'user_id': user_id},
-                {},
-                op="delete_one",
-            )
+            if immediate_sync:
+                await sync_manager.enqueue_and_try(
+                    "banned_users",
+                    {'user_id': user_id},
+                    {},
+                    op="delete_one",
+                )
+            else:
+                sync_manager.background_sync(
+                    "banned_users",
+                    {'user_id': user_id},
+                    {},
+                    op="delete_one",
+                )
         except Exception as e:
             _async_db_logger.warning(f"MongoDB unban_user enqueue failed: {e}")
     

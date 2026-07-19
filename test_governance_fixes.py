@@ -2141,3 +2141,224 @@ def test_user_upload_worker_reaper_skips_active_upload():
 
     worker._busy = False
     assert UserWorkerRegistry._should_reap(worker, now) is True
+
+
+def test_role_manager_synchronizes_role_file_local_db_and_legacy_ban(monkeypatch, tmp_path):
+    async def run():
+        import database.async_db as async_db_module
+        import database.local_storage as local_storage
+        import database.sync_manager as sync_module
+        import core.role_manager as role_module
+
+        roles_dir = tmp_path / "roles"
+        db_dir = tmp_path / "local_db"
+        roles_dir.mkdir()
+        db_dir.mkdir()
+
+        monkeypatch.setattr(role_module, "_DATA_DIR", str(roles_dir))
+        monkeypatch.setattr(local_storage, "_DB_DIR", str(db_dir))
+        monkeypatch.setattr(local_storage, "_DB_PATH", str(db_dir / "bot_storage.db"))
+        monkeypatch.setattr(local_storage, "_initialized", False)
+        monkeypatch.setattr(local_storage, "_init_lock", None)
+        monkeypatch.setattr(async_db_module.AsyncDatabase, "_local_storage", None)
+        async_db_module._USER_CACHE.clear()
+
+        mongo_writes = []
+        monkeypatch.setattr(
+            sync_module.sync_manager,
+            "background_sync",
+            lambda collection, filter_dict, update_dict, op="set": mongo_writes.append(
+                ("background", collection, filter_dict, update_dict, op)
+            ),
+        )
+
+        async def record_immediate_sync(collection, filter_dict, update_dict, op="set"):
+            mongo_writes.append(("immediate", collection, filter_dict, update_dict, op))
+
+        monkeypatch.setattr(
+            sync_module.sync_manager,
+            "enqueue_and_try",
+            record_immediate_sync,
+        )
+
+        manager = role_module.RoleManager()
+        manager._owner_id = 999
+        user_id = 12345
+
+        await manager.set_role(user_id, role_module.UserRole.BANNED)
+
+        assert await manager.get_role(user_id) == role_module.UserRole.BANNED
+        assert (roles_dir / f"{user_id}.txt").read_text(encoding="utf-8") == "banned_user"
+        assert (await local_storage.LocalStorage.find_user(user_id))["role"] == "banned_user"
+        assert await local_storage.LocalStorage.is_banned(user_id) is True
+        assert await async_db_module.async_db.is_banned(user_id) is True
+        assert any(item[0] == "immediate" and item[1] == "sessions" for item in mongo_writes)
+        assert any(
+            item[0] == "immediate" and item[1] == "banned_users" and item[4] == "set"
+            for item in mongo_writes
+        )
+
+        await manager.set_role(user_id, role_module.UserRole.NORMAL_USER)
+
+        assert await manager.get_role(user_id) == role_module.UserRole.NORMAL_USER
+        assert (roles_dir / f"{user_id}.txt").read_text(encoding="utf-8") == "normal_user"
+        assert (await local_storage.LocalStorage.find_user(user_id))["role"] == "normal_user"
+        assert await local_storage.LocalStorage.is_banned(user_id) is False
+        assert await async_db_module.async_db.is_banned(user_id) is False
+        assert any(
+            item[0] == "immediate"
+            and item[1] == "banned_users"
+            and item[4] == "delete_one"
+            for item in mongo_writes
+        )
+
+        await manager.set_role(999, role_module.UserRole.BANNED)
+        assert await manager.get_role(999) == role_module.UserRole.VIP_USER
+        assert not (roles_dir / "999.txt").exists()
+
+    asyncio.run(run())
+
+
+def test_task_manager_consumes_background_exception(caplog):
+    async def run():
+        from TechVJ.task_manager import TaskManager
+
+        manager = TaskManager()
+
+        async def fail():
+            raise RuntimeError("background boom")
+
+        task = await manager.create_task(77, fail(), name="failing-background-test")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert task.done()
+        assert task.exception() is not None
+        assert await manager.get_active_task_count(77) == 0
+
+    asyncio.run(run())
+    assert "background task failed for user 77" in caplog.text
+
+
+def test_grab_runs_in_background_and_stop_cancel_target_user_task(monkeypatch):
+    async def run():
+        import sys
+
+        sys.modules.setdefault(
+            "psutil",
+            SimpleNamespace(
+                virtual_memory=lambda: SimpleNamespace(total=8 * 1024**3),
+                cpu_percent=lambda interval=None: 0.0,
+                disk_usage=lambda path: SimpleNamespace(
+                    total=100 * 1024**3,
+                    used=10 * 1024**3,
+                    free=90 * 1024**3,
+                    percent=10.0,
+                ),
+            ),
+        )
+
+        import TechVJ.owner_commands as owner_commands
+        import TechVJ.save as save_module
+        import TechVJ.task_manager as task_manager_module
+        from TechVJ.task_manager import TaskManager
+
+        target_user_id = 24680
+        owner_id = owner_commands.OWNER_ID
+        manager = TaskManager()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def long_save(client, proxy_message):
+            assert proxy_message.chat.id == target_user_id
+            assert proxy_message.from_user.id == target_user_id
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        class FakeEngine:
+            async def cancel_user_downloads(self, user_id):
+                assert user_id == target_user_id
+                return 0
+
+        class FakeQueue:
+            async def clear_queue(self, user_id):
+                assert user_id == target_user_id
+                return 0
+
+        class FakeRoleManager:
+            async def is_banned(self, user_id):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self.sent = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent.append((chat_id, text, kwargs))
+                return SimpleNamespace(id=900 + len(self.sent), chat=SimpleNamespace(id=chat_id))
+
+        class FakeMessage:
+            def __init__(self, text, chat_id, from_user_id, message_id):
+                self.text = text
+                self.chat = SimpleNamespace(id=chat_id)
+                self.from_user = SimpleNamespace(id=from_user_id, mention=f"User {from_user_id}")
+                self.id = message_id
+                self.message_id = message_id
+                self.replies = []
+                self.outgoing = False
+
+            async def reply(self, text, **kwargs):
+                self.replies.append((text, kwargs))
+                return SimpleNamespace(id=700 + len(self.replies), chat=self.chat)
+
+        async def fake_get_engine():
+            return FakeEngine()
+
+        monkeypatch.setattr(save_module, "save", long_save)
+        monkeypatch.setattr(task_manager_module, "task_manager", manager)
+        monkeypatch.setattr(save_module, "task_manager", manager)
+        monkeypatch.setattr(save_module, "get_engine", fake_get_engine)
+        monkeypatch.setattr(save_module, "user_queue", FakeQueue())
+        monkeypatch.setattr(save_module, "_role_manager", FakeRoleManager())
+
+        client = FakeClient()
+        grab_message = FakeMessage(
+            f"/grab {target_user_id} https://t.me/c/123456/101",
+            owner_id,
+            owner_id,
+            10,
+        )
+
+        await asyncio.wait_for(owner_commands.cmd_grab_v2(client, grab_message), timeout=0.2)
+        await asyncio.wait_for(started.wait(), timeout=0.2)
+        assert await manager.get_active_task_count(target_user_id) == 1
+        assert await manager.get_active_task_count(owner_id) == 0
+
+        owner_command = FakeMessage("/maintenance off", owner_id, owner_id, 11)
+        await asyncio.wait_for(
+            owner_commands.cmd_maintenance(client, owner_command),
+            timeout=0.2,
+        )
+        assert owner_command.replies
+        assert await manager.get_active_task_count(target_user_id) == 1
+
+        stop_message = FakeMessage("/stop", target_user_id, target_user_id, 12)
+        await asyncio.wait_for(save_module.stop_command(client, stop_message), timeout=1.0)
+        await asyncio.wait_for(cancelled.wait(), timeout=0.2)
+        assert await manager.get_active_task_count(target_user_id) == 0
+
+        started.clear()
+        cancelled.clear()
+        await owner_commands.cmd_grab_v2(client, grab_message)
+        await asyncio.wait_for(started.wait(), timeout=0.2)
+
+        cancel_message = FakeMessage("/cancel", target_user_id, target_user_id, 13)
+        await asyncio.wait_for(save_module.cancel_command(client, cancel_message), timeout=1.0)
+        await asyncio.wait_for(cancelled.wait(), timeout=0.2)
+        assert await manager.get_active_task_count(target_user_id) == 0
+
+    asyncio.run(run())

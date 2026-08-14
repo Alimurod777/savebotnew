@@ -5762,7 +5762,8 @@ async def process_single_topic_message(
                 reply_target_message=request_message,
             )
             if not result:
-                await _notify_topic_failure("topic_send_media", "download_and_send_media returned False")
+                err_str = getattr(msg, "_upload_error", "download_and_send_media returned False")
+                await _notify_topic_failure("topic_send_media", err_str)
             return result
         if msg.text:
             from core.smart_renderer import from_message, SmartRenderer
@@ -6952,7 +6953,9 @@ async def process_single_post(
             reply_target_message=message,
         )
         if not result:
-            await _notify_failure("send_media", "download_and_send_media returned False", source_msg=msg)
+            err_str = getattr(msg, "_upload_error", "download_and_send_media returned False")
+            err_exc = getattr(msg, "_upload_exception", None)
+            await _notify_failure("send_media", err_str, error=err_exc, source_msg=msg)
         return result
         
     except asyncio.CancelledError:
@@ -7268,6 +7271,7 @@ async def download_and_send_media(
         )
         
         if not file_path or not os.path.exists(file_path):
+            setattr(msg, "_upload_error", "Download returned empty or missing file")
             if status_msg:
                 await client.delete_messages(ctx_target_chat_id, [status_msg.id])
             return False
@@ -8082,6 +8086,7 @@ async def download_and_send_media(
                     "All sessions blocked for user %d upload — cannot deliver",
                     _acc_user_id,
                 )
+                setattr(msg, "_upload_error", "All sessions blocked (WorkerBotBlockedError)")
                 return False
 
             if not _sm_handled:
@@ -8468,6 +8473,8 @@ async def download_and_send_media(
         if is_floodwait_error(e):
             raise
         logger.warning(f"download_and_send_media error (type={msg_type}): {type(e).__name__}: {e}")
+        setattr(msg, "_upload_error", f"{type(e).__name__}: {e}")
+        setattr(msg, "_upload_exception", e)
         if status_msg:
             try:
                 await client.delete_messages(ctx_target_chat_id, [status_msg.id])

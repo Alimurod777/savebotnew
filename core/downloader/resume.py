@@ -376,7 +376,24 @@ class ResumableDownloader:
         )
 
         if file_path and os.path.exists(file_path):
-            state.downloaded_bytes = state.total_size
+            actual_size = os.path.getsize(file_path)
+            # Pyrofork can swallow a GetFile error internally (e.g. -503
+            # Timeout after exhausting its own retries) and still return a
+            # path pointing at a 0-byte / short file instead of raising or
+            # returning None. Don't trust existence alone — verify size.
+            expected = state.total_size
+            if actual_size == 0 or (expected and actual_size < expected * 0.99):
+                logger.warning(
+                    f"download_media() returned incomplete file "
+                    f"({actual_size}/{expected} bytes) for {state.file_path} "
+                    f"— treating as failed attempt"
+                )
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                return False
+            state.downloaded_bytes = actual_size
             if state.file_path != file_path:
                 import shutil
                 shutil.move(file_path, state.file_path)

@@ -7275,6 +7275,22 @@ async def download_and_send_media(
             if status_msg:
                 await client.delete_messages(ctx_target_chat_id, [status_msg.id])
             return False
+
+        if os.path.getsize(file_path) == 0:
+            # Interrupted GetFile (e.g. -503 Timeout mid-download) can leave
+            # a 0-byte file on disk that still passes the exists() check.
+            # engine.download() already retries this internally, so reaching
+            # here means all retries produced empty files — fail cleanly
+            # instead of handing a 0-byte file to Pyrogram's send_* (which
+            # raises ValueError: File size equals to 0 B).
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            setattr(msg, "_upload_error", "Download produced a 0-byte file after retries")
+            if status_msg:
+                await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+            return False
         
         # Check cancellation before upload
         if await pipeline.check_cancelled():

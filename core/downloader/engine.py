@@ -229,7 +229,17 @@ class DownloadEngine:
                     )
                 
                 if file_path and os.path.exists(file_path):
-                    return file_path
+                    if os.path.getsize(file_path) > 0:
+                        return file_path
+                    # Interrupted GetFile (e.g. -503 Timeout) can leave a
+                    # 0-byte file that still passes os.path.exists(). Treat
+                    # it as a failed attempt instead of a "successful" empty
+                    # download, so the retry loop below kicks in.
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    raise Exception(f"Download produced 0-byte file: {file_path}")
                 else:
                     raise Exception("Download produced no file")
             
@@ -299,7 +309,16 @@ class DownloadEngine:
                 )
                 
                 if file_path and os.path.exists(file_path):
-                    return file_path
+                    if os.path.getsize(file_path) > 0:
+                        return file_path
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(BASE_RETRY_DELAY * (attempt + 1))
+                        continue
+                    raise Exception(f"Download produced 0-byte file: {file_path}")
             
             except FloodWait as e:
                 wait_time = getattr(e, 'value', getattr(e, 'x', 30))

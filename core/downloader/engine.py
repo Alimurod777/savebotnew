@@ -19,7 +19,7 @@ from typing import Optional, Callable, Any, Dict
 
 from pyrogram import Client
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid
+from pyrogram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid, Timeout
 
 from core.downloader.progress import ProgressTracker, progress_tracker
 from core.downloader.worker import WorkerPool, DownloadTask, TaskStatus
@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEMP_DIR = "downloads/temp"
 MAX_RETRIES = 5
 BASE_RETRY_DELAY = 2.0
+# If a download reports NO byte progress for this long, treat it as stuck
+# (e.g. Pyrogram's internal GetFile retry cascade after a -503) and abort
+# the attempt instead of waiting out its full ~55-60s internal retry chain.
+# This does NOT cap total download time — a large file that keeps making
+# progress can run as long as it needs; only a stalled/zero-progress
+# attempt is cut short.
+STALL_TIMEOUT = 25.0
 
 
 class DownloadEngine:
@@ -211,22 +218,65 @@ class DownloadEngine:
                 return None
             
             try:
-                if use_resume:
-                    # Use resumable download with stream_media
-                    file_path = await download_with_resume(
-                        client=client,
-                        message=message,
-                        download_dir=download_dir,
-                        progress_callback=task.progress_callback,
-                        cancel_event=task.cancel_event
-                    )
-                else:
-                    # Fallback to standard download_media
-                    file_path = await client.download_media(
-                        message,
-                        file_name=f"{download_dir}/",
-                        progress=task.progress_callback
-                    )
+                # Stall watchdog: reset on every progress callback; if no
+                # byte progress arrives for STALL_TIMEOUT seconds (a stuck
+                # GetFile retry cascade reports none), cancel this attempt.
+                # A large file that's genuinely still transferring keeps
+                # resetting the clock and is never cut short.
+                last_progress_at = [time.monotonic()]
+                orig_progress_cb = task.progress_callback
+
+                def _watchdog_progress_cb(current, total, *a, **kw):
+                    last_progress_at[0] = time.monotonic()
+                    if orig_progress_cb:
+                        try:
+                            orig_progress_cb(current, total, *a, **kw)
+                        except Exception:
+                            pass
+
+                async def _run_download():
+                    if use_resume:
+                        return await download_with_resume(
+                            client=client,
+                            message=message,
+                            download_dir=download_dir,
+                            progress_callback=_watchdog_progress_cb,
+                            cancel_event=task.cancel_event
+                        )
+                    else:
+                        return await client.download_media(
+                            message,
+                            file_name=f"{download_dir}/",
+                            progress=_watchdog_progress_cb
+                        )
+
+                dl_task = asyncio.ensure_future(_run_download())
+                try:
+                    while True:
+                        try:
+                            file_path = await asyncio.wait_for(
+                                asyncio.shield(dl_task), timeout=5.0
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            if dl_task.done():
+                                file_path = dl_task.result()
+                                break
+                            stalled_for = time.monotonic() - last_progress_at[0]
+                            if stalled_for >= STALL_TIMEOUT:
+                                dl_task.cancel()
+                                try:
+                                    await dl_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                raise Exception(
+                                    f"Download stalled for {stalled_for:.0f}s "
+                                    f"(no progress) — likely stuck GetFile retry"
+                                )
+                            continue
+                except asyncio.CancelledError:
+                    dl_task.cancel()
+                    raise
                 
                 if file_path and os.path.exists(file_path):
                     if os.path.getsize(file_path) > 0:
@@ -270,6 +320,29 @@ class DownloadEngine:
                     except Exception:
                         pass
                 raise
+
+            except Timeout as e:
+                # -503 GetFile timeout. The official Telegram app can often
+                # fetch the same file fine — this usually means our session
+                # is holding a stale file_reference / DC route for this
+                # message. Refresh the message to get a fresh reference
+                # before retrying, same as the FileReference-error path.
+                logger.warning(f"GetFile -503 Timeout on attempt {attempt + 1}: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    try:
+                        fresh_msg = await client.get_messages(
+                            message.chat.id,
+                            message.id
+                        )
+                        if fresh_msg and not fresh_msg.empty:
+                            task.message = fresh_msg
+                            message = fresh_msg
+                    except Exception as refresh_err:
+                        logger.debug(f"Message refresh after -503 failed: {refresh_err}")
+                    await asyncio.sleep(BASE_RETRY_DELAY * (attempt + 1))
+                    continue
+                else:
+                    raise
             
             except asyncio.CancelledError:
                 logger.info(f"Download cancelled: {task.task_id}")
@@ -283,6 +356,23 @@ class DownloadEngine:
             except Exception as e:
                 logger.warning(f"Download attempt {attempt + 1} failed: {e}")
                 if attempt < MAX_RETRIES - 1:
+                    # Pyrofork can swallow a -503 GetFile Timeout internally
+                    # and hand us back a missing/0-byte file instead of
+                    # raising Timeout directly, so this generic branch is
+                    # where that failure actually lands. Refresh the message
+                    # for a fresh file_reference/DC route before retrying —
+                    # the official app succeeding on the same file usually
+                    # means our session's cached reference is stale.
+                    try:
+                        fresh_msg = await client.get_messages(
+                            message.chat.id,
+                            message.id
+                        )
+                        if fresh_msg and not fresh_msg.empty:
+                            task.message = fresh_msg
+                            message = fresh_msg
+                    except Exception as refresh_err:
+                        logger.debug(f"Message refresh after download error failed: {refresh_err}")
                     await asyncio.sleep(BASE_RETRY_DELAY * (attempt + 1))
                 else:
                     raise

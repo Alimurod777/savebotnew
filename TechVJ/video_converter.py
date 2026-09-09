@@ -231,11 +231,30 @@ async def optimal_video_handler(client: Client, message: Message):
             return
         
         # Case B: Try to send as video message first
-        send_success = await try_send_as_video(
-            client, message, status_msg, file_id, file_name
-        )
+        #
+        # NOTE: For documents (is_document=True), reusing the original
+        # file_id via send_video() almost always fails — a plain
+        # "document" upload has no DocumentAttributeVideo metadata
+        # (duration/width/height) on Telegram's servers, so the server
+        # rejects it (VIDEO_CONTENT_TYPE_INVALID / MEDIA_INVALID) and we
+        # used to silently fall back to send_document — this is the
+        # "sends as file instead of a streaming video" bug.
+        # Fix: for documents shaped like a video file, skip the
+        # file_id-reuse attempt and go straight to download + ffmpeg
+        # probe + re-upload with proper video attributes, which is the
+        # only way to get real streaming metadata attached.
+        if is_document:
+            send_success = await send_as_video_via_download(
+                client, message, status_msg, file_id, file_name
+            )
+        else:
+            # message.video already carries streaming metadata — the
+            # cheap file_id-reuse path works fine here.
+            send_success = await try_send_as_video(
+                client, message, status_msg, file_id, file_name
+            )
         
-        # Case C: Fallback to document if video send failed
+        # Case C: Fallback to document only if the video path truly failed
         if not send_success:
             await send_as_document(
                 client, message, status_msg, file_id, file_name
@@ -329,6 +348,108 @@ async def try_send_as_video(
         
         # For other errors, still try fallback
         return False
+
+
+async def send_as_video_via_download(
+    client: Client,
+    message: Message,
+    status_msg: Message,
+    file_id: str,
+    file_name: str
+) -> bool:
+    """
+    Download a video-shaped document, probe it with ffmpeg for real
+    video attributes (duration/width/height) and a thumbnail, then
+    re-upload it via send_video with supports_streaming=True.
+
+    This is what actually produces a streamable/playable-inline video
+    on the recipient's side. Simply calling send_video(video=file_id)
+    with a document's file_id does NOT work — Telegram only renders a
+    message as a streaming video if the underlying document carries
+    DocumentAttributeVideo metadata, and a plain uploaded document has
+    none. Re-encoding metadata via ffmpeg and re-uploading is required.
+
+    Returns True on success, False if it should fall back to document.
+    """
+    download_path = None
+    thumb_path = None
+    try:
+        await status_msg.edit_text(
+            f"Downloading **{file_name}** to prepare video stream..."
+        )
+
+        os.makedirs("downloads", exist_ok=True)
+        safe_filename = "".join(c for c in file_name if c.isalnum() or c in '._-')
+        download_path = f"downloads/{message.chat.id}_{message.id}_{safe_filename}"
+
+        downloaded_file = await client.download_media(
+            message,
+            file_name=download_path,
+            progress=progress_callback,
+            progress_args=(status_msg, "Downloading")
+        )
+        clear_progress_cache(status_msg, "Downloading")
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            await status_msg.edit_text("Download failed. File not found.")
+            return False
+
+        download_path = downloaded_file
+
+        # Probe real video attributes so Telegram treats it as streamable
+        duration = 0
+        width = 0
+        height = 0
+        try:
+            info = await asyncio.to_thread(get_video_info, download_path)
+            if info:
+                duration = int(info.get('duration', 0))
+                width = info.get('width', 0)
+                height = info.get('height', 0)
+        except Exception:
+            pass
+
+        try:
+            thumb_path = await asyncio.to_thread(extract_thumbnail, download_path)
+        except Exception:
+            thumb_path = None
+
+        await status_msg.edit_text(f"Uploading **{file_name}** as video...")
+
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=download_path,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=message.id,
+            supports_streaming=True,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb=thumb_path,
+            file_name=file_name,
+            progress=progress_callback,
+            progress_args=(status_msg, "Uploading")
+        )
+        clear_progress_cache(status_msg, "Uploading")
+
+        await status_msg.edit_text(f"Sent **{file_name}** as video message.")
+        return True
+
+    except FloodWait:
+        raise
+
+    except Exception as e:
+        _logger.warning("send_as_video_via_download failed for %s: %s", file_name, e)
+        return False
+
+    finally:
+        for _tmp in (download_path, thumb_path):
+            try:
+                if _tmp and os.path.exists(_tmp):
+                    os.remove(_tmp)
+            except Exception:
+                pass
 
 
 async def send_as_document(

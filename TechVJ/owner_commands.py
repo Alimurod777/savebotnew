@@ -24,6 +24,7 @@ Commands:
   /failed_logs
   /grab <t.me/link>
   /grab <user_id> <t.me/link>
+  /dlsession <set|user|clear|status>   (download-only session; upload stays on own session)
 """
 from __future__ import annotations
 
@@ -588,7 +589,10 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/maintenance <on|off>` — Texnik xizmat rejimi\n\n"
         "**User sessiyalar (DB):**\n"
         "`/sessionupdate <uid> <session>` — User sessiyasini almashtirish\n"
-        "`/sessionremove <uid>` — User sessiyasini o'chirish\n\n"
+        "`/sessionremove <uid>` — User sessiyasini o'chirish\n"
+        "`/dlsession set <session>` — Faqat YUKLASH uchun boshqa sessiya (upload o'z sessiyangizda qoladi)\n"
+        "`/dlsession user <uid>` — Botdagi user sessiyasini faqat yuklash uchun ishlatish\n"
+        "`/dlsession clear|status` — O'chirish / holat\n\n"
         "**Session pool:**\n"
         "`/session list` — Barcha poollar\n"
         "`/session add global <sess>` — Global pool sessiya qo'shish\n"
@@ -1018,6 +1022,150 @@ async def cmd_sessionremove(client: Client, message: Message):
         await message.reply(_format_user_state(state, "✅ User session removed."))
     except Exception as e:
         await message.reply(f"❌ Xatolik: {e}")
+
+
+# ── /dlsession ────────────────────────────────────────────────────────────────
+# Download-only sessiya: yuklab olish boshqa akkaunt sessiyasi bilan, upload esa
+# egasining o'z (DB) sessiyasi bilan. /sessionupdate bilan o'z sessiyangizni
+# boshqasiniki bilan ALMASHTIRMANG — fayl o'sha akkauntning bot chatiga tushadi.
+
+_DLSESSION_USAGE = (
+    "Download-only sessiya (yuklash — boshqa akkaunt, upload — sizning o'z sessiyangiz)\n\n"
+    "/dlsession set <session_string> — download sessiyasini o'rnatish\n"
+    "/dlsession user <user_id> — botdagi shu user sessiyasini download uchun ishlatish\n"
+    "/dlsession clear — o'chirish (yana o'z sessiyangiz bilan yuklanadi)\n"
+    "/dlsession status — holat\n\n"
+    "Eslatma: set buyrug'idagi xabar maxfiy ma'lumot bo'lgani uchun avtomatik o'chiriladi."
+)
+
+
+async def _probe_session(session_string: str, owner_id: int):
+    """Connect briefly and return (id, username). Raises SessionInvalidError/SessionConnectionError."""
+    from TechVJ.session_handler import create_user_session
+
+    async with create_user_session(session_string, owner_id, timeout=20) as probe:
+        me = await probe.get_me()
+        return getattr(me, "id", None), getattr(me, "username", None)
+
+
+def _fmt_account(acc_id, username) -> str:
+    name = f"@{username}" if username else "username yo'q"
+    return f"{name} (id={acc_id})"
+
+
+@Client.on_message(filters.command("dlsession") & filters.private)
+async def cmd_dlsession(client: Client, message: Message):
+    """Owner: /dlsession <set|user|clear|status> — download-only session override."""
+    if not _owner(message):
+        return
+
+    from core.download_session_store import (
+        clear_download_session,
+        get_download_session,
+        session_fingerprint,
+        set_download_session,
+    )
+    from TechVJ.session_handler import SessionConnectionError, SessionInvalidError
+    from TechVJ.user_queue import user_queue
+
+    owner_id = int(message.from_user.id)
+    parts = (message.text or "").split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else "status"
+
+    async def _reply(text: str):
+        await client.send_message(owner_id, text, parse_mode=ParseMode.DISABLED)
+
+    if sub == "clear":
+        removed = clear_download_session(owner_id)
+        await _reply(
+            "✅ Download sessiyasi o'chirildi. Endi yuklash ham, yuborish ham o'z sessiyangiz bilan."
+            if removed else "Download sessiyasi o'rnatilmagan edi."
+        )
+        return
+
+    if sub in ("set", "user"):
+        if len(parts) < 3 or not parts[2].strip():
+            await _reply(_DLSESSION_USAGE)
+            return
+        arg = parts[2].strip()
+
+        if sub == "set":
+            session_string = arg
+            # Sessiya stringi chatda qolmasin.
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            if len(session_string) < 50:
+                await _reply("❌ Bu session string'ga o'xshamaydi (juda qisqa).")
+                return
+        else:
+            try:
+                src_uid = int(arg)
+            except ValueError:
+                await _reply("❌ user_id butun son bo'lishi kerak.")
+                return
+            src_data = await async_db.find_user(src_uid)
+            if not src_data or not src_data.get("logged_in") or not src_data.get("session"):
+                await _reply(f"❌ User {src_uid} uchun faol sessiya topilmadi.")
+                return
+            session_string = src_data["session"]
+
+        if user_queue.is_processing(owner_id):
+            await _reply("⏳ Hozir yuklash davom etmoqda. Tugagach (yoki /stop dan keyin) qayta urinib ko'ring.")
+            return
+
+        try:
+            acc_id, username = await _probe_session(session_string, owner_id)
+        except SessionInvalidError as err:
+            await _reply(f"❌ Sessiya yaroqsiz: {getattr(err, 'error_type', type(err).__name__)}")
+            return
+        except SessionConnectionError as err:
+            await _reply(f"❌ Ulanib bo'lmadi, keyinroq urinib ko'ring.\n{err}")
+            return
+        except Exception as err:
+            await _reply(f"❌ Tekshirishda xatolik: {type(err).__name__}: {err}")
+            return
+
+        set_download_session(owner_id, session_string, account_id=acc_id)
+        await _reply(
+            "✅ Download sessiyasi o'rnatildi.\n"
+            f"Yuklash: {_fmt_account(acc_id, username)} [{session_fingerprint(session_string)}]\n"
+            "Upload: o'z (asosiy) sessiyangiz — u o'zgarmadi.\n\n"
+            "Endi t.me havolasini odatdagidek yuboring. Qaytarish: /dlsession clear"
+        )
+        return
+
+    if sub == "status":
+        own = await async_db.find_user(owner_id)
+        own_ok = bool(own and own.get("logged_in") and own.get("session"))
+        override = get_download_session(owner_id)
+        lines = [
+            "Upload (asosiy) sessiya: "
+            + (f"✅ mavjud [{session_fingerprint(own['session'])}]" if own_ok else "❌ yo'q — /login qiling"),
+        ]
+        if not override:
+            lines.append("Download sessiyasi: o'rnatilmagan (asosiy sessiya ishlatiladi)")
+        else:
+            line = f"Download sessiyasi: ✅ [{session_fingerprint(override)}]"
+            if user_queue.is_processing(owner_id):
+                line += " (yuklash davom etmoqda — jonli tekshiruv o'tkazilmadi)"
+            else:
+                try:
+                    acc_id, username = await _probe_session(override, owner_id)
+                    line += f" {_fmt_account(acc_id, username)}"
+                except SessionInvalidError as err:
+                    line = (
+                        f"Download sessiyasi: ❌ yaroqsiz ({getattr(err, 'error_type', type(err).__name__)})"
+                        " — /dlsession clear yoki /dlsession set"
+                    )
+                except Exception as err:
+                    line += f" (tekshirib bo'lmadi: {type(err).__name__})"
+            lines.append(line)
+        await _reply("\n".join(lines))
+        return
+
+    await _reply(_DLSESSION_USAGE)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -5,6 +5,32 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-054: Owner boshqa akkaunt sessiyasini o'z sessiyasi o'rniga qo'ysa, upload o'sha akkauntning bot chatiga tushadi
+**Sana:** 2026-10-20
+**Holat:** Hal qilindi
+
+**Muammo:** Owner yopiq kanaldan yuklash uchun `/sessionupdate <own_id> <boshqa_session>` bilan o'z DB sessiyasini boshqa akkaunt sessiyasiga almashtirganda, upload ham o'sha akkaunt orqali ketardi va fayl owner emas, o'sha akkauntning bot chatiga tushardi (`/grab <uid> <link>` ham yuklash+upload'ni o'sha user nomidan bajaradi).
+
+**Sabab:** Pipeline'da yuklash (`acc`) va upload (worker/`session_string`) bir xil DB sessiyasidan olinadi; ularni ajratadigan mexanizm yo'q edi.
+
+**Yechim:**
+1. `core/download_session_store.py` — `data/download_sessions.json` (gitignore'da): per-user "faqat yuklash" sessiyasi. DB'dagi asosiy `session` (upload) o'zgarmaydi.
+2. `/dlsession set <session> | user <uid> | clear | status` (owner) — `TechVJ/owner_commands.py`. `set` xabarini o'chiradi, sessiyani avval ulanib tekshiradi.
+3. `save.py`: `_open_download_session()` — `process_private/public/topic/thread` dagi `create_user_session(...)` o'rniga; override bo'lsa `acc` shu sessiyadan, upload esa `session_string` (owner) bilan.
+4. Override faol bo'lsa: `download_and_send_media()` pool/SessionManager'ni o'tkazib, faqat owner'ning o'z sessiyasi bilan yuboradi.
+5. Albom/location/venue ham owner sessiyasi bilan yuboriladi (`acc` = boshqa akkaunt, u faqat yuklaydi): `_album_upload_session()` override bo'lsa owner'ning DB sessiyasidan alohida client ochadi, bo'lmasa `acc`ning o'zini beradi (xatti-harakat o'zgarmaydi). Albom haqiqiy albom (media group) bo'lib keladi; fayllar lokal yo'ldan yuklanadi (file_id/forward yo'q), shuning uchun upload akkaunti manba chatga a'zo bo'lishi yoki postni ko'rishi shart emas. Yopiq kanal yo'li `album_collector_v2.process_album_with_session(upload_session=...)`, topic/thread yo'li `process_album_messages()` orqali.
+6. Download akkauntining Telegram id'si (`/dlsession` probe'dan) store'da saqlanadi va FAQAT download client nomi/fingerprint uchun ishlatiladi; routing, queue, rol va upload `user_id` (owner) bilan qoladi.
+7. Yaroqsiz override `DownloadSessionError` beradi — `SessionInvalidError` EMAS, aks holda `_handle_session_invalid()` owner'ning asosiy (upload) sessiyasini DB'dan o'chirib yuborardi.
+8. `dlsession` `save()` command-exclude ro'yxatiga qo'shildi.
+
+**Tuzatish (bir xil kun):** birinchi variantda yopiq kanal albomlari (`album_collector_v2.send_album`) override'ni hisobga olmagan, albom yuklovchi akkaunt bilan o'sha akkaunt bot chatiga ketardi va owner'ga yetib bormasdi; topic/thread yo'lida esa albom yakka rasmlarga bo'linardi. Ikkalasi ham yuqoridagi 5-band bilan hal qilindi.
+
+**Regression test:** `test_download_session_override.py`
+
+**O'zgartirilgan fayllar:** `TechVJ/save.py`, `TechVJ/album_collector_v2.py`, `TechVJ/owner_commands.py`, `core/download_session_store.py`, `.gitignore`, `test_download_session_override.py`, `CLAUDE.md`, `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## BUG-053: `/ban` storage qatlamlari ajraladi va `/grab` dispatcher workerini band qiladi
 **Sana:** 2026-07-19
 **Holat:** Hal qilindi

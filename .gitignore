@@ -32,3 +32,7 @@ data/roles/
 data/topic_cache/
 test/
 
+
+# Download-only sessiya (MAXFIY — session string saqlanadi)
+data/download_sessions.json
+data/download_sessions.json.tmp

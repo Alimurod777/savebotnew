@@ -91,7 +91,13 @@ data/PROMPTS.md                     — Prompt tarixi: sessiya buyurtmalari va y
 /premium test               — Barcha sessiyalar + bot admin tekshiruvi
 /premium on                 — Relay yoqish
 /premium off                — Relay o'chirish (sessiyalar saqlanadi)
+
+/dlsession set <session>    — FAQAT yuklash uchun boshqa akkaunt sessiyasi (upload owner'ning o'z DB sessiyasida qoladi)
+/dlsession user <uid>       — botdagi shu user sessiyasini faqat yuklash uchun ishlatish
+/dlsession clear | status   — o'chirish / holat
 ```
+
+**Download-only override:** `core/download_session_store.py` (`data/download_sessions.json`, gitignore'da). `save.py`da `_open_download_session()` yuklash clientini yaratadi; upload `session_string` (DB) bilan. Yaroqsiz override `DownloadSessionError` beradi — `SessionInvalidError` EMAS (aks holda `_handle_session_invalid()` DB sessiyasini o'chiradi). Override faolida pool/SessionManager upload o'tkazib yuboriladi; albom/location/venue `_album_upload_session()` orqali owner'ning o'z sessiyasi bilan yuboriladi (`acc` faqat yuklaydi). Download akkaunt id'si faqat download client uchun.
 
 ## 6. USER KOMANDALAR
 

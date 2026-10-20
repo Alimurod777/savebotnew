@@ -59,6 +59,7 @@ import os
 import shutil
 import re
 import logging
+from contextlib import asynccontextmanager
 from typing import List, Tuple, Optional, Any
 from dataclasses import dataclass, replace
 
@@ -522,6 +523,116 @@ async def _handle_session_invalid(client, user_id: int, error) -> None:
         )
     except Exception:
         pass
+
+
+# ── Download-only session override ───────────────────────────────────────────
+# Owner /dlsession bilan "faqat yuklab olish" sessiyasini o'rnatadi
+# (core/download_session_store.py). Shunda:
+#   * download (acc)  -> override sessiya (masalan boshqa akkaunt, yopiq kanalga a'zo)
+#   * upload (worker) -> DB'dagi ASOSIY sessiya (egasining o'zi)
+# DB'dagi `session` o'zgarmaydi, shuning uchun fayl boshqa akkauntning bot chatiga
+# emas, egasining chatiga tushadi.
+
+class DownloadSessionError(RuntimeError):
+    """
+    Download-only sessiya yaroqsiz.
+
+    Ataylab SessionInvalidError'dan MEROS OLMAYDI: _handle_session_invalid()
+    DB'dagi asosiy (upload) sessiyani o'chirib yuboradi, bu yerda esa uni
+    saqlab qolish kerak.
+    """
+
+
+def _download_override_for(user_id: int) -> Optional[str]:
+    """Return the download-only session string for ``user_id`` (None = no override)."""
+    try:
+        from core.download_session_store import get_download_session
+        return get_download_session(int(user_id))
+    except Exception as err:
+        logger.warning("download override lookup failed for user %s: %s", user_id, err)
+        return None
+
+
+def _download_account_id_for(user_id: int) -> Optional[int]:
+    """Telegram id of the download-only account (None if unknown)."""
+    try:
+        from core.download_session_store import get_download_account_id
+        return get_download_account_id(int(user_id))
+    except Exception:
+        return None
+
+
+class _OpenDownloadSession:
+    """
+    ``async with`` replacement for ``create_user_session`` on the DOWNLOAD side.
+
+    No override -> identical to ``create_user_session(session_string, user_id, ...)``.
+    Override    -> client is created from the override session; a permanently
+                   invalid override raises DownloadSessionError (DB session is
+                   never touched).
+    """
+
+    def __init__(self, session_string: str, user_id: int, **kwargs):
+        self._session_string = session_string
+        self._user_id = user_id
+        self._kwargs = kwargs
+        self._cm = None
+
+    async def __aenter__(self):
+        override = _download_override_for(self._user_id)
+        if not override:
+            self._cm = create_user_session(self._session_string, self._user_id, **self._kwargs)
+            return await self._cm.__aenter__()
+
+        # The id of the DOWNLOAD account is used only for this client (name / device
+        # fingerprint). Routing, queues, roles and upload stay bound to self._user_id.
+        _dl_account_id = _download_account_id_for(self._user_id) or self._user_id
+        self._cm = create_user_session(override, _dl_account_id, **self._kwargs)
+        try:
+            acc = await self._cm.__aenter__()
+        except SessionInvalidError as err:
+            raise DownloadSessionError(
+                "Download sessiyasi yaroqsiz "
+                f"({getattr(err, 'error_type', type(err).__name__)}). "
+                "/dlsession clear bilan o'chiring yoki /dlsession set bilan yangisini kiriting. "
+                "Asosiy (upload) sessiyangizga tegilmadi."
+            ) from err
+        logger.info(
+            "Download override active: user=%s download_account=%s download_fp=%s upload_fp=%s",
+            self._user_id,
+            _dl_account_id,
+            _safe_session_fp(override),
+            _safe_session_fp(self._session_string),
+        )
+        return acc
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self._cm.__aexit__(exc_type, exc, tb)
+
+
+def _open_download_session(session_string: str, user_id: int, **kwargs) -> "_OpenDownloadSession":
+    return _OpenDownloadSession(session_string, user_id, **kwargs)
+
+
+@asynccontextmanager
+async def _album_upload_session(session_string: Optional[str], user_id: int, acc):
+    """
+    Client that must UPLOAD media which is sent straight through a Pyrogram client
+    (photo albums, location, venue).
+
+    No override -> yields ``acc`` itself (behaviour unchanged).
+    Override    -> yields a separate client built from the user's OWN DB session. The
+                   download account (``acc``) never uploads. Files are uploaded from local
+                   paths (never by file_id / forwarding), so the upload account does not
+                   need to be a member of the source chat or to see the post at all.
+    """
+    if not _download_override_for(user_id):
+        yield acc
+        return
+    if not session_string:
+        raise DownloadSessionError("Upload (asosiy) sessiya topilmadi — /login qiling.")
+    async with create_user_session(session_string, user_id, timeout=30) as up_acc:
+        yield up_acc
 
 
 class PoolDeliveryError(RuntimeError):
@@ -4323,7 +4434,7 @@ async def _dispatch_with_priority(
     "premium", "setpremium", "removepremium", "premiumstatus", "checkpremium",
     "add_premium_session", "remove_premium_session",
     "addchannel", "removechannel", "channels", "togglechannel", "grab", "failed_logs",
-    "uploadsetting", "split_media",
+    "uploadsetting", "split_media", "dlsession",
 ]))
 
 @check_banned
@@ -4731,7 +4842,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             
             temp_dir = await pipeline.get_temp_dir()
             
-            async with create_user_session(
+            async with _open_download_session(
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
@@ -5190,7 +5301,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
             
             temp_dir = await pipeline.get_temp_dir()
             
-            async with create_user_session(
+            async with _open_download_session(
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
@@ -5835,6 +5946,7 @@ async def process_album_messages(
     
     Telegram albums only work reliably with InputMediaPhoto.
     """
+    _up_cm = None  # upload-client context (opened lazily in STEP 2, closed in `finally`)
     try:
         if not album_msgs:
             return False
@@ -5919,17 +6031,22 @@ async def process_album_messages(
             
             # album_overflow was set when processing first photo caption
 
+            # Upload client: `acc` normally; with a download-only override a separate
+            # client from the owner's OWN session (closed in `finally` below).
+            _up_cm = _album_upload_session(session_string, user_id, acc)
+            up_acc = await _up_cm.__aenter__()
+
             if len(media_list) >= 2:
                 # Send as photo album via user session
                 try:
                     _target_chat_id = _get_user_session_target_chat_id(client, user_id)
-                    _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+                    _upload_source_user_id = await _get_user_session_account_id(up_acc, user_id)
                     _album_needs_copy = not _is_direct_user_session_upload(_upload_source_user_id, user_id)
                     _pre_album_latest_id = (
                         await get_bot_latest_message_id(client, _upload_source_user_id)
                         if _album_needs_copy else None
                     )
-                    _sent_album = await acc.send_media_group(
+                    _sent_album = await up_acc.send_media_group(
                         _target_chat_id,
                         media_list,
                     )
@@ -5991,7 +6108,7 @@ async def process_album_messages(
 
             # Fallback: send photos individually via user session
             _target_chat_id = _get_user_session_target_chat_id(client, user_id)
-            _upload_source_user_id = await _get_user_session_account_id(acc, user_id)
+            _upload_source_user_id = await _get_user_session_account_id(up_acc, user_id)
             _photo_needs_copy = not _is_direct_user_session_upload(_upload_source_user_id, user_id)
             for idx, media in enumerate(media_list):
                 try:
@@ -6001,7 +6118,7 @@ async def process_album_messages(
                         await get_bot_latest_message_id(client, _upload_source_user_id)
                         if _photo_needs_copy else None
                     )
-                    _sent_photo = await acc.send_photo(
+                    _sent_photo = await up_acc.send_photo(
                         _target_chat_id,
                         media.media,
                         caption=cap,
@@ -6102,6 +6219,12 @@ async def process_album_messages(
             raise
         logger.warning(f"process_album_messages error: {e}")
         return False
+    finally:
+        if _up_cm is not None:
+            try:
+                await _up_cm.__aexit__(None, None, None)
+            except Exception as _up_close_err:
+                logger.debug("album upload client close failed: %s", _up_close_err)
 
 
 def _cleanup_files(files: list):
@@ -6173,7 +6296,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             
             # Task-scoped session - guaranteed cleanup on exit
             try:
-                async with create_user_session(
+                async with _open_download_session(
                     session_string, user_id,
                     peers_to_resolve=[parsed.channel_id],
                 ) as acc:
@@ -6266,17 +6389,19 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                     continue
 
                                 # Process entire album using existing session
-                                success, status, _ = await process_album_with_session(
-                                    bot_client=client,
-                                    user_session=acc,
-                                    user_id=user_id,
-                                    target_chat_id=user_id,
-                                    source_chat_id=parsed.channel_id,
-                                    message_id=post_id,
-                                    reply_to_message_id=getattr(source_context_msg, "id", message.id),
-                                    check_cancelled=pipeline.check_cancelled,
-                                    sent_albums=iterator.processed_albums,
-                                )
+                                async with _album_upload_session(session_string, user_id, acc) as _album_up:
+                                    success, status, _ = await process_album_with_session(
+                                        bot_client=client,
+                                        user_session=acc,
+                                        user_id=user_id,
+                                        target_chat_id=user_id,
+                                        source_chat_id=parsed.channel_id,
+                                        message_id=post_id,
+                                        reply_to_message_id=getattr(source_context_msg, "id", message.id),
+                                        check_cancelled=pipeline.check_cancelled,
+                                        sent_albums=iterator.processed_albums,
+                                        upload_session=_album_up,
+                                    )
 
                                 if success:
                                     processed += 1
@@ -6423,13 +6548,23 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 except Exception:
                     pass
                 return
+            except DownloadSessionError as e:
+                # Download-only override yaroqsiz — asosiy (upload) sessiya o'chirilmaydi.
+                try:
+                    await client.edit_message_text(
+                        user_id, status_msg.id,
+                        f"**Download sessiyasi yaroqsiz**\n{e}"
+                    )
+                except Exception:
+                    pass
+                return
             except SessionConnectionError as e:
                 await client.edit_message_text(
                     user_id, status_msg.id,
                     f"**Connection Error**\nPlease try again.\nError: {e}"
                 )
                 return
-            
+
             # Final status
             failed_info = ""
             if failed_ids:
@@ -6522,7 +6657,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
 
         if use_user_session:
             session_string = user_data['session']
-            async with create_user_session(
+            async with _open_download_session(
                 session_string, user_id,
                 peers_to_resolve=[parsed.channel_id],
             ) as acc:
@@ -6858,17 +6993,18 @@ async def process_single_post(
             loc = msg.location
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
-                upload_source_user_id = await _get_user_session_account_id(acc, user_id)
-                _loc_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
-                pre_upload_latest_id = (
-                    await get_bot_latest_message_id(client, upload_source_user_id)
-                    if _loc_needs_copy else None
-                )
-                loc_msg = await acc.send_location(
-                    chat_id=target_chat_id,
-                    latitude=loc.latitude,
-                    longitude=loc.longitude,
-                )
+                async with _album_upload_session(session_string, user_id, acc) as up_acc:
+                    upload_source_user_id = await _get_user_session_account_id(up_acc, user_id)
+                    _loc_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
+                    pre_upload_latest_id = (
+                        await get_bot_latest_message_id(client, upload_source_user_id)
+                        if _loc_needs_copy else None
+                    )
+                    loc_msg = await up_acc.send_location(
+                        chat_id=target_chat_id,
+                        latitude=loc.latitude,
+                        longitude=loc.longitude,
+                    )
                 copied_loc = await _copy_user_session_upload_to_user(
                     bot_client=client,
                     sent_message=loc_msg,
@@ -6888,19 +7024,20 @@ async def process_single_post(
             venue = msg.venue
             try:
                 target_chat_id = _get_user_session_target_chat_id(client, user_id)
-                upload_source_user_id = await _get_user_session_account_id(acc, user_id)
-                _venue_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
-                pre_upload_latest_id = (
-                    await get_bot_latest_message_id(client, upload_source_user_id)
-                    if _venue_needs_copy else None
-                )
-                venue_msg = await acc.send_venue(
-                    chat_id=target_chat_id,
-                    latitude=venue.location.latitude,
-                    longitude=venue.location.longitude,
-                    title=venue.title,
-                    address=venue.address,
-                )
+                async with _album_upload_session(session_string, user_id, acc) as up_acc:
+                    upload_source_user_id = await _get_user_session_account_id(up_acc, user_id)
+                    _venue_needs_copy = not _is_direct_user_session_upload(upload_source_user_id, user_id)
+                    pre_upload_latest_id = (
+                        await get_bot_latest_message_id(client, upload_source_user_id)
+                        if _venue_needs_copy else None
+                    )
+                    venue_msg = await up_acc.send_venue(
+                        chat_id=target_chat_id,
+                        latitude=venue.location.latitude,
+                        longitude=venue.location.longitude,
+                        title=venue.title,
+                        address=venue.address,
+                    )
                 copied_venue = await _copy_user_session_upload_to_user(
                     bot_client=client,
                     sent_message=venue_msg,
@@ -7872,6 +8009,11 @@ async def download_and_send_media(
                     _allow_global_premium = (_role == _UserRole.VIP_USER)
                 except Exception:
                     _allow_global_premium = True
+
+            # Download-only override faol: upload FAQAT egasining o'z sessiyasi bilan
+            # (pool/SessionManager sessiyalari o'tkazib yuboriladi).
+            if _download_override_for(_acc_user_id):
+                _allow_global_premium = False
 
             # ── SessionManager path (additive — runs before legacy selection) ──
             # If the new session manager has any sessions registered and is

@@ -759,7 +759,8 @@ async def process_album_with_session(
     message_id: int,
     reply_to_message_id: int,
     check_cancelled: callable,
-    sent_albums: Optional[Set[str]] = None
+    sent_albums: Optional[Set[str]] = None,
+    upload_session: Optional[Client] = None,
 ) -> Tuple[bool, str, Optional[AlbumBoundary]]:
     """
     Process album using an EXISTING session (no new session created).
@@ -777,6 +778,11 @@ async def process_album_with_session(
         reply_to_message_id: Message to reply to
         check_cancelled: Async callable returning True if cancelled
         sent_albums: Optional set of already-sent media_group_ids (in-memory dedup)
+        upload_session: Optional separate client that UPLOADS the album. ``user_session``
+            is then used only to detect/collect/download (e.g. download-only override
+            account that may not even exist in the upload account's chats). Photos are
+            uploaded from local files, so nothing is fetched by the upload account.
+            None -> ``user_session`` uploads too (previous behaviour).
     
     Returns:
         (success, status, boundary)
@@ -821,7 +827,7 @@ async def process_album_with_session(
         
         # Step 5: Upload album via user session; bot sends only text overflow.
         send_success = await send_album(
-            bot_client, acc, album, target_chat_id, reply_to_message_id, check_cancelled
+            bot_client, upload_session or acc, album, target_chat_id, reply_to_message_id, check_cancelled
         )
         
         if not send_success:

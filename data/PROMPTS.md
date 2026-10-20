@@ -893,6 +893,21 @@ Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
 
 ---
 
+## Sessiya 6 (2026-10-20) - Download-only sessiya (yuklash boshqa akkaunt, upload owner'da)
+
+### So'rovlar ketma-ketligi:
+1. **Owner boshqa akkaunt sessiyasini qo'ysa upload boshqa chatga tushadi** - owner buyruq beradi, lekin fayl o'sha akkauntning bot chatiga yuklanadi.
+2. **Yechim buyruq sifatida** - yuklash o'sha sessiyadan, upload owner'ning o'z sessiyasidan bo'lsin.
+3. **Albomlar yakka rasm bo'lib kelmasin** - albom haqiqiy albom bo'lib, owner sessiyasi bilan yuborilsin; session string va id faqat download uchun, upload lokal fayldan (upload akkaunti postni ko'rmasligi/a'zo bo'lmasligi mumkin).
+
+### Natija:
+- **BUG-054**: `/dlsession` + `core/download_session_store.py` + `save.py` da `_open_download_session()` va `_album_upload_session()` (albom/location/venue owner sessiyasi bilan).
+
+### Tekshiruv:
+- `python test_download_session_override.py`, `python -m py_compile TechVJ/save.py TechVJ/owner_commands.py`
+
+---
+
 ## UMUMIY YO'NALISH
 
 Foydalanuvchi loyihaning ishonchliligini oshirmoqda:

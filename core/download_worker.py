@@ -21,7 +21,7 @@ import logging
 from core.download_queue import DownloadJob, DownloadStatus
 from core.download_cache import download_cache
 from core.progress_reporter import progress_reporter
-from core.session_manager import create_user_session, SessionInvalidError, SessionConnectionError
+from TechVJ.session_handler import create_user_session, SessionInvalidError, SessionConnectionError
 from core.error_handler import with_retry, ItemSkipError, FileReferenceError as FileRefError
 from core.reply_compat import build_reply_kwargs
 

@@ -5,6 +5,28 @@ Yangi Claude sessiyasi bu faylni O'QIB, kontekstni tushunishi KERAK.
 
 ---
 
+## Sessiya 31 (2026-10-25) - PROJECT_MAP.md, userdata va import xatolari
+
+### So'rov:
+Loyiha uchun AI-modellar (GLM 5.3 va h.k.) oson o'qiydigan xarita yozish; `/userdata` komandasi ishlamasining sababini aniqlash va tuzatish; loyihani qolgan xatoliklar uchun skanerlash.
+
+### Natija:
+- **PROJECT_MAP.md** yaratildi — loyiha xaritasi AI uchun (oqim, fayllar, "qayerda?" jadvali, oltin qoidalar).
+- **BUG-055**: `/userdata*` 4 komanda save.py catch-all ekskluziv ro'yxatida yo'q edi — jim o'lgan. Ro'yxatga qo'shildi.
+- **BUG-056**: `comment_stats.py` modul darajasida `database.db`ni import qilib, bo'sh DB_URI'da butun plugin (/comments) o'lardi — lazy importga o'tkazildi.
+- **BUG-057**: `core/download_worker.py` mavjud bo'lmagan nomlarni `core.session_manager`dan import qilardi — `TechVJ.session_handler`ga yo'naltirildi.
+- **BUG-058**: `/comment` (save.py) va `/comments` (comment_stats.py) dublikat registratsiyasi birlashtirildi — yagona handler save.py'da (ikkala alias), kanal nomi outputga qo'shildi, `comment_stats.py` qayd stub'iga aylandi.
+- Tekshiruv: 40 ta TechVJ + 68 ta core moduli importi 0 xato; `test_userdata.py` + `test_download_session_override.py` 35/35 o'tdi.
+
+### O'zgartirilgan fayllar:
+- `PROJECT_MAP.md` (yangi)
+- `TechVJ/save.py`
+- `TechVJ/comment_stats.py`
+- `core/download_worker.py`
+- `data/BUGS.md`, `data/PROMPTS.md`
+
+---
+
 ## Sessiya 30 (2026-07-19) - Ban storage sync va cancellable background `/grab`
 
 ### So'rov:

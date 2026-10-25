@@ -5,6 +5,60 @@ Yangi Claude sessiyalari bu faylni o'qib, oldingi ishlangan buglarni biladi.
 
 ---
 
+## BUG-058: `/comment` va `/comments` ikki xil faylda raqobatlashgan (dublikat registratsiya)
+**Sana:** 2026-10-25
+**Holat:** Hal qilindi
+
+**Muammo:** `TechVJ/save.py` `/comment` ni, `TechVJ/comment_stats.py` esa `/comments` ni ro'yxatdan o'tkazardi. Ikkalasi bir xil ishni qilar edi (post kommentlarini tahlil qilish), lekin: save.py versiyasi to'g'ri sessiya boshqaruvi (`create_user_session` + peers resolve, `async_db`, `SessionInvalidError` handle, download-ready thread/range linklar) ishlatardi; comment_stats versiyasi esa o'z mini-clienti, sinxron `database.db` va oddiy regex parse ishlatardi. Plugin loader alfavit tartibida yuklagani uchun `/comments` doim comment_stats versiyasiga tushardi — registratsiya tartibiga bog'liq noaniq xatti-harakat.
+
+**Yechim:**
+1. Yagona implementatsiya `save.py` `comment_analyzer_command`da qoldi — endi `filters.command(["comment", "comments"])`.
+2. comment_stats versiyasining yagona foydali qo'shimchasi (kanal nomi) save.py outputiga best-effort `get_chat` bilan ko'chirildi.
+3. `TechVJ/comment_stats.py` qayd stub'iga aylandi (hech kim import qilmasdi — tekshirilgan). Faylni o'chirish ham xavfsiz.
+4. Qoida (BUG-055 bilan birga): bitta komanda faqat BITTA faylda ro'yxatdan o'tishi kerak.
+
+**Tekshiruv:** 108 modul importi 0 xato, haqiqiy dublikat skaneri 0, `test_userdata.py` + `test_download_session_override.py` 35/35.
+
+---
+
+## BUG-057: `core/download_worker.py` mavjud bo'lmagan nomlarni `core.session_manager`dan import qiladi
+**Sana:** 2026-10-25
+**Holat:** Hal qilindi
+
+**Muammo:** `core/download_worker.py:24` — `from core.session_manager import create_user_session, SessionInvalidError, SessionConnectionError`. Bu nomlar `core/session_manager/` paketida YO'Q — ular `TechVJ/session_handler.py`da. Modul `ImportError` bilan yuklanmaydi.
+
+**Sabab:** `create_user_session()` AGENTS.md §8 bo'yicha `TechVJ/session_handler.py`da yashaydi; `core/session_manager` esa boshqa API (`SessionType`, `SessionRecord`, `session_manager` va h.k.) eksport qiladi.
+
+**Yechim:** Import `TechVJ.session_handler`ga yo'naltirildi. Hozircha bu modulni hech kim import qilmaydi (o'lik kod), lekin import qilinsa darrov qotardi. Circular import xavfi yo'q — `session_handler` faqat stdlib/pyrogram/config'ni import qiladi.
+
+---
+
+## BUG-056: `TechVJ/comment_stats.py` modul darajasida `database.db`ni import qilib, bo'sh DB_URI'da butun plugin o'ladi
+**Sana:** 2026-10-25
+**Holat:** Hal qilindi
+
+**Muammo:** `DB_URI` bo'sh yoki noto'g'ri bo'lsa (masalan, ortiqcha vergul), `database/db.py` `MongoClient(DB_URI)`ni import paytida yaratadi → `ConfigurationError: Empty host (or extra comma in host list)` → `comment_stats.py` import qilinmaydi → Pyrogram plugin loader boshqa modullarni yuklab davom etadi, bot "ishlaydi", lekin `/comments` komandasi o'lik va hech qanday log exceptsiyasiz jim.
+
+**Sabab:** Import modul darajasida edi (`comment_stats.py:13`), `database` esa faqat bitta joyda ishlatiladi (269-qator, `find_one`).
+
+**Yechim:** Import handler ichiga — ishlatilish joyiga ko'chirildi (lazy). Bu `qr_login.py:396`ning mavjon uslubiga mos. `/comments` endi DB URI konfiguratsiyasidan qat'i nazar ro'yxatdan o'tadi.
+
+---
+
+## BUG-055: `/userdata*` komandalari save.py catch-all handler tomonidan yutilib, jim o'lib qolgan
+**Sana:** 2026-10-25
+**Holat:** Hal qilindi
+
+**Muammo:** Owner `/userdata <id>` yuborganida bot mutlaqo jim: na javob, na log. `userdata_command.py` to'g'ri yozilgan va import ham bo'ladi, lekin handler hech qachon ishga tushmaydi.
+
+**Sabab:** `TechVJ/save.py` catch-all text handleri (~4427) barcha private textlarni ushlaydi va o'zidan boshqa komandalarni `~filters.command([...])` qo'lda yozilgan ro'yxati bilan chiqarib tashlaydi. Bu ro'yxatga `userdata`, `userdata_status`, `userdata_resume`, `userdata_cancel` kiritilmagan. Pyrogram bir guruhda birinchi mos kelgan handlerni ishlatadi: `save.py` alfavit bo'yicha `userdata_command.py`dan oldin yuklanadi, `/userdata ...` matni `save()`ga tushadi, u "Not a Telegram URL" deb jim qaytadi.
+
+**Yechim:** 4 ta komanda catch-all ekskluziv ro'yxatiga qo'shildi (`save.py` ~4438).
+
+**Qoida:** Yangi komanda `TechVJ/`ga qo'shilganda UNING NOMI catch-all ro'yxatiga ham qo'shilishi SHART. Klassik belgisi: komanda javob bermaydi, log'da ham hech narsa yo'q. Testlar buni ushlay olmaydi — ular handler funksiyasini to'g'ridan chaqiradi, plugin loader tartibini emas.
+
+---
+
 ## BUG-054: Owner boshqa akkaunt sessiyasini o'z sessiyasi o'rniga qo'ysa, upload o'sha akkauntning bot chatiga tushadi
 **Sana:** 2026-10-20
 **Holat:** Hal qilindi

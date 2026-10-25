@@ -327,9 +327,7 @@ class TestReportGeneration(unittest.TestCase):
             ),
         ]
 
-        report_path = asyncio.get_event_loop().run_until_complete(
-            _generate_report(job)
-        )
+        report_path = asyncio.run(_generate_report(job))
 
         self.assertIsNotNone(report_path)
         self.assertTrue(os.path.exists(report_path))
@@ -389,9 +387,7 @@ class TestReportGeneration(unittest.TestCase):
             {"chat_id": 222, "stage": "inspection", "reason": "ChannelPrivate"},
         ]
 
-        report_path = asyncio.get_event_loop().run_until_complete(
-            _generate_report(job)
-        )
+        report_path = asyncio.run(_generate_report(job))
 
         self.assertIsNotNone(report_path)
         with open(report_path, "r", encoding="utf-8") as f:
@@ -429,9 +425,7 @@ class TestReportGeneration(unittest.TestCase):
             ),
         ]
 
-        report_path = asyncio.get_event_loop().run_until_complete(
-            _generate_report(job)
-        )
+        report_path = asyncio.run(_generate_report(job))
 
         self.assertIsNotNone(report_path)
         with open(report_path, "r", encoding="utf-8") as f:
@@ -492,9 +486,7 @@ class TestBotInspection(unittest.TestCase):
         chat = _make_chat(12345, ChatType.BOT, first_name="TestBot", username="testbot")
         dialog = _make_dialog(chat)
 
-        record = asyncio.get_event_loop().run_until_complete(
-            _inspect_bot(chat, dialog)
-        )
+        record = asyncio.run(_inspect_bot(chat, dialog))
 
         self.assertEqual(record.chat_id, 12345)
         self.assertEqual(record.category, DialogCategory.BOT)
@@ -518,9 +510,7 @@ class TestPrivateChatInspection(unittest.TestCase):
         )
         dialog = _make_dialog(chat)
 
-        record = asyncio.get_event_loop().run_until_complete(
-            _inspect_private(chat, dialog)
-        )
+        record = asyncio.run(_inspect_private(chat, dialog))
 
         self.assertEqual(record.chat_id, 67890)
         self.assertEqual(record.category, DialogCategory.PRIVATE)
@@ -536,9 +526,7 @@ class TestPrivateChatInspection(unittest.TestCase):
         chat = _make_chat(11111, ChatType.PRIVATE, first_name="Alice")
         dialog = _make_dialog(chat)
 
-        record = asyncio.get_event_loop().run_until_complete(
-            _inspect_private(chat, dialog)
-        )
+        record = asyncio.run(_inspect_private(chat, dialog))
 
         self.assertEqual(record.title, "Alice")
 

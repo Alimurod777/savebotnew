@@ -4221,27 +4221,24 @@ async def cancel_command(client: Client, message: Message):
 
 # ==================== /comment COMMAND ====================
 
+# /comment va /comments — ikkalasi ham shu handler.
+# (BUG-058: qachonlardir comment_stats.py ham /comments ni ro'yxatdan o'tkazardi — dublikat.
+#  Birlashtirildi: yagona implementatsiya shu yerda, comment_stats.py esa qayd stub'iga aylandi.)
 @Client.on_message(filters.command(["comment", "comments"]))
 @check_banned
 @track_activity
 async def comment_analyzer_command(client: Client, message: Message):
     """
     Analyze comment section of a post.
-    
-    Usage: /comment https://t.me/c/123456789/108
-    
-    Returns:
-    - Post ID
-    - First comment ID
-    - Last comment ID
-    - Total comment count
+
+    Usage: /comment https://t.me/c/123456789/108  (yoki /comments)
     """
     user_id = message.chat.id
     
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply(
-            "**Usage:** `/comment <post_link>`\n\n"
+            "**Usage:** `/comment <post_link>` or `/comments <post_link>`\n\n"
             "**Example:**\n"
             "`/comment https://t.me/c/123456789/108`\n\n"
             "Analyzes the comment section of a post.",
@@ -4275,10 +4272,19 @@ async def comment_analyzer_command(client: Client, message: Message):
         ) as acc:
             channel_id = parsed.channel_id
             post_id = parsed.post_ids[0] if parsed.post_ids else None
-            
+
             if not post_id:
                 await status_msg.edit_text("No post ID found in URL.")
                 return
+
+            # Channel title (best-effort — comment_stats.py birlashtirilganda saqlab qolindi)
+            channel_title = str(channel_id)
+            try:
+                _chat_info = await acc.get_chat(channel_id)
+                if _chat_info and getattr(_chat_info, "title", None):
+                    channel_title = _chat_info.title
+            except Exception:
+                pass
             
             # Verify post exists
             try:
@@ -4333,6 +4339,7 @@ async def comment_analyzer_command(client: Client, message: Message):
             if total_comments == 0 or not comment_ids:
                 await status_msg.edit_text(
                     f"**Comment Analysis**\n\n"
+                    f"**Channel:** {channel_title}\n"
                     f"**Post ID:** `{post_id}`\n"
                     f"**Comments:** None found\n\n"
                     f"This post has no comments yet."
@@ -4357,6 +4364,7 @@ async def comment_analyzer_command(client: Client, message: Message):
                 
                 await status_msg.edit_text(
                     f"**Comment Analysis**\n\n"
+                    f"**Channel:** {channel_title}\n"
                     f"**Post ID:** `{post_id}`\n"
                     f"**Thread ID:** `{thread_id}`\n"
                     f"**Discussion Group:** `{group_id}`\n"
@@ -4435,6 +4443,7 @@ async def _dispatch_with_priority(
     "add_premium_session", "remove_premium_session",
     "addchannel", "removechannel", "channels", "togglechannel", "grab", "failed_logs",
     "uploadsetting", "split_media", "dlsession",
+    "userdata", "userdata_status", "userdata_resume", "userdata_cancel",
 ]))
 
 @check_banned

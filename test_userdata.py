@@ -157,12 +157,12 @@ class TestVisibility(unittest.TestCase):
     def test_private_without_username(self):
         from TechVJ.userdata_command import _visibility
         chat = SimpleNamespace(username=None)
-        self.assertEqual(_visibility(chat), "PRIVATE")
+        self.assertEqual(_visibility(chat), "UNKNOWN")
 
     def test_private_empty_username(self):
         from TechVJ.userdata_command import _visibility
         chat = SimpleNamespace(username="")
-        self.assertEqual(_visibility(chat), "PRIVATE")
+        self.assertEqual(_visibility(chat), "UNKNOWN")
 
 
 class TestDataModels(unittest.TestCase):

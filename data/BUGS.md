@@ -1184,3 +1184,75 @@ Bundan tashqari, `send_code_raw()` `PhoneMigrate`/`NetworkMigrate` exceptionlarn
 3. Location/venue — reply olib tashlandi, o'rniga copy_message + delete pattern qo'shildi
 
 **O'zgartirilgan fayllar:** `TechVJ/save.py`
+
+## BUG-059: /userdata account boundaries, privacy inference and forum API mismatch
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+**Owner-flow correction:** The owner-selected target and owner delivery described
+below were intentional original functionality, not defects. The user explicitly
+requested their restoration; BUG-062 supersedes this entry's self-service policy.
+The API, identity and privacy-classification corrections remain in place.
+
+Old handler allowed owner-selected targets and delivered their inventory to the owner.
+Session validation did not compare identity, missing username implied PRIVATE, API retries
+reused a coroutine, and channels.GetForumTopics is absent in installed Pyrofork 2.3.69.
+
+Self-service private-chat and session identity gates now protect collection and delivery;
+job operations verify ownership. Unknown privacy remains unknown. Retry factories create
+fresh calls, forum enumeration uses messages.GetForumTopics(peer=...) with bounded flood
+retries and deduplication. No explicit message content/history calls remain in collection.
+One normalized snapshot feeds escaped offline HTML and formula-safe XLSX, with independent
+outcomes and temporary-directory cleanup. Documents use the verified requester's session;
+progress remains bot-only. See test_userdata_reports.py for isolated regression coverage.
+
+## BUG-060: /userdata topic completeness, implicit pinned-message reads and export edge cases
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+The existing uncommitted dual-report implementation treated short topic pages as
+end-of-list and lacked count/completeness evidence. Pyrofork get_chat could implicitly
+fetch pinned message contents. Excel's cell binder could silently truncate metadata
+before validation; repeated cancellation could orphan report-writing work. Long
+collection FloodWait could also lead to repeated calls against a paused session.
+
+Use metadata-only raw full-chat inspection, evidence-based topic pagination/counts,
+explicit missing/unsupported states, pre-binding XLSX cell checks, hash-restricted
+HTML scripts and cancellation-safe worker joining. Progress edits respect cooldowns;
+revocation and long/exhausted collection waits stop further calls. Independent format
+errors and limits are explained, cleanup failures are recorded without private paths,
+and geometric checkpoints avoid quadratic serialization during large scans.
+
+Validation: 67 unittest cases passed; pytest excluding the unrelated SQLite test:
+127 passed, 1 deselected, 4 subtests passed. Node executed generated search/filter
+code. A 3000-record synthetic HTML/XLSX export completed and reopened its workbook.
+See USERDATA_REPORTS.md for commands, limitations and configuration.
+
+## BUG-061: Existing role-manager SQLite test stalls in this execution environment
+**Sana:** 2026-10-28
+**Holat:** 🔎 Tekshirish kerak (outside /userdata scope)
+
+Full pytest stops at test_role_manager_synchronizes_role_file_local_db_and_legacy_ban.
+An isolated run with a 25-second timeout exits 124; faulthandler shows the aiosqlite
+worker and asyncio selector waiting. No assertion failure was observed. The cause
+is unconfirmed; no unrelated database/session-manager changes were made. Remaining
+127 tests pass. This test is excluded only by the documented invocation, not by a
+committed skip or pytest configuration change.
+
+## BUG-062: /userdata owner-target command was unintentionally replaced by self-service
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+User correction: /userdata is exclusively an owner command. Removing the target
+argument broke the required /userdata <uid> workflow. Ordinary users must not get
+separate personal-export access.
+
+Restored owner authorization on start/status/resume/cancel, positive numeric target
+selection, target-session lookup, owner task registration, and original bot-to-owner
+progress/report delivery. Retained target identity verification and both HTML/XLSX
+renderers. No database schema/session changes. Reports identify the target account.
+Updated help and regression tests for nonowner denial, owner target jobs and delivery.
+
+Validation: 72 focused unittest cases passed; 132 pytest tests and 15 subtests
+passed with the previously recorded unrelated SQLite test deselected. Compilation
+and git diff whitespace checks passed. No live Telegram operation was performed.

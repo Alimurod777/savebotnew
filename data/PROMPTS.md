@@ -938,3 +938,56 @@ Foydalanuvchi loyihaning ishonchliligini oshirmoqda:
 - **Premium upload:** VIP foydalanuvchilar uchun premium pipeline va prioritet
 - **Login tizimi:** Ishonchli autentifikatsiya — sessiya validatsiya, to'liq logout, OTP ishonchliligi
 - **Hujjatlashtirish:** Har bir o'zgartish CLAUDE.md, BUGS.md va PROMPTS.md ga yozilishi
+
+
+## Sessiya (2026-10-28) — GitHub kodini lokal papkaga olish
+
+- So‘rov: GitHub’da yangilangan kodni loyiha papkasiga olish.
+- Natija: main fast-forward orqali eb1b894 commitigacha yangilandi (3 commit); lokal runtime baza zaxiralandi va saqlandi.
+- Tekshiruv: o‘zgargan Python fayllari AST sintaksis tekshiruvidan o‘tdi.
+- Umumiy yo‘nalish: GitHub kodi bilan lokal loyihani sinxron saqlash.
+
+## Sessiya (2026-10-28) — Self-service dual-format userdata reports
+
+Requested: upgrade /userdata to private, secure HTML + XLSX exports from one scan.
+Implemented: requester/session identity gates, job ownership checks, shared normalized
+snapshot, responsive offline search/filter cards, styled eight-sheet workbook, independent
+generation/delivery, bounded retry fixes, progress heartbeat and cancellation-safe cleanup.
+Dependency: openpyxl>=3.1.5,<4.0. Existing runtime DB changes preserved; no commit/push/deploy.
+Direction: metadata-only self-service exports; unknown classifications remain explicit.
+
+## Sessiya (2026-10-28) — Dual-format userdata production review and completion
+
+Requested: inspect the real repository, complete secure self-service HTML/XLSX
+exports from one snapshot, preserve unrelated changes, and execute focused tests.
+
+Continued the existing uncommitted implementation rather than overwriting it.
+Hardened metadata-only raw inspection, topic pagination/completeness, Unicode-safe
+offline controls, CSP, Excel cell-limit validation, independent format outcomes,
+bounded retries, progress cooldowns, cancellation worker joining, cleanup reporting
+and scalable checkpoints. Updated command help and added USERDATA_REPORTS.md.
+
+Validation: 67 unittest cases passed; 127 pytest tests and 4 subtests passed with
+one unrelated SQLite test deselected. That test also times out in isolation and
+is recorded as BUG-061, not claimed as passing. Synthetic 3000-chat reports were
+generated and the workbook reopened. No live-account export or Android device
+test was performed. No commit/push/deploy or production-data edit was performed.
+
+Umumiy yo'nalish: evidence-based metadata, requester-only delivery, offline usable
+reports and explicit limitations; keep unrelated session/download logic intact.
+
+## Sessiya (2026-10-28) — Owner-only /userdata <uid> oqimini qaytarish
+
+Foydalanuvchi aniqlashtirdi: /userdata avvaldan faqat owner uchun. Target ID ni
+olib tashlash va oddiy userlarga alohida self-service ochish kerak emas edi.
+
+Owner-only start/status/resume/cancel, /userdata <uid>, target sessiya tanlash,
+owner task registration, progress va fayllarni original bot orqali ownerga yuborish
+qaytarildi. HTML/XLSX formatlar, target identity tekshiruvi va cleanup saqlandi.
+Hisobotlarda target account ID ko'rsatiladi. Bu ko'rsatma oldingi self-service
+yo'nalishini bekor qiladi. Umumiy yo'nalish: mavjud komandalar vakolati va asosiy
+ish tartibini format yangilash bahonasida o'zgartirmaslik.
+
+Tekshiruv: 72 unittest; 132 pytest + 15 subtest o'tdi, oldingi aloqasiz SQLite
+testi deselect qilindi. Compile va diff tekshiruvlari o'tdi. Bot restart/deploy
+qilinmadi, production baza va sessiyalarga tegilmadi.

@@ -630,7 +630,7 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/failed_logs` - Oxirgi 10 ta xatolik logini ko'rish\n"
         "Report faqat session faol, kanal mavjud va user kanalga a'zo ekani tasdiqlanganda ketadi.\n\n"
         "**User data inventory:**\n"
-        "`/userdata <uid>` — User akkaunt inventarizatsiyasini boshlash (kanallar, guruhlar, botlar, topiklar)\n"
+        "`/userdata <uid>` — User akkaunt inventarizatsiyasi, HTML + XLSX hisobot ownerga\n"
         "`/userdata_status <job_id>` — Job holati\n"
         "`/userdata_resume <job_id>` — To'xtatilgan jobni davom ettirish\n"
         "`/userdata_cancel <job_id>` — Faol jobni bekor qilish\n\n"

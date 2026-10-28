@@ -6,6 +6,7 @@ import asyncio
 import signal
 import time
 import logging
+import os
 import sys
 import platform
 # Import Bot class directly from main.py to avoid circular import
@@ -22,6 +23,64 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 10
 INITIAL_RETRY_DELAY = 1
 MAX_RETRY_DELAY = 60
+
+# Held for the whole process lifetime so the OS releases it on exit/crash
+_instance_lock_handle = None
+
+
+def acquire_single_instance_lock():
+    """Take an exclusive OS lock so two bot processes never poll the same token.
+
+    Two instances sharing one bot token both receive every update, which makes
+    the bot answer each message twice. The lock is released by the OS when the
+    process exits, so a killed instance never blocks the next start.
+
+    Returns:
+        True  - lock acquired, safe to start
+        False - another live instance owns the lock
+        None  - lock file unavailable, start anyway (non-fatal)
+    """
+    global _instance_lock_handle
+
+    lock_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "local_db", "bot.lock"
+    )
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        handle = open(lock_path, "a+")
+    except OSError as e:
+        logger.warning(f"Single-instance lock unavailable ({e}), starting without it")
+        return None
+
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            handle.seek(0)
+            other_pid = handle.read().strip()
+        except Exception:
+            other_pid = ""
+        handle.close()
+        logger.error(
+            f"Another bot instance is already running (pid {other_pid or 'unknown'})"
+        )
+        return False
+
+    # Only write the PID once the lock is ours
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+
+    _instance_lock_handle = handle
+    logger.info(f"Single-instance lock acquired: {lock_path}")
+    return True
 
 def setup_event_loop():
     from core.compat import configure_event_loop_policy
@@ -187,6 +246,11 @@ async def main():
 if __name__ == "__main__":
     loop = None
     try:
+        # Refuse to run twice: two pollers on the same bot token double every reply
+        if acquire_single_instance_lock() is False:
+            print("Another bot instance is already running. Stop it first, then start again.")
+            sys.exit(1)
+
         # Setup the appropriate event loop based on platform
         setup_event_loop()
 

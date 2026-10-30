@@ -36,3 +36,32 @@ test/
 # Download-only sessiya (MAXFIY — session string saqlanadi)
 data/download_sessions.json
 data/download_sessions.json.tmp
+
+# Environment variants and private keys
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Telegram sessions, including files outside sessions/
+*.session
+*.session-*
+
+# Runtime state may contain account sessions and personal data.
+# Keep documentation in data/, recreate all state on first startup.
+/data/*
+!/data/*.md
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Test/build caches and generated reports
+.pytest_cache/
+.coverage
+htmlcov/
+userdata_reports/

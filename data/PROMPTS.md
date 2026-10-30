@@ -992,6 +992,67 @@ Tekshiruv: 72 unittest; 132 pytest + 15 subtest o'tdi, oldingi aloqasiz SQLite
 testi deselect qilindi. Compile va diff tekshiruvlari o'tdi. Bot restart/deploy
 qilinmadi, production baza va sessiyalarga tegilmadi.
 
+## Sessiya (2026-10-28) — /userdata classification, HTML/XLSX data-integrity fixes
+
+So'rov: mavjud owner-only /userdata USER_ID ni o'zgartirmasdan private kategoriya,
+HTML filtr, yo'qolgan metadata va public guruhlardagi ortiqcha ishlarni tuzatish.
+Oldingi uncommitted FloodWait tuzatishlari va runtime DB diff saqlandi.
+
+Foydalanuvchi test/ papkasidagi asl HTML/XLSX ni tekshirishni so'radi. Read-only
+tekshiruvda ikkala faylda bir xil 306 unique ID borligi tasdiqlandi. Unclassified
+ichida 140 kanal, 14 superguruh va 1 forum bor; ulardan 154 tasida metadata olingan.
+Bu ma'lumotlar collection, classification va normalization muammolarini ajratdi;
+asl reportlar taxminiy qayta tasniflanmadi va o'zgartirilmadi.
+
+Tuzatishlar: FORUM/MONOFORUM va enum/string mapping, verified full Channel privacy
+provenance, bitta canonical category-ID mapping, kategoriya tanlovini saqlovchi
+Clear search, private cards/compact rows, to'liq private/topic metadata, dedup merge,
+yo'qolmaydigan Excel continuation ustunlari va yuborishdan oldingi format validators.
+Public kanallar/guruhlarda ortiqcha full metadata so'rovlari, public topic enumeration
+bajarilmaydi. Owner authorization, target sessiya tekshiruvi, queue/progress/cancel/
+cleanup saqlandi. Yangi komanda yoki account-access yo'li qo'shilmadi.
+
+Tekshiruv: 93 unittest; 153 pytest + 22 subtest o'tdi, oldingi aloqasiz SQLite testi
+deselect qilindi. Offline Chromium: 320/390/768/1440px, filtr/search/clear/copy va
+overflow tekshiruvlari o'tdi. 3000-record synthetic HTML/XLSX integrity tekshirildi.
+Playwright faqat /tmp test vositasi; runtime dependency qo'shilmadi. Commit/push/
+deploy/restart bajarilmadi. Umumiy yo'nalish: mavjud owner oqimini saqlash, shaxsiy
+ma'lumotni taxmin qilmaslik, reportdagi barcha mavjud maydonlarni yo'qotmaslik.
+
+## Sessiya (2026-10-29) — SQLite testi osilishining sababini aniqlash
+
+So'rov: qolgan SQLite testini tekshirish. Sandbox ichida aiosqlite worker natijasi
+uchun asyncio selector uyg'onmaydi: thread socketpair.send probe PermissionError
+(errno 1) qaytardi. Timer heartbeat qo'shilgan minimal vaqtinchalik SQLite probe
+ishladi. Test yoki bot kodiga workaround kiritilmadi.
+
+Sandbox tashqarisida o'sha test o'zgarishsiz o'tdi: 1 passed in 2.86s. Butun suite
+hech qanday deselect/skip qo'llanmasdan: 154 passed, 22 subtests passed in 15.97s.
+BUG-061 statusi sabab aniqlangan deb yangilandi. Faqat hujjatlar yangilandi;
+production DB/schema, sessiyalar, credentials va oldingi lokal kod o'zgarishlariga
+tegilmadi. Umumiy yo'nalish: muhit cheklovini koddagi xato deb yashirmaslik.
+
+## Sessiya (2026-10-29) — /userdata xabar manzilini tekshirish
+
+So'rov: /userdata bajarilganda target foydalanuvchiga ortiqcha xabar yuborilmasligini
+tekshirish. Kod tekshirildi: progress/yakuniy xabarlar va HTML/XLSX faqat OWNER_ID
+ga yuboriladi; komanda javoblari ownerning private chatiga qaytadi. Targetga
+alohida xabar yuborish chaqiruvi topilmadi. Funksional kod o'zgartirilmadi.
+Umumiy yo'nalish: so'ralmagan funksiyalar va bildirishnomalar qo'shilmasin.
+
+## Sessiya (2026-10-30) — Oxirgi bot shutdown sababini logdan tekshirish
+
+So'rov: bot oxirgi marta nega shutdown bo'lib ishlamay qolganini aniqlash.
+Tekshiruv: logs/bot.log oxirgi shutdown 2026-10-30 15:28:27 da bo'lganini,
+undan oldin 15:26:18 da bot muvaffaqiyatli ishga tushganini ko'rsatdi.
+Monitor cancellation va tartibli cleanup bor; shutdown oldida fatal/traceback yo'q.
+bot.py SIGINT/SIGTERM ni KeyboardInterrupt ga aylantiradi, signal raqamini esa
+logger emas, print orqali chiqaradi. Shu sabab aniq signal/yuboruvchi bot.log da
+qayd etilmagan; tashqi stop signali ehtimoli bor, lekin isbotlangan deb olinmadi.
+System journal joriy foydalanuvchiga yopiq. Tekshiruv paytida bot.py jarayoni
+ko'rinmadi. Kod o'zgartirilmadi, bot ishga tushirilmadi/restart qilinmadi.
+Umumiy yo'nalish: shutdown sababini faqat mavjud dalillar bilan tushuntirish.
+
 ## Sessiya (2026-10-30) — Owner uchun global rol komandasi
 
 So'rov: ownerdan boshqa hammaning rolini `/setrole global <rol>` orqali
@@ -1014,3 +1075,27 @@ Global policy uchun 8 regression test o'tdi; py_compile va diff --check o'tdi.
 Davomi: foydalanuvchi GitHubga push qilishni so'radi. Faqat global rolga
 tegishli kod/test/hujjatlar commitga olindi; oldingi userdata o'zgarishlari va
 lokal runtime baza ishchi papkada saqlandi.
+
+## Sessiya (2026-10-30) — Barcha kod o'zgarishlari va clone orqali ko'chirish
+
+So'rov: qolgan barcha o'zgarishlarni GitHubga yuklash, secretlarni .gitignore
+bilan chiqarish, boshqa joyda git clone orqali loyihani ishlatish.
+
+Barcha userdata kod/test/hujjat yangilanishlari ham kiritiladi. .gitignore va
+.dockerignore environment variantlari, private keylar, Telegram sessionlari va
+runtime data/DBlarni chiqaradi. Oldin tracked bo'lgan local_db/bot_storage.db,
+data/downloads.db va user role/language fayllari faqat Git indexdan chiqarildi;
+lokal nusxalar saqlandi. .env.example bo'sh konfiguratsiya namunasi va READMEda
+clone/venv/dependency/config/start, xavfsiz holat ko'chirish va Docker yo'riqnomasi
+qo'shildi. Docker Python 3.11/bookworm va media system dependencylariga yangilandi;
+gunicorn health server va bot birga ishga tushishi saqlandi.
+
+Git tarixi qayta yozilmadi: oldingi commitlardagi runtime fayllar shu tarixda
+qoladi. Joriy branch snapshotida ular yo'q; secret qiymatlari chop etilmadi.
+
+Tekshiruv: staged Git tree'dan yaratilgan toza vaqtinchalik nusxa, real .env,
+sessiya va runtime bazalarsiz: 162 passed, 22 subtests passed. Mavjud venvdagi
+dependencylar ishlatildi; yangi dependency install va live Telegram startup
+bajarilmadi. 147 Python fayli AST tekshiruvidan o'tdi. Staged fayllar bo'yicha
+secret formatlari va lokal .env secret qiymatlari bilan taqqoslashda match yo'q;
+tracked ignored fayl qolmadi. Docker CLI yo'q, image build sinovdan o'tkazilmadi.

@@ -15,9 +15,9 @@ corrected the earlier self-service change. It preserves HTML/XLSX reporting.
 
 ## Implementation and baseline
 
-Discovery found `main` at `eb1b894` and an existing uncommitted dual-format
-implementation. This work completes and hardens those changes without resetting
-them. The pre-existing `local_db/bot_storage.db` modification is outside this work.
+The current correction started from `main` at `07f4904`, preserving the pending
+FloodWait fixes and the pre-existing `local_db/bot_storage.db` modification. Earlier
+dual-format work started at `eb1b894`. The database diff remains outside this work.
 
 `TechVJ/userdata_command.py` retains the existing command registration, target
 session lookup, task manager, checkpoint schema, progress reporter, resume and
@@ -41,10 +41,17 @@ is retained for compatibility but is no longer the command's delivery path.
 
 ## Reports
 
+One ordered category mapping uses `private_channels`, `private_groups`, `bots`,
+`private_chats`, `public_channels`, `public_groups`, `unclassified` throughout
+classification, snapshots, HTML controls/records, counts and worksheet selection.
+Display labels are separate from these identifiers.
+
 HTML embeds all styles/scripts. It provides a dark responsive grid, private-category
 shortcuts, category totals, Unicode-insensitive search across names/IDs/usernames,
 category/privacy filters, clear/reset, result counts, empty results, independent
-details sections and copy-ID buttons with a local-file fallback. Long collapsed
+details sections and copy-ID buttons with a local-file fallback. Clear search
+preserves category/privacy selections. Private categories use cards; lower-priority
+categories use compact rows. Long collapsed
 names are clamped; the full name remains in details. Usernames link to Telegram
 only on explicit navigation. There are no automatic remote requests or assets.
 
@@ -53,20 +60,36 @@ DOM nodes. CSP permits only the hash-matched embedded script, inline styles, and
 blocks network connections, objects, forms and external resources.
 
 XLSX worksheets are ordered exactly:
-Summary, Private Channels, Private Groups, Private Chats, Public Channels,
-Public Groups, Bots, Unclassified. Each inventory sheet uses the same nine
-columns, frozen header, filter, alternating fills, wrapped top-aligned text,
+Summary, Private Channels, Private Groups, Bots, Private Chats, Public Channels,
+Public Groups, Unclassified. Private and Unclassified sheets retain the existing
+nine-column detailed schema, including all collected discussion/inspection fields
+and every supported topic field. Bots, Private Chats, Public Channels and Public
+Groups use exactly Name, Chat ID, Username, Chat Type. All inventory sheets use
+a frozen header, filter, alternating fills, wrapped top-aligned text,
 bounded row heights and practical widths. Summary has counts, limitations and
 internal worksheet links. IDs are explicit strings; all untrusted cells are
 explicit strings, preventing formulas. The saved workbook is reopened for
-structural validation; tests compare its values/counts to the snapshot.
+validation of row counts, category totals, IDs and cell values against the same
+snapshot. HTML identities/category counts are also parsed and checked before
+delivery. The validators reject mismatches rather than sending a successful report.
 
 Both formats preserve unknown classifications. Missing usernames alone never
-establish channel/supergroup privacy, so many such chats can legitimately appear
-under Unclassified. Basic group and private-dialog types are positive evidence
+establish channel/supergroup privacy. Existing full metadata RPC results are used:
+only a native, full non-min Channel constructor with complete active-address state,
+no active primary/collectible username, and joined/non-geo/non-monoforum flags
+establishes private status. Reduced, unsupported, left, geo or monoforum constructors
+without positive public evidence remain unknown. Provenance and verification are
+retained through normalization and persisted in the existing JSON record column;
+no SQL schema change is needed. See Telegram's [Channel constructor](https://core.telegram.org/constructor/channel),
+[min constructors](https://core.telegram.org/api/min) and [channel types](https://telegram.org/faq_channels).
+Basic group and private-dialog types are positive evidence
 for their respective private categories. Privacy evidence is displayed. Unsupported,
 missing and unverified forum data are distinguished. Topic count is API-reported,
 and a confirmed empty list differs from inaccessible or incomplete metadata.
+Pyrofork FORUM/MONOFORUM enums and enum strings map to groups. Public channels/groups
+use existing dialog metadata and skip supplementary full-chat RPCs. Public groups
+never enumerate topics, including when an active alias is discovered in a full
+response already needed to resolve unknown privacy.
 
 ## Reliability and resource limits
 
@@ -94,26 +117,32 @@ Optional environment settings (no `.env` edits are required):
 | USERDATA_MAX_REPORT_BYTES | 1900 MiB | Fail only the oversize format, capped at a conservative 2000 MiB for non-premium MTProto delivery |
 | USERDATA_UPLOAD_TIMEOUT | 1800 seconds per attempt | Bound a stalled document upload |
 
-Use positive values. Excel's 32767-character cell limit is checked before openpyxl
-can truncate it. Oversize cells fail XLSX explicitly while HTML can still be
-delivered. XML-incompatible control characters are omitted from Excel and disclosed
+Use positive values. Long detailed values are split losslessly into labeled
+continuation columns on the same chat row, bounded to 32767 UTF-16 units without
+splitting surrogate pairs or stripping whitespace. Compact field or worksheet
+limits fail XLSX explicitly while HTML can still be delivered. XML-incompatible
+control characters are omitted from Excel and disclosed
 in report limitations. Topic lists and inventory are observations during a scan,
 not an atomic Telegram server snapshot.
 
 ## Dependencies and validation
 
-Runtime addition: `openpyxl>=3.1.5,<4.0` (requires Python >=3.8, compatible with the
+Existing runtime dependency: `openpyxl>=3.1.5,<4.0` (requires Python >=3.8, compatible with the
 project's Python 3.10–3.13 target). Verified here using Python 3.11.17,
-Pyrofork 2.3.69 and openpyxl 3.1.5. Pytest was installed only as a local test runner.
+Pyrofork 2.3.69 and openpyxl 3.1.5. No runtime dependency was added by this correction.
+Playwright/Chromium were downloaded only under /tmp for offline synthetic-data
+browser verification; requirements.txt is unchanged.
 
 Executed checks:
 
-- `venv/bin/python -m unittest test_userdata test_userdata_reports -q`: 72 unittest cases passed after restoring the owner-only workflow.
-- `timeout 60 venv/bin/python -m pytest -q -k 'not test_role_manager_synchronizes_role_file_local_db_and_legacy_ban'`: 132 passed, 1 deselected, 15 subtests passed (16.97 seconds). This also executes the repository's standalone regression test functions.
-- Full `pytest -q` stalled at the existing role-manager/SQLite synchronization test and was interrupted. Running that test alone with a 25-second timeout also timed out (exit 124); its trace waits in aiosqlite's worker and the asyncio selector. It is not reported as passing.
+- `venv/bin/python -m unittest test_userdata test_userdata_reports test_userdata_integrity -q`: 93 unittest cases passed.
+- `timeout 60 venv/bin/python -m pytest -q -k 'not test_role_manager_synchronizes_role_file_local_db_and_legacy_ban'`: 153 passed, 1 deselected, 22 subtests passed (17.87 seconds).
+- Earlier sandboxed `pytest -q` stalled at the SQLite synchronization test. On 2026-10-29, a worker-thread socket probe confirmed sandbox PermissionError (errno 1) blocking asyncio selector wakeup. The unchanged isolated test outside the sandbox passed in 2.86 seconds.
+- `timeout 90 venv/bin/python -m pytest -q`, outside the restricted execution sandbox: **154 passed, 22 subtests passed in 15.97 seconds**, no exclusions. No test or production code workaround was added for the sandbox limitation.
 - Python compilation and `git diff --check` passed.
 - Actual generated JavaScript executed in Node with offline DOM fixtures to verify name/ID/username searches, filters, reset and empty states.
-- A synthetic 3000-record export generated HTML in 0.073 seconds (1962875 bytes) and XLSX in 3.361 seconds (136589 bytes), including workbook reopening. Timings are observations of this host, not guarantees.
+- A synthetic 3000-record export normalized in 0.054 seconds, generated and validated HTML in 0.624 seconds (3042693 bytes), and generated/reopened/validated XLSX in 2.945 seconds (105715 bytes). Timings are observations of this host, not guarantees.
+- Offline Chromium tested all seven categories, combined Unicode/partial-ID search, clear-search state, copy-ID, details expansion, no horizontal overflow and no remote requests at 320×740, 390×844, 768×1024 and 1440×900. The two smallest viewports used mobile/touch emulation. The browser harness is /tmp/check_userdata_browser.py and uses only synthetic data.
 
 Tests use mocked Telegram clients and temporary report directories. They cover
 owner-only access, owner-selected target lookup, target identity mismatch,
@@ -122,25 +151,24 @@ Unicode and long names, CSP hash, formula injection, exact IDs, all sheets, empt
 data, progress/FloodWait, topic pagination, independent failures, cancellation and
 cleanup. No real credentials or Telegram accounts were used.
 
-Known validation limits: no physical Android/browser layout test or live Telegram
-delivery was performed; JavaScript behavior and mobile CSS were checked separately.
-Only Python 3.11 was executed here. The unrelated SQLite test remains unresolved.
+Known validation limits: mobile Chromium emulation was executed, but no physical
+Android device, live Telegram delivery, or manual Excel/Google Sheets import was tested.
+Only Python 3.11 was executed here. The SQLite test requires an environment allowing
+standard thread-to-event-loop wakeup sockets; BUG-061 documents the resolved cause.
 No commit, push, deployment, credential or production database change is part of
 this implementation.
 
 ## Files and diff scope
 
-The combined working-tree change (including the dual-report work already present
-at discovery) covers these nine text/source files:
+This correction, including the pending FloodWait fix preserved at discovery,
+covers these seven text/source files:
 
 | File | Purpose |
 | --- | --- |
 | TechVJ/userdata_command.py | Owner-controlled orchestration, collection, progress, retry, cancellation and independent delivery |
 | core/userdata_reports.py | Shared snapshot, classification and offline HTML/XLSX renderers |
-| TechVJ/owner_commands.py | Document restored /userdata <uid> owner command and dual-format reports |
-| requirements.txt | Declare the workbook dependency |
-| test_userdata.py | Correct missing-username classification expectations; retain legacy regressions |
 | test_userdata_reports.py | Isolated report, security, browser-script and workflow regressions |
+| test_userdata_integrity.py | Verified private data, FORUM mapping, detailed metadata, duplicate merging, continuation cells and artifact consistency regressions |
 | data/BUGS.md | Record corrected export defects and the unrelated SQLite test timeout |
 | data/PROMPTS.md | Preserve task history and project direction |
 | USERDATA_REPORTS.md | Engineering analysis, configuration and validation evidence |
@@ -148,3 +176,38 @@ at discovery) covers these nine text/source files:
 The pre-existing binary database diff remains outside the implementation. Startup,
 session management, save/download/upload routing and unrelated commands retain
 their existing code.
+
+## Evidence from the original reports supplied in test/
+
+Both original files were inspected read-only. HTML and XLSX contain exactly 306
+records and identical multisets of 306 unique IDs. No record was lost between
+these two formats. Their original categories were:
+
+| Category | Original count |
+| --- | ---: |
+| Private Channels | 0 |
+| Private Groups | 2 |
+| Bots | 18 |
+| Private Chats | 28 |
+| Public Channels | 89 |
+| Public Groups | 14 |
+| Unclassified | 155 |
+
+Unclassified contains 140 channels, 14 supergroups and one forum. 154 have complete
+supplementary inspections; the forum has a partial inspection. The application
+failed to retain sufficient private evidence/type mapping, rather than losing
+these rows in the XLSX loop. Original HTML also confirms Clear resets category
+and privacy. Original XLSX uses nine columns everywhere.
+
+Root causes corrected in code: FORUM/MONOFORUM missing from type mapping; privacy
+provenance discarded; dialog top-message IDs discarded with raw message objects;
+basic-group counts read from the wrong full-chat field; missing supplemental values
+overwriting known values; normalization retaining only description/member count/
+inspection and dropping discussion/topic detail fields; first-wins duplicate removal;
+Clear resetting filter state; and validation checking only workbook sheet names.
+
+Original files do not contain the missing source evidence or discarded fields, so
+they were not guessed or rewritten. After loading the corrected code, a fresh
+owner-authorized `/userdata USER_ID` run obtains the available metadata through
+the existing pipeline. Unknown classifications remain unknown when evidence is
+insufficient. No alternate account-access route or export command was added.

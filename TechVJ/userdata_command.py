@@ -12,7 +12,10 @@ import uuid
 import tempfile
 from contextlib import contextmanager
 from types import SimpleNamespace
-from core.userdata_reports import normalize, render_html, render_xlsx
+from core.userdata_reports import (
+    ReportLimitError, ReportValidationError, active_username, chat_kind, normalize,
+    privacy_evidence, render_html, render_xlsx, type_name,
+)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -137,6 +140,8 @@ class DialogRecord:
     title: str = ""
     username: Optional[str] = None
     visibility: str = "UNKNOWN"        # PUBLIC / PRIVATE / UNKNOWN
+    visibility_source: str = ""
+    visibility_verified: bool = False
     description: Optional[str] = None
     member_count: Optional[int] = None
     latest_message_id: Optional[int] = None
@@ -165,6 +170,8 @@ class DialogRecord:
             "title": self.title,
             "username": self.username,
             "visibility": self.visibility,
+            "visibility_source": self.visibility_source,
+            "visibility_verified": self.visibility_verified,
             "description": self.description,
             "member_count": self.member_count,
             "latest_message_id": self.latest_message_id,
@@ -224,6 +231,8 @@ class InventoryJob:
     _cancel_event: Optional[asyncio.Event] = field(default=None, repr=False)
     _task: Optional[asyncio.Task] = field(default=None, repr=False)
     _report_errors: Dict[str, str] = field(default_factory=dict, repr=False)
+    _metadata_next_at: float = field(default=0.0, repr=False)
+    _metadata_gap: float = field(default=1.0, repr=False)
 
     def dialogs_remaining(self) -> int:
         return max(0, self.dialogs_discovered - self.dialogs_completed)
@@ -440,28 +449,14 @@ def _format_elapsed(seconds: float) -> str:
 def _classify_dialog(dialog) -> str:
     """Classify a Pyrogram Dialog into a category."""
     chat = dialog.chat
-    chat_type = chat.type
-
-    if chat_type == ChatType.CHANNEL:
-        return DialogCategory.CHANNEL
-    elif chat_type in (ChatType.GROUP, ChatType.SUPERGROUP):
-        return DialogCategory.GROUP
-    elif chat_type == ChatType.BOT:
-        return DialogCategory.BOT
-    elif chat_type == ChatType.PRIVATE:
-        # Check if it's a bot by looking at is_bot attribute
-        if getattr(chat, "is_bot", False):
-            return DialogCategory.BOT
-        return DialogCategory.PRIVATE
-    else:
-        return DialogCategory.UNKNOWN
+    return DialogCategory(chat_kind(chat.type, getattr(chat, 'is_bot', False)))
 
 
 def _visibility(chat) -> str:
     """Determine if a chat is public or private."""
-    if getattr(chat, "username", None):
-        return "PUBLIC"
-    return "PRIVATE" if getattr(chat, "type", None) == ChatType.GROUP else "UNKNOWN"
+    if active_username(chat):
+        return 'PUBLIC'
+    return privacy_evidence(chat)[0]
 
 
 def _safe_str(value, default: str = "UNKNOWN") -> str:
@@ -583,9 +578,11 @@ class ProgressReporter:
 # Inventory Engine
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _safe_api_call(coro, default=None, context: str = ""):
+async def _safe_api_call(coro, default=None, context: str = "", job: Optional[InventoryJob] = None):
     """Execute an API call with FloodWait / transient error handling."""
     for attempt in range(MAX_RETRY_ATTEMPTS):
+        if job is not None and job._cancel_event is not None and job._cancel_event.is_set():
+            raise asyncio.CancelledError()
         try:
             return await asyncio.wait_for(coro(), timeout=30.0)
         except asyncio.TimeoutError:
@@ -601,8 +598,17 @@ async def _safe_api_call(coro, default=None, context: str = ""):
                 wait = get_floodwait_seconds(e)
                 if wait > MAX_FLOODWAIT or attempt == MAX_RETRY_ATTEMPTS - 1:
                     raise
-                logger.info("userdata operation event")
-                await asyncio.sleep(wait)
+                previous_stage = job.current_stage if job is not None else None
+                if job is not None:
+                    job._metadata_gap = min(5.0, job._metadata_gap * 2)
+                    job.current_stage = f"Telegram rate limit: waiting {wait} seconds"
+                logger.info("userdata API FloodWait: waiting %ss (attempt %s/%s)", wait, attempt + 1, MAX_RETRY_ATTEMPTS)
+                try:
+                    # Outside the per-attempt timeout: honour the full Telegram wait.
+                    await asyncio.sleep(wait)
+                finally:
+                    if job is not None:
+                        job.current_stage = previous_stage
                 continue
             if is_transient_error(e) and attempt < MAX_RETRY_ATTEMPTS - 1:
                 await asyncio.sleep(calculate_backoff(attempt))
@@ -612,30 +618,61 @@ async def _safe_api_call(coro, default=None, context: str = ""):
     return default
 
 
-async def _get_chat_metadata(user_client, chat):
+async def _get_chat_metadata(user_client, chat, job: Optional[InventoryJob] = None):
     """Fetch full metadata without get_chat()'s implicit pinned-message fetch."""
     peer = await user_client.resolve_peer(chat.id)
-    if chat.type == ChatType.GROUP:
+    if type_name(chat.type) == 'group':
         request = functions.messages.GetFullChat(chat_id=peer.chat_id)
     else:
         request = functions.channels.GetFullChannel(channel=types.InputChannel(
             channel_id=peer.channel_id, access_hash=peer.access_hash))
-    result = await user_client.invoke(request)
+    if job is not None:
+        delay = max(0.0, job._metadata_next_at - time.monotonic())
+        if delay:
+            await asyncio.sleep(delay)
+        job._metadata_next_at = time.monotonic() + job._metadata_gap
+    # Otherwise Pyrofork may sleep for 30s inside our 30s timeout, causing
+    # cancellation/retry before the server's wait has actually completed.
+    result = await user_client.invoke(request, sleep_threshold=0)
     full = result.full_chat
     raw_chat = next(c for c in result.chats if c.id == full.id)
     linked_id = getattr(full, "linked_chat_id", None)
     linked = next((c for c in result.chats if c.id == linked_id), None)
+    visibility, source = _raw_channel_privacy(raw_chat)
+    if type_name(chat.type) == 'group':
+        visibility, source = 'PRIVATE', 'Telegram basic group type'
+    members_count = getattr(full, 'participants_count', None)
+    if members_count is None and isinstance(getattr(full, 'participants', None), types.ChatParticipants):
+        members_count = len(full.participants.participants)
     # Whitelist report metadata; ignore users, invite links, pinned IDs, and media.
     return SimpleNamespace(
         type=chat.type,
-        username=getattr(raw_chat, "username", None),
+        username=active_username(raw_chat) or None,
+        visibility=visibility, visibility_source=source,
+        visibility_verified=visibility in ('PRIVATE', 'PUBLIC'),
         description=getattr(full, "about", None),
-        members_count=getattr(full, "participants_count", None),
+        members_count=members_count,
         is_forum=bool(raw_chat.forum) if hasattr(raw_chat, "forum") else None,
         forum_status="Known" if hasattr(raw_chat, "forum") else "Unsupported API field",
-        linked_chat=(SimpleNamespace(id=-(1000000000000 + linked.id), title=getattr(linked, "title", None))
-                     if linked is not None else None),
+        linked_chat=(SimpleNamespace(id=-(1000000000000 + linked_id), title=getattr(linked, "title", None))
+                     if linked_id is not None else None),
     )
+
+
+def _raw_channel_privacy(raw_chat):
+    """Require a full, native API constructor before establishing non-public status.
+
+    Absence of a username on a partial/high-level Chat is never enough. Full
+    Channel metadata supplies the complete active-address state and flags; geo,
+    min, left and monoforum variants remain unverified when they lack an address.
+    """
+    if active_username(raw_chat):
+        return 'PUBLIC', 'Telegram active public username/alias'
+    if (isinstance(raw_chat, types.Channel) and not raw_chat.min
+            and (raw_chat.broadcast or raw_chat.megagroup or raw_chat.gigagroup)
+            and not (raw_chat.has_geo or raw_chat.left or raw_chat.monoforum)):
+        return 'PRIVATE', 'Telegram full Channel: complete active-address state; non-min, non-geo, joined'
+    return 'UNKNOWN', 'Incomplete or unsupported privacy evidence'
 
 
 async def _inspect_channel(
@@ -646,22 +683,30 @@ async def _inspect_channel(
         chat_id=chat.id,
         category=DialogCategory.CHANNEL,
         title=getattr(chat, "title", "") or "",
-        username=getattr(chat, "username", None),
+        username=active_username(chat) or None,
         visibility=_visibility(chat),
         chat_type=str(chat.type),
         latest_message_id=getattr(dialog, "top_message", None)
                           and getattr(dialog.top_message, "id", None),
     )
+    rec.member_count = getattr(chat, 'members_count', None)
+    if rec.username and rec.latest_message_id:
+        rec.latest_public_link = f"https://t.me/{rec.username}/{rec.latest_message_id}"
+    if rec.visibility == 'PUBLIC':
+        return rec  # Public inventories use dialog metadata; no supplementary RPC.
 
     # Try to get full chat info for description and member count
     full_chat = await _safe_api_call(
-        lambda: _get_chat_metadata(user_client, chat), context="channel metadata"
+        lambda: _get_chat_metadata(user_client, chat, job), context="channel metadata", job=job
     )
     if full_chat:
         rec.description = getattr(full_chat, "description", None)
-        rec.member_count = getattr(full_chat, "members_count", None)
+        full_count = getattr(full_chat, "members_count", None)
+        if full_count is not None:
+            rec.member_count = full_count
         rec.username = getattr(full_chat, "username", None) or rec.username
-        rec.visibility = _visibility(full_chat)
+        rec.visibility, rec.visibility_source = privacy_evidence(full_chat, 'channel')
+        rec.visibility_verified = getattr(full_chat, 'visibility_verified', False)
         linked = getattr(full_chat, "linked_chat", None)
         if linked:
             rec.has_discussion = True
@@ -686,31 +731,48 @@ async def _inspect_group(
         chat_id=chat.id,
         category=DialogCategory.GROUP,
         title=getattr(chat, "title", "") or "",
-        username=getattr(chat, "username", None),
+        username=active_username(chat) or None,
         visibility=_visibility(chat),
         chat_type=str(chat.type),
         latest_message_id=getattr(dialog, "top_message", None)
                           and getattr(dialog.top_message, "id", None),
     )
+    rec.member_count = getattr(chat, 'members_count', None)
+    rec.is_forum = getattr(chat, 'is_forum', None)
+    if type_name(chat.type) in ('forum', 'monoforum'):
+        rec.is_forum, rec.forum_status = True, 'Known Telegram forum dialog type'
+    elif type_name(chat.type) == 'group':
+        rec.is_forum, rec.forum_status = False, 'Telegram basic group type (not a forum)'
+    if rec.visibility == 'PUBLIC':
+        rec.topics_status = 'Not requested for public groups'
+        return rec  # In particular, never detect/enumerate public forum topics.
 
     # Full chat info
     full_chat = await _safe_api_call(
-        lambda: _get_chat_metadata(user_client, chat), context="group metadata"
+        lambda: _get_chat_metadata(user_client, chat, job), context="group metadata", job=job
     )
     if full_chat:
         rec.description = getattr(full_chat, "description", None)
-        rec.member_count = getattr(full_chat, "members_count", None)
-        rec.is_forum = getattr(full_chat, "is_forum", None)
-        rec.forum_status = getattr(full_chat, "forum_status", "Missing API value")
+        full_count = getattr(full_chat, "members_count", None)
+        if full_count is not None:
+            rec.member_count = full_count
+        full_forum = getattr(full_chat, "is_forum", None)
+        if full_forum is not None or rec.is_forum is None:
+            rec.is_forum = full_forum
+            rec.forum_status = getattr(full_chat, "forum_status", "Missing API value")
         rec.username = getattr(full_chat, "username", None) or rec.username
-        rec.visibility = _visibility(full_chat)
+        rec.visibility, rec.visibility_source = privacy_evidence(full_chat, 'group')
+        rec.visibility_verified = getattr(full_chat, 'visibility_verified', False)
 
     # Forum topic enumeration
-    if rec.is_forum:
+    if rec.is_forum and rec.visibility == 'PRIVATE':
         job.current_stage = f"Fetching topics for group {chat.id}"
         topics = await _fetch_forum_topics(user_client, chat.id, record=rec)
         rec.topics = topics
         job.topics_discovered += len(topics)
+    elif rec.is_forum:
+        rec.topics_status = ('Not requested for public groups' if rec.visibility == 'PUBLIC'
+                             else 'Not requested; privacy unverified')
 
     if rec.is_forum is False:
         rec.topics_status = "Not applicable (forum disabled)"
@@ -750,7 +812,8 @@ async def _fetch_forum_topics(
                         offset_id=offset_id,
                         offset_topic=offset_topic,
                         limit=TOPIC_PAGE_SIZE,
-                    )
+                    ),
+                    sleep_threshold=0,
                 ),
                 timeout=30.0,
             )
@@ -788,8 +851,8 @@ async def _fetch_forum_topics(
                     topic_id=topic.id,
                     title=topic.title,
                     top_message=top_msg,
-                    closed=getattr(topic, "closed", False),
-                    hidden=getattr(topic, "hidden", False),
+                    closed=bool(getattr(topic, "closed", False)),
+                    hidden=bool(getattr(topic, "hidden", False)),
                     # top_message serves as the latest accessible message ID
                     latest_message_id=top_msg if top_msg else None,
                     # The topic_id itself is the creation/root message ID
@@ -925,8 +988,10 @@ async def _run_inventory(
                         break
                     # Discard Telegram dialog message objects immediately; retain metadata only.
                     chat = SimpleNamespace(**{key: getattr(chat, key, None) for key in (
-                        "id", "type", "title", "username", "first_name", "last_name", "is_bot", "is_forum")})
-                    raw_dialogs.append((SimpleNamespace(top_message=None, chat=chat), chat))
+                        "id", "type", "title", "username", "usernames", "members_count",
+                        "first_name", "last_name", "is_bot", "is_forum")})
+                    top_id = getattr(getattr(dialog, 'top_message', None), 'id', None)
+                    raw_dialogs.append((SimpleNamespace(top_message=SimpleNamespace(id=top_id), chat=chat), chat))
                     job.dialogs_discovered += 1
 
                     # Periodic progress update during scan
@@ -1049,7 +1114,8 @@ async def _run_inventory(
                                          session_string=session_string)
         incomplete = (bool(job.failures) or len(snapshot.records) < job.dialogs_discovered
                       or any(r.inspection_status != InspectionStatus.COMPLETE for r in job.records)
-                      or any(r.is_forum and r.topics_status != "Complete accessible topic list" for r in job.records))
+                      or any(r.is_forum and r.visibility == 'PRIVATE'
+                             and r.topics_status != "Complete accessible topic list" for r in job.records))
         job.status = JobStatus.COMPLETE if all(results.values()) and not incomplete and not job._report_errors else JobStatus.PARTIAL
         job.current_stage = "Completed" if job.status == JobStatus.COMPLETE else "Partially completed"
         await _save_job(job)
@@ -1672,8 +1738,8 @@ async def _deliver_reports(user_client, bot_client, job, snapshot, reporter, ses
                 paths[kind] = path
             except Exception as exc:
                 job._report_errors[kind] = ("exceeds configured upload size limit" if isinstance(exc, ReportSizeError)
-                                            else "generation failed (Excel cell limit or unsupported text)" if kind == "XLSX" and isinstance(exc, ValueError)
-                                            else "generation failed")
+                                            else str(exc) if isinstance(exc, (ReportLimitError, ReportValidationError))
+                                            else f"generation failed ({type(exc).__name__})")
                 logger.warning("userdata %s generation failed: %s", kind, type(exc).__name__)
         if paths:
             job.current_stage = "Uploading reports"

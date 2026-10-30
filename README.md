@@ -1,5 +1,61 @@
 # VJ Save Restricted Bot [![License: MIT][License-Badge]](LICENSE)
 
+
+## Yangi serverda ishga tushirish
+
+Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3 python3-venv python3-dev build-essential ffmpeg libmediainfo0v5 p7zip-full
+git clone https://github.com/Alimurod777/savebotnew.git
+cd savebotnew
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+`.env` faylida `API_ID`, `API_HASH`, `BOT_TOKEN`, `OWNER_ID` qiymatlarini
+kiriting. `OWNER_USERNAME` ixtiyoriy. `DB_URI` MongoDB backup uchun; bo'sh bo'lsa
+local-first yo'llar SQLite bilan ishlaydi, MongoDBga bog'liq legacy funksiyalar
+uchun MongoDB URI kerak. Environment variables `.env` qiymatlaridan ustun.
+
+```bash
+python bot.py
+```
+
+Buyruqni loyiha papkasidan, yozish ruxsati bor joyda bajaring. Kaggle uchun
+`/kaggle/working`, Colab uchun `/content` ishlating. `local_db/`, `data/`,
+`sessions/`, `downloads/`, `logs/` ichidagi runtime fayllar kerak bo'lganda yaratiladi.
+Botga kirib `/login`, owner uchun `/ownerhelp` ishlatiladi.
+
+GitHubga kod, dependency ro'yxati va bo'sh konfiguratsiya namunasi yuboriladi.
+Secretlar, login sessiyalari, haqiqiy bazalar, user rollari va tayyor shaxsiy
+hisobotlar yuborilmaydi. Yangi clone yangi lokal holat bilan boshlanadi.
+Oldingi loginlar/rollar/pool sessiyalarini ko'chirish kerak bo'lsa, botni to'xtatib,
+`.env`, `local_db/`, `sessions/` va `data/` runtime fayllarini alohida xavfsiz
+kanal orqali ko'chiring. Bir bot tokenini ikki serverda bir vaqtda ishlatmang.
+
+Docker uchun `.dockerignore` secret va runtime fayllarni build contextdan chiqaradi:
+
+```bash
+docker build -t savebotnew .
+docker run --rm --env-file .env \
+  -v "$PWD/local_db:/app/local_db" \
+  -v "$PWD/sessions:/app/sessions" \
+  -v "$PWD/data:/app/data" \
+  savebotnew
+```
+
+Testlar (Telegramga real login yoki bot start talab qilmaydi):
+
+```bash
+python -m pip install pytest pytest-subtests
+python -m pytest -q
+```
+
 <!-- WOODcraft -->
 <p align="center">
 <img src="https://github.com/SudoR2spr/SudoR2spr/raw/main/assets/line-neon.gif" width="100%">

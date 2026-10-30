@@ -1230,7 +1230,7 @@ See USERDATA_REPORTS.md for commands, limitations and configuration.
 
 ## BUG-061: Existing role-manager SQLite test stalls in this execution environment
 **Sana:** 2026-10-28
-**Holat:** 🔎 Tekshirish kerak (outside /userdata scope)
+**Holat:** ✅ Sabab aniqlandi — sandbox cheklovi, bot/SQLite kodi xatosi emas
 
 Full pytest stops at test_role_manager_synchronizes_role_file_local_db_and_legacy_ban.
 An isolated run with a 25-second timeout exits 124; faulthandler shows the aiosqlite
@@ -1238,6 +1238,17 @@ worker and asyncio selector waiting. No assertion failure was observed. The caus
 is unconfirmed; no unrelated database/session-manager changes were made. Remaining
 127 tests pass. This test is excluded only by the documented invocation, not by a
 committed skip or pytest configuration change.
+
+**2026-10-29 resolution:** A minimal worker-thread socketpair.send probe fails with
+PermissionError (errno 1) inside the execution sandbox. This prevents asyncio's
+thread-safe wakeup from notifying the selector about aiosqlite results. A temporary
+loop heartbeat lets the same temporary SQLite probe complete, confirming queued
+callbacks can run when the selector wakes. No production database is involved.
+The unchanged isolated test passes outside the sandbox: 1 passed in 2.86s.
+The full unchanged suite outside the sandbox passes with no exclusion:
+154 passed, 22 subtests passed in 15.97s. No code workaround, schema change, test
+skip or database reset is needed. Use an execution environment permitting the
+standard thread-to-event-loop socket wakeup for this test.
 
 ## BUG-062: /userdata owner-target command was unintentionally replaced by self-service
 **Sana:** 2026-10-28
@@ -1256,6 +1267,74 @@ Updated help and regression tests for nonowner denial, owner target jobs and del
 Validation: 72 focused unittest cases passed; 132 pytest tests and 15 subtests
 passed with the previously recorded unrelated SQLite test deselected. Compilation
 and git diff whitespace checks passed. No live Telegram operation was performed.
+
+## BUG-063: /userdata automatic FloodWait sleep conflicts with API timeout
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+Pyrofork inherited sleep_threshold=30 while each metadata operation was wrapped in
+a 30-second wait_for. A server-requested 29–30 second sleep could be cancelled by
+the outer timeout and retried without completing the wait. Raw metadata/topic
+invokes now use sleep_threshold=0, with bounded manual waits outside the timeout.
+Metadata requests are paced at least one second apart, increasing up to five
+seconds after FloodWait; progress displays the wait and cancellation stops retries.
+Global session management and its defaults are unchanged.
+
+## BUG-064: Private privacy provenance and FORUM types lost during inventory classification
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+Installed Pyrofork maps forum dialogs to ChatType.FORUM/MONOFORUM, which the old
+classifier did not recognize. Full raw Channel metadata was not used to retain
+private evidence, and normalize reset privacy to UNKNOWN except for usernames and
+basic groups. Native full non-min/non-geo/joined Channel constructors with complete
+active-address state now supply verified provenance; primary/active aliases supply
+public evidence. Partial, unsupported and ambiguous variants remain unknown.
+Enum/string variants share one mapping. Private forum handling is retained;
+known-public channels/groups skip supplemental RPCs and public topics are never
+enumerated. Legacy records without evidence are not guessed private.
+
+## BUG-065: HTML clear action resets filters and category state uses display labels
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+Original HTML confirms Clear resets search, category and privacy together. One
+ordered canonical-ID mapping now drives snapshots, options, statistics, articles
+and worksheet selection. Clear search changes search only. Private categories
+remain first with cards; lower-priority categories use compact rows. Generated
+JavaScript and offline Chromium mobile/desktop checks cover all category IDs,
+combined Unicode/ID search, clear-state retention, copy and empty results.
+
+## BUG-066: Detailed report fields dropped before XLSX; duplicates and long cells lose information
+**Sana:** 2026-10-28
+**Holat:** ✅ Hal qilindi
+
+Read-only inspection of test/userdata_report.html and .xlsx found matching 306
+unique IDs in both files: no cross-format row loss. Private Channels has zero rows;
+Unclassified has 140 channels, 14 supergroups and one forum. Of these, 154 have
+complete supplementary inspections. Missing data is attributable to application
+type/classification/transformation logic, not evidence that Telegram omitted rows.
+
+Dialog sanitization discarded even the top-message ID. Basic-group counts used the
+wrong full-chat field; null supplementary counts overwrote known values. Normalization
+kept only description/member count/inspection and reduced topics to ID/title/flags,
+dropping discussion metadata, first/latest IDs and statuses. First-wins deduplication
+dropped later complementary fields. Workbook validation checked only sheet names.
+
+Preserve supported scalar/topic fields and metadata IDs, native basic-group member
+counts, known zero/false values and complementary duplicate observations. Private
+and Unclassified sheets keep their detailed nine-column schema. Requested compact
+sheets use four columns. Long detailed values use lossless continuation columns
+on the same chat row. HTML identities/counts and reopened XLSX IDs/categories/values
+are checked against the shared snapshot before delivery. Safe validation/limit
+errors are reported independently for each format. Original supplied files are
+unchanged; missing old fields require a fresh existing owner-authorized scan.
+
+Validation for BUG-063–066: 93 focused unittest cases passed; 153 pytest tests and
+22 subtests passed, with only the previously recorded SQLite test deselected.
+Offline Chromium passed 320/390/768/1440px viewports, including copy-ID confirmation
+and no remote requests. A 3000-record synthetic export passed integrity checks.
+No production database/schema/session/credential changes or deployment performed.
 
 ## BUG-067: Global rol uchun eski file/DB rollari va legacy banlar qayta ustun kelishi
 **Sana:** 2026-10-30
@@ -1281,3 +1360,25 @@ parallel ban/reset tartibi. Production role policy bajarilmadi/yaranmadi.
 
 Tekshiruv: full pytest — 162 passed, 22 subtests passed; global rol bo'yicha
 8 test. Python compilation va git diff whitespace tekshiruvi o'tdi.
+
+## BUG-068: Ignored runtime DB va user holatlari Git indexda qolgan
+**Sana:** 2026-10-30
+**Holat:** ✅ Joriy branch snapshotida hal qilindi
+
+.gitignore avval tracked qilingan local_db/bot_storage.db va user role fayllarini
+kuzatuvdan chiqarmagan. data/downloads.db va user_lang ham tracked edi.
+Premium/session-manager runtime storage uchun ham ignore yetarli emas edi.
+Docker COPY . . esa .dockerignore yo'qligi sabab lokal secretlarni imagega olishi
+mumkin edi. READMEda ushbu repo uchun to'liq clone/setup yo'li yo'q edi.
+
+Yechim: runtime fayllar indexdan chiqarildi (lokal nusxalari saqlandi), barcha
+data runtime tarkibi docsdan tashqari ignored; .env variantlari, session/DB/private
+key ignore qoidalari va .dockerignore qo'shildi. .env.example va clone/setup
+qo'llanmasi qo'shildi. Eski buster Docker image bookworm/Python 3.11 ga ko'chirildi,
+media/dependency build system paketlari qo'shildi. Oldingi commitlar tarixi qayta
+yozilmadi; ushbu tuzatish eski Git tarixidan runtime fayllarni o'chirmaydi.
+
+Tekshiruv: toza staged-tree nusxada (real .env/session/DBsiz, mavjud venv bilan)
+162 passed, 22 subtests passed; 147 Python AST tekshiruvi; secret formatlari va
+lokal .env qiymatlari bo'yicha staged scan, ignore va diff-check o'tdi.
+Docker build/live Telegram startup ushbu tekshiruvga kirmaydi.

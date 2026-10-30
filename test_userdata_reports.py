@@ -7,7 +7,7 @@ import tempfile
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, patch
-from core.userdata_reports import CATEGORIES, normalize, render_html, render_xlsx
+from core.userdata_reports import CATEGORY_IDS, CATEGORY_LABELS, CATEGORIES, COMPACT_CATEGORIES, normalize, render_html, render_xlsx
 
 
 def source(records=()):
@@ -27,8 +27,8 @@ class Reports(unittest.TestCase):
         r = record(title='unverified', visibility='PRIVATE')
         s = normalize(source([r, r]))
         self.assertEqual(len(s.records), 1)
-        self.assertEqual(s.records[0].category, 'Unclassified')
-        self.assertEqual(tuple(s.counts), CATEGORIES)
+        self.assertEqual(s.records[0].category, 'unclassified')
+        self.assertEqual(tuple(s.counts), CATEGORY_IDS)
 
     def test_safe_html_unicode(self):
         s = normalize(source([record(title='<script>alert(1)</script> 😀 Ўзбек '+ 'x'*1000)]))
@@ -47,9 +47,9 @@ class Reports(unittest.TestCase):
             p = Path(d)/'a.xlsx'; render_xlsx(s,p); w=load_workbook(p)
             self.assertEqual(w.sheetnames, ['Summary', *CATEGORIES])
             sh=w['Public Channels']
+            self.assertEqual(sh['A2'].data_type,'s')
+            self.assertEqual(sh['B2'].value, '-100123456789012345')
             self.assertEqual(sh['B2'].data_type,'s')
-            self.assertEqual(sh['C2'].value, '-100123456789012345')
-            self.assertEqual(sh['C2'].data_type,'s')
             self.assertEqual(w['Summary']['B2'].value,1)
             self.assertEqual(sh.freeze_panes,'A2');w.close()
 
@@ -195,7 +195,7 @@ class OfflineControls(unittest.TestCase):
             p=Path(d)/'a.html';render_html(s,p)
             js=re.search(r'<script>(.*?)</script>',p.read_text(),re.S).group(1)
             harness='''const assert=require('assert');
-const fixtures=[{dataset:{search:'strasse 😀 -100123456789012345 example',category:'Public Channels',privacy:'PUBLIC'},hidden:false}];
+const fixtures=[{dataset:{search:'strasse 😀 -100123456789012345 example',category:'public_channels',privacy:'PUBLIC'},hidden:false}];
 const elements={};for(const id of ['search','category','privacy','count','empty','clear'])elements[id]={value:'',addEventListener(){}};
 global.document={querySelectorAll:s=>s==='article'?fixtures:[],getElementById:id=>elements[id]};
 '''+js+'''
@@ -203,8 +203,8 @@ search.value='STRASSE';filter();assert.equal(cards[0].hidden,false);
 search.value='123456789';filter();assert.equal(cards[0].hidden,false);
 search.value='EXAMPLE';filter();assert.equal(cards[0].hidden,false);
 privacy.value='PRIVATE';filter();assert.equal(cards[0].hidden,true);
-elements.clear.onclick();assert.equal(cards[0].hidden,false);
-category.value='Bots';filter();assert.equal(cards[0].hidden,true);assert.equal(elements.empty.hidden,false);
+elements.clear.onclick();assert.equal(privacy.value,'PRIVATE');assert.equal(cards[0].hidden,true);
+privacy.value='';category.value='bots';filter();assert.equal(cards[0].hidden,true);assert.equal(elements.empty.hidden,false);
 '''
             subprocess.run(['node','-e',harness],check=True,capture_output=True)
 
@@ -297,27 +297,34 @@ class ReportAccuracy(unittest.TestCase):
         ]
         s = normalize(source(rows))
         self.assertEqual([r.category for r in s.records], [
-            'Private Groups', 'Private Chats', 'Public Channels', 'Public Groups', 'Bots', 'Unclassified'])
+            'private_groups', 'bots', 'private_chats', 'public_channels', 'public_groups', 'unclassified'])
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)/'a.xlsx'; render_xlsx(s, p)
             w = load_workbook(p)
-            for i, cat in enumerate(CATEGORIES, 5):
+            for i, (cat,label) in enumerate(CATEGORY_LABELS.items(), 5):
                 self.assertEqual(w['Summary'].cell(i, 2).value, s.counts[cat])
-                self.assertEqual(w[cat].max_row - 1, s.counts[cat])
+                self.assertEqual(w[label].max_row - 1, s.counts[cat])
                 expected = [r for r in s.records if r.category == cat]
-                for cells, r in zip(w[cat].iter_rows(min_row=2), expected):
-                    self.assertEqual(cells[1].value, r.name)
-                    self.assertEqual(cells[2].value, r.chat_id)
+                offset=0 if cat in COMPACT_CATEGORIES else 1
+                for cells, r in zip(w[label].iter_rows(min_row=2), expected):
+                    self.assertEqual(cells[offset].value, r.name)
+                    self.assertEqual(cells[offset+1].value, r.chat_id)
                     self.assertTrue(all(c.data_type != 'f' for c in cells))
-                self.assertEqual(w[cat].auto_filter.ref, w[cat].dimensions)
+                self.assertEqual(w[label].auto_filter.ref, w[label].dimensions)
             w.close()
 
-    def test_excel_rejects_long_fields_before_silent_truncation(self):
+    def test_excel_preserves_long_detailed_fields_in_continuation_columns(self):
+        from openpyxl import load_workbook
         s = normalize(source([record(title='x'*32768)]))
         with tempfile.TemporaryDirectory() as d:
             render_html(s, Path(d)/'a.html')
-            with self.assertRaisesRegex(ValueError, 'not truncated'):
-                render_xlsx(s, Path(d)/'a.xlsx')
+            render_xlsx(s, Path(d)/'a.xlsx')
+            book=load_workbook(Path(d)/'a.xlsx')
+            try:
+                sheet=book['Unclassified'];headers=[cell.value for cell in sheet[1]]
+                self.assertEqual(sheet['B2'].value+sheet.cell(2,headers.index('Chat Name (continued 2)')+1).value,'x'*32768)
+            finally:
+                book.close()
 
     def test_missing_unicode_and_csp_hash(self):
         import base64, hashlib, re
@@ -418,6 +425,42 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises((m.FloodWait, SessionInvalidError)):
                 await m._safe_api_call(api)
             self.assertEqual(api.await_count,1)
+
+    async def test_floodwait_is_honoured_outside_api_timeout_and_shown_in_progress(self):
+        from TechVJ import userdata_command as m
+        j=source();j.current_stage='Classifying channels'
+        api=AsyncMock(side_effect=[m.FloodWait(30),'ok'])
+        async def sleep(seconds):
+            self.assertEqual(seconds,30)
+            self.assertIn('waiting 30 seconds',j.current_stage)
+        with patch.object(m.asyncio,'sleep',new=AsyncMock(side_effect=sleep)) as wait:
+            self.assertEqual(await m._safe_api_call(api,job=j),'ok')
+            wait.assert_awaited_once_with(30)
+        self.assertEqual(api.await_count,2)
+        self.assertEqual(j.current_stage,'Classifying channels')
+        self.assertEqual(j._metadata_gap,2.0)
+
+    async def test_cancel_event_during_flood_wait_prevents_retry(self):
+        from TechVJ import userdata_command as m
+        j=source();api=AsyncMock(side_effect=m.FloodWait(30))
+        async def sleep(seconds):j._cancel_event.set()
+        with patch.object(m.asyncio,'sleep',new=AsyncMock(side_effect=sleep)):
+            with self.assertRaises(asyncio.CancelledError):
+                await m._safe_api_call(api,job=j)
+        self.assertEqual(api.await_count,1)
+
+    async def test_metadata_requests_are_paced_and_disable_hidden_flood_sleeps(self):
+        from TechVJ import userdata_command as m
+        client=AsyncMock()
+        client.resolve_peer.return_value=NS(channel_id=7,access_hash=9)
+        client.invoke.return_value=NS(full_chat=NS(id=7),chats=[NS(id=7)])
+        chat=NS(id=-1000000000007,type=m.ChatType.CHANNEL)
+        j=source()
+        with patch.object(m.time,'monotonic',return_value=100),patch.object(m.asyncio,'sleep',AsyncMock()) as sleep:
+            await m._get_chat_metadata(client,chat,j)
+            await m._get_chat_metadata(client,chat,j)
+            sleep.assert_awaited_once_with(1.0)
+        self.assertTrue(all(call.kwargs['sleep_threshold']==0 for call in client.invoke.call_args_list))
     async def test_delivery_to_owner_does_not_reopen_target_session(self):
         from TechVJ import userdata_command as m
         def render(s, p): Path(p).write_text('report')
@@ -466,6 +509,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
             topics = await m._fetch_forum_topics(client, 42, rec)
         self.assertEqual([t.topic_id for t in topics], [1,2])
         self.assertEqual(client.invoke.call_args_list[1].args[0].offset_date, 900)
+        self.assertTrue(all(call.kwargs['sleep_threshold']==0 for call in client.invoke.call_args_list))
         self.assertEqual(rec.topic_count, 2)
         self.assertEqual(rec.topics_status, 'Complete accessible topic list')
 
@@ -489,6 +533,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         client.get_chat.assert_not_called()
         client.get_messages.assert_not_called()
         self.assertEqual(client.invoke.await_count, 1)
+        self.assertEqual(client.invoke.call_args.kwargs['sleep_threshold'],0)
 
     async def test_report_limit_explained_and_no_upload(self):
         from TechVJ import userdata_command as m

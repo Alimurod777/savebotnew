@@ -23,8 +23,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from weakref import WeakValueDictionary
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     FloodWait,
     AuthKeyUnregistered,
     AuthKeyInvalid,

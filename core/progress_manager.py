@@ -34,8 +34,8 @@ import logging
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     FloodWait, MessageNotModified, MessageIdInvalid,
     ChatWriteForbidden, UserIsBlocked
 )

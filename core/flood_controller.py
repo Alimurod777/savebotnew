@@ -29,7 +29,7 @@ import time
 import logging
 from typing import Dict, Optional, Callable, Any, Tuple
 
-from pyrogram.errors import (
+from wzgram.errors import (
     FloodWait,
     RPCError,
     AuthKeyUnregistered,

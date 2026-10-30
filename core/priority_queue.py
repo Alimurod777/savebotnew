@@ -39,9 +39,9 @@ class PriorityJob:
     user_id:     int
     role:        UserRole
     parsed_url:  object          # ParsedURL duck-typed
-    message:     object          # pyrogram Message
+    message:     object          # wzgram Message
     handler:     Callable        # async fn(client, message, parsed_url)
-    client:      object          # pyrogram Client
+    client:      object          # wzgram Client
     enqueued_at: float = field(default_factory=time.monotonic)
     future:      Optional[asyncio.Future] = field(default=None)
 

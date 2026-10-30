@@ -1099,3 +1099,27 @@ dependencylar ishlatildi; yangi dependency install va live Telegram startup
 bajarilmadi. 147 Python fayli AST tekshiruvidan o'tdi. Staged fayllar bo'yicha
 secret formatlari va lokal .env secret qiymatlari bilan taqqoslashda match yo'q;
 tracked ignored fayl qolmadi. Docker CLI yo'q, image build sinovdan o'tkazilmadi.
+
+
+## Sessiya (2026-10-30) — Isolated Wzgram copy and GitHub branch
+
+So'rov: /home/telegramdata3 ichida barcha lokal fayllar, .env va runtime data
+bilan yangi loyiha nusxasi; Pyrofork o'rniga rjriajul/wzgram bilan to'liq moslash;
+sinchiklab tekshirish; oxirida wzgram branchini GitHubga yuborish.
+
+Natija: `/home/telegramdata3/savebotnew-wzgram` yaratildi; original loyiha
+saqlandi. Yangi venv Wzgram 3.1.6 upstream 016ce19 commitidan qurildi; WarpCrypto
+ishlatiladi. Barcha application/test importlari, notebooklar, Docker git talabi
+va clone yo'riqnomasi moslandi. Native reply API, optional TL parser vektorlari
+va eski Pyrofork v4 SQLite session migratsiyasi tuzatildi (BUG-069..071).
+Media/text routing, pool copy/delete, premium split/entity va governance oqimlari
+saqlandi. Maxfiy .env/session/DBlar faqat lokal nusxada; Git indexga kiritilmaydi.
+
+Tekshiruv: real .env/session/DBlarsiz vaqtinchalik nusxada 168 passed va
+22 subtests passed; 612 import belgisi tekshirildi; pip check o'tdi. Outbound
+socket connect bloklangan offline Bot constructor va 59 handler importi o'tdi.
+Legacy session string roundtrip va file schema 4->8 testlari o'tdi. Real Telegram
+login/upload/download, live bot startup va Docker build bajarilmadi.
+
+UMUMIY YO'NALISH: Wzgram variantini alohida branch/papkada yuritish; original
+production loyihani o'zgartirmaslik, sessiya vakolatlari va routingni saqlash.

@@ -25,8 +25,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 from core.utf16_utils import utf16_len
 

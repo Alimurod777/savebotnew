@@ -28,8 +28,8 @@ import logging
 from typing import List, Tuple, Optional, Union, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +484,7 @@ async def send_rendered(
     Returns:
         List of sent messages
     """
-    from pyrogram.types import LinkPreviewOptions
+    from wzgram.types import LinkPreviewOptions
     
     chunks = renderer.render_chunks(MAX_MESSAGE_LENGTH)
     sent = []

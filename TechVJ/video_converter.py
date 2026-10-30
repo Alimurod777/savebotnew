@@ -5,10 +5,10 @@
 
 import os
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ChatType, ParseMode
-from pyrogram.errors import FloodWait, MediaEmpty, FilePartMissing, FilePartInvalid
+from wzgram import Client, filters
+from wzgram.types import Message
+from wzgram.enums import ChatType, ParseMode
+from wzgram.errors import FloodWait, MediaEmpty, FilePartMissing, FilePartInvalid
 
 from TechVJ.file_splitter import (
     needs_splitting, split_file, cleanup_chunks,

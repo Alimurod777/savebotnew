@@ -8,8 +8,8 @@ Default: English
 import os
 import logging
 from typing import Dict, Optional
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from wzgram import Client, filters
+from wzgram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 logger = logging.getLogger(__name__)
 

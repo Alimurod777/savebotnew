@@ -16,9 +16,9 @@ import logging
 from typing import Optional, List, Tuple, Any
 from dataclasses import dataclass
 
-from pyrogram import Client
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram import Client
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 logger = logging.getLogger(__name__)
 

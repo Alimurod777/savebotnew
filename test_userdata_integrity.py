@@ -73,7 +73,7 @@ class Classification(unittest.TestCase):
         s = snapshot()
         self.assertEqual(tuple(r.category for r in s.records), CATEGORY_IDS)
         self.assertEqual(list(s.counts.values()), [1]*7)
-        for value in (command.ChatType.FORUM, 'ChatType.FORUM', 'forum', command.ChatType.MONOFORUM,
+        for value in (command.ChatType.FORUM, 'ChatType.FORUM', 'forum', 'ChatType.MONOFORUM',
                       command.ChatType.GROUP, 'supergroup'):
             self.assertEqual(command._classify_dialog(NS(chat=NS(type=value))), 'group')
 

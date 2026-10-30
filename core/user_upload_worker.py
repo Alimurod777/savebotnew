@@ -49,9 +49,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
-from pyrogram import Client
-from pyrogram.errors import FloodWait, UserIsBlocked, PeerIdInvalid
-from pyrogram.enums import ParseMode
+from wzgram import Client
+from wzgram.errors import FloodWait, UserIsBlocked, PeerIdInvalid
+from wzgram.enums import ParseMode
 
 from config import API_ID, API_HASH, get_client_params
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error

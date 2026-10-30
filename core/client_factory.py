@@ -6,7 +6,7 @@ Creates properly configured Pyrogram clients for:
 - Download operations (optimized for file transfers)
 - Session validation
 
-Uses Kurigram 2.2.17 which installs under the "pyrogram" namespace.
+Uses Wzgram with the native "wzgram" import namespace.
 
 SECURITY: All clients use platform-consistent fingerprints from config.py
 to prevent Telegram security resets.
@@ -17,9 +17,9 @@ import logging
 import asyncio
 from typing import Optional, Tuple, Dict
 
-# Pyrogram imports (provided by kurigram==2.2.17)
-from pyrogram import Client
-from pyrogram.errors import (
+# Wzgram client imports
+from wzgram import Client
+from wzgram.errors import (
     AuthKeyUnregistered, SessionRevoked, UserDeactivated,
     AuthKeyDuplicated, FloodWait, BadRequest
 )

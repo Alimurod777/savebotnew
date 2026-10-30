@@ -27,10 +27,10 @@ from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import logging
 
-from pyrogram import Client
-from pyrogram.types import Message, InputMediaPhoto
-from pyrogram.enums import ParseMode
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.types import Message, InputMediaPhoto
+from wzgram.enums import ParseMode
+from wzgram.errors import (
     FloodWait,
     AuthKeyUnregistered,
     AuthKeyInvalid,

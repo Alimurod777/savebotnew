@@ -23,9 +23,9 @@ from typing import Optional, Dict, Callable, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, MessageNotModified, MessageIdInvalid, MessageEditTimeExpired
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, MessageNotModified, MessageIdInvalid, MessageEditTimeExpired
 
 logger = logging.getLogger(__name__)
 

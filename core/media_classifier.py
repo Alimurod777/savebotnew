@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pyrogram.types import Message
+from wzgram.types import Message
 
 
 # Ordered by likelihood for early-exit performance

@@ -1,29 +1,8 @@
-"""
-Universal Reply Compatibility Layer
+"""Reply/link-preview keyword helpers for Wzgram.
 
-Provides seamless backward and forward compatibility between:
-- Legacy Pyrogram/Kurigram (≤ 2.2.x): uses reply_to_message_id
-- Modern Pyrogram (≥ 2.4.x): uses reply_parameters with ReplyParameters
-- Pyrofork (2.3.x+): uses reply_to_message_id (no ReplyParameters)
-
-Usage:
-    from core.reply_compat import build_reply_kwargs
-    
-    await client.send_message(
-        chat_id=chat_id,
-        text=text,
-        **build_reply_kwargs(reply_to_id)
-    )
-
-This wrapper:
-- Never raises ImportError
-- Never breaks message sending
-- Requires zero code changes when upgrading Pyrogram
-- Is safely expandable via **kwargs
-
-PYROFORK MIGRATION NOTE:
-Pyrofork does NOT use ReplyParameters. It uses the simpler reply_to_message_id
-parameter directly. This layer handles both cases transparently.
+Wzgram's native ReplyParameters is detected from the send_message signature.
+The legacy boolean quote and allow_sending_without_reply arguments are retained
+for callers but are not passed to Wzgram's text-only quote constructor.
 """
 
 from typing import Optional, Dict, Any
@@ -48,23 +27,10 @@ def _detect_reply_style() -> bool:
     if _use_reply_parameters is not None:
         return _use_reply_parameters
     
-    try:
-        from pyrogram.types import ReplyParameters
-        # ReplyParameters exists - but check if it's actually used
-        # Pyrofork has the class but prefers reply_to_message_id
-        import pyrogram
-        version = getattr(pyrogram, '__version__', '0.0.0')
-        
-        # Pyrofork versions typically don't need ReplyParameters
-        # They support direct reply_to_message_id
-        if 'pyrofork' in str(type(pyrogram)).lower():
-            _use_reply_parameters = False
-        else:
-            _use_reply_parameters = True
-            
-    except ImportError:
-        _use_reply_parameters = False
-    
+    from wzgram import Client
+    import inspect
+    _use_reply_parameters = "reply_parameters" in inspect.signature(Client.send_message).parameters
+
     return _use_reply_parameters
 
 
@@ -77,14 +43,13 @@ def build_reply_kwargs(
     """
     Build reply-related keyword arguments compatible with any Pyrogram version.
     
-    For Pyrofork: Uses reply_to_message_id directly (preferred method).
-    For modern Pyrogram: Attempts ReplyParameters if available.
-    For legacy: Falls back to reply_to_message_id.
+    Uses native Wzgram ReplyParameters when supported, with a legacy
+    reply_to_message_id fallback.
     
     Args:
         reply_to_message_id: Message ID to reply to (None = no reply)
-        quote: Whether to quote the replied message (ReplyParameters only)
-        allow_sending_without_reply: Send even if reply message is deleted
+        quote: Legacy boolean flag, retained for caller compatibility
+        allow_sending_without_reply: Legacy flag unsupported by Wzgram
     
     Returns:
         Dictionary of kwargs to spread into send_* methods
@@ -113,14 +78,13 @@ def build_reply_kwargs(
     # Only attempt ReplyParameters if detected as needed
     if _detect_reply_style():
         try:
-            from pyrogram.types import ReplyParameters
+            from wzgram.types import ReplyParameters
             
             params_kwargs = {"message_id": reply_to_message_id}
             
-            if quote is not None:
-                params_kwargs["quote"] = quote
-            if allow_sending_without_reply is not None:
-                params_kwargs["allow_sending_without_reply"] = allow_sending_without_reply
+            # This helper takes a legacy boolean quote flag. Wzgram quote is
+            # literal quoted text, so do not pass a boolean into that field.
+            # Wzgram has no allow_sending_without_reply constructor parameter.
             
             return {"reply_parameters": ReplyParameters(**params_kwargs)}
         except Exception:
@@ -183,7 +147,7 @@ def build_link_preview_kwargs(is_disabled: bool = True) -> Dict[str, Any]:
         )
     """
     try:
-        from pyrogram.types import LinkPreviewOptions
+        from wzgram.types import LinkPreviewOptions
         return {"link_preview_options": LinkPreviewOptions(is_disabled=is_disabled)}
     except ImportError:
         # Fallback for legacy Pyrogram/Kurigram ≤ 2.2.x
@@ -193,7 +157,7 @@ def build_link_preview_kwargs(is_disabled: bool = True) -> Dict[str, Any]:
 # Type hint support (avoid runtime import)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from pyrogram.types import Message
+    from wzgram.types import Message
     Any = Message
 else:
     Any = object

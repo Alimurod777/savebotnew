@@ -28,10 +28,10 @@ from functools import wraps
 from dataclasses import dataclass
 from enum import Enum
 
-from pyrogram import Client
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember
-from pyrogram.enums import ChatMemberStatus, ChatType
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember
+from wzgram.enums import ChatMemberStatus, ChatType
+from wzgram.errors import (
     UserNotParticipant,
     ChannelPrivate,
     ChannelInvalid,

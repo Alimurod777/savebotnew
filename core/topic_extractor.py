@@ -17,8 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
-from pyrogram import raw, utils
-from pyrogram.types import Message
+from wzgram import raw, utils
+from wzgram.types import Message
 
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 from core.topic_cache import TopicCacheEntry, topic_cache

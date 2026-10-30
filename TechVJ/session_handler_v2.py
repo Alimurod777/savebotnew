@@ -28,8 +28,8 @@ from typing import Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     AuthKeyUnregistered,
     AuthKeyInvalid,
     AuthKeyDuplicated,

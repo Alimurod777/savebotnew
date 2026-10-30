@@ -419,7 +419,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
     async def test_long_floodwait_and_revocation_stop_retries(self):
         from TechVJ import userdata_command as m
         from TechVJ.session_handler import SessionInvalidError
-        from pyrogram.errors import SessionRevoked
+        from wzgram.errors import SessionRevoked
         for error in (m.FloodWait(500), SessionRevoked()):
             api=AsyncMock(side_effect=error)
             with self.assertRaises((m.FloodWait, SessionInvalidError)):

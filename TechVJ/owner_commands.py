@@ -33,9 +33,9 @@ import logging
 from types import SimpleNamespace
 from typing import Optional
 
-from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
-from pyrogram.types import Message, CallbackQuery
+from wzgram import Client, filters
+from wzgram.enums import ParseMode
+from wzgram.types import Message, CallbackQuery
 
 from config import OWNER_ID
 from database.async_db import async_db

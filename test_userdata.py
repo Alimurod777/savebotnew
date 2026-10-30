@@ -104,42 +104,42 @@ class TestDialogClassification(unittest.TestCase):
     """Test dialog category classification."""
 
     def test_channel_classification(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(100, ChatType.CHANNEL, title="Test Channel")
         dialog = _make_dialog(chat)
         self.assertEqual(_classify_dialog(dialog), DialogCategory.CHANNEL)
 
     def test_supergroup_classification(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(200, ChatType.SUPERGROUP, title="Test Group")
         dialog = _make_dialog(chat)
         self.assertEqual(_classify_dialog(dialog), DialogCategory.GROUP)
 
     def test_group_classification(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(300, ChatType.GROUP, title="Basic Group")
         dialog = _make_dialog(chat)
         self.assertEqual(_classify_dialog(dialog), DialogCategory.GROUP)
 
     def test_bot_classification_via_type(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(400, ChatType.BOT, title="Bot")
         dialog = _make_dialog(chat)
         self.assertEqual(_classify_dialog(dialog), DialogCategory.BOT)
 
     def test_bot_classification_via_is_bot(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(500, ChatType.PRIVATE, first_name="Bot", is_bot=True)
         dialog = _make_dialog(chat)
         self.assertEqual(_classify_dialog(dialog), DialogCategory.BOT)
 
     def test_private_chat_classification(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, _classify_dialog
         chat = _make_chat(600, ChatType.PRIVATE, first_name="John")
         dialog = _make_dialog(chat)
@@ -480,7 +480,7 @@ class TestBotInspection(unittest.TestCase):
     """Test bot dialog inspection."""
 
     def test_bot_record(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, InspectionStatus, _inspect_bot
 
         chat = _make_chat(12345, ChatType.BOT, first_name="TestBot", username="testbot")
@@ -500,7 +500,7 @@ class TestPrivateChatInspection(unittest.TestCase):
     """Test private chat dialog inspection."""
 
     def test_private_record(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import DialogCategory, InspectionStatus, _inspect_private
 
         chat = _make_chat(
@@ -520,7 +520,7 @@ class TestPrivateChatInspection(unittest.TestCase):
         self.assertEqual(record.inspection_status, InspectionStatus.COMPLETE)
 
     def test_private_no_last_name(self):
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import _inspect_private
 
         chat = _make_chat(11111, ChatType.PRIVATE, first_name="Alice")
@@ -550,7 +550,7 @@ class TestReadOnlySafety(unittest.TestCase):
 
     def test_bot_inspection_is_read_only(self):
         """Verify _inspect_bot does NOT call any send methods."""
-        from pyrogram.enums import ChatType
+        from wzgram.enums import ChatType
         from TechVJ.userdata_command import _inspect_bot
 
         chat = _make_chat(999, ChatType.BOT, first_name="Bot")

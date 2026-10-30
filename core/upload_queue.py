@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from pyrogram.errors import FloodWait
+from wzgram.errors import FloodWait
 
 logger = logging.getLogger(__name__)
 

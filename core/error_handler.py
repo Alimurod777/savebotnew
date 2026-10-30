@@ -12,7 +12,7 @@ Categories:
 import asyncio
 from functools import wraps
 from typing import Optional, Callable, TypeVar
-from pyrogram.errors import (
+from wzgram.errors import (
     FloodWait,
     AuthKeyDuplicated,
     AuthKeyUnregistered,

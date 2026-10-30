@@ -30,7 +30,7 @@ import re
 from typing import TypeVar, Callable, Optional, Set, Type, Any
 from functools import wraps
 
-from pyrogram.errors import (
+from wzgram.errors import (
     FloodWait, 
     Timeout,
     NetworkMigrate,

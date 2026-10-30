@@ -47,8 +47,8 @@ from typing import Optional, Callable, Union, Awaitable, List
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pyrogram import Client
-from pyrogram.types import Message
+from wzgram import Client
+from wzgram.types import Message
 
 # Import our modules
 from TechVJ.async_progress import (
@@ -433,7 +433,7 @@ async def example_usage():
     """
     # This is example code - do not run directly
     
-    from pyrogram import Client
+    from wzgram import Client
     from database.async_db import async_db
     
     async def handle_save_request(bot: Client, message: Message, source_message: Message):

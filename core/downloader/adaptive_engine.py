@@ -29,16 +29,16 @@ from typing import Optional, Callable, Dict, Any, Awaitable, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.raw import functions, types
-from pyrogram.raw.base import InputFileLocation
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.raw import functions, types
+from wzgram.raw.base import InputFileLocation
+from wzgram.errors import (
     FloodWait, FileMigrate, Timeout,
     FileReferenceExpired, FileReferenceEmpty, FileReferenceInvalid,
     RPCError
 )
-from pyrogram.file_id import FileId, FileType, PHOTO_TYPES
+from wzgram.file_id import FileId, FileType, PHOTO_TYPES
 
 logger = logging.getLogger(__name__)
 

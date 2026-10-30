@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from pyrogram import Client, filters
-from pyrogram.enums import ChatType, ParseMode
-from pyrogram.errors import (
+from wzgram import Client, filters
+from wzgram.enums import ChatType, ParseMode
+from wzgram.errors import (
     ChannelInvalid,
     ChannelPrivate,
     ChatAdminRequired,
@@ -31,8 +31,8 @@ from pyrogram.errors import (
     PeerIdInvalid,
     RPCError,
 )
-from pyrogram.raw import functions, types
-from pyrogram.types import Message
+from wzgram.raw import functions, types
+from wzgram.types import Message
 
 from config import OWNER_ID
 from core.retry_utils import (

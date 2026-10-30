@@ -20,8 +20,8 @@ from contextlib import asynccontextmanager
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     AuthKeyUnregistered,
     AuthKeyInvalid,
     AuthKeyDuplicated,

@@ -7,9 +7,9 @@ import asyncio
 import hashlib
 import random
 import uuid
-import pyrogram
-from pyrogram import Client, filters
-from pyrogram.errors import (
+import wzgram
+from wzgram import Client, filters
+from wzgram.errors import (
     FloodWait,
     UserIsBlocked,
     InputUserDeactivated,
@@ -18,7 +18,7 @@ from pyrogram.errors import (
     UsernameNotOccupied,
     InviteRequestSent,
 )
-from pyrogram.types import (
+from wzgram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
 )
@@ -52,8 +52,8 @@ from core.failure_classifier import (
     stage_indicates_processing,
 )
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
-from pyrogram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
-from pyrogram.raw import functions, types
+from wzgram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
+from wzgram.raw import functions, types
 import time
 import os
 import shutil
@@ -2943,7 +2943,7 @@ async def send_media_entity_safe(
     if overflow_chunks and media_msg:
         from TechVJ.lang import get_string
         from core.entity_validator import utf16_length as u16len
-        from pyrogram.types import MessageEntity
+        from wzgram.types import MessageEntity
         header = get_string(media_msg.chat.id, "caption_continued") + "\n\n"
         header_len = u16len(header)
         for chunk in overflow_chunks:
@@ -8488,7 +8488,7 @@ async def download_and_send_media(
                             _POOL_TIMEOUT = 300  # 5 minutes user wait cap
 
                             # Inline keyboard: wait or continue without premium
-                            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                            from wzgram.types import InlineKeyboardMarkup, InlineKeyboardButton
                             import uuid as _uuid_mod
                             _cb_wait = f"pw_wait_{_acc_user_id}_{_uuid_mod.uuid4().hex[:8]}"
                             _cb_skip = f"pw_skip_{_acc_user_id}_{_uuid_mod.uuid4().hex[:8]}"
@@ -8518,7 +8518,7 @@ async def download_and_send_media(
                                     _evt.set()
 
                             _handler = client.add_handler(
-                                __import__("pyrogram.handlers", fromlist=["CallbackQueryHandler"]).CallbackQueryHandler(_cb_handler),
+                                __import__("wzgram.handlers", fromlist=["CallbackQueryHandler"]).CallbackQueryHandler(_cb_handler),
                                 group=99,
                             )
                             try:

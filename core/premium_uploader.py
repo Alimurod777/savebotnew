@@ -20,8 +20,8 @@ import uuid
 import logging
 from typing import Optional, Callable
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     FloodWait, AuthKeyUnregistered, AuthKeyInvalid,
     SessionRevoked, SessionExpired, UserDeactivated,
     RPCError, Timeout,

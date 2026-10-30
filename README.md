@@ -1,6 +1,11 @@
 # VJ Save Restricted Bot [![License: MIT][License-Badge]](LICENSE)
 
 
+## Wzgram branch
+
+Bu variant [Wzgram](https://github.com/rjriajul/wzgram) 3.1.6 va WarpCrypto
+bilan ishlaydi. Moslik tafsilotlari: [WZGRAM_MIGRATION.md](WZGRAM_MIGRATION.md).
+
 ## Yangi serverda ishga tushirish
 
 Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
@@ -8,7 +13,7 @@ Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-dev build-essential ffmpeg libmediainfo0v5 p7zip-full
-git clone https://github.com/Alimurod777/savebotnew.git
+git clone --branch wzgram https://github.com/Alimurod777/savebotnew.git
 cd savebotnew
 python3 -m venv venv
 source venv/bin/activate
@@ -53,6 +58,7 @@ Testlar (Telegramga real login yoki bot start talab qilmaydi):
 
 ```bash
 python -m pip install pytest pytest-subtests
+python verify_migration.py
 python -m pytest -q
 ```
 
@@ -71,7 +77,7 @@ python -m pytest -q
 
 ## Deploy To Google Colab
 
-<a href="https://colab.research.google.com/github/SudoR2spr/VJ-Save-Restricted-Content-Colab/blob/master/WOODcraft/VJ-WOODcraft-Colab.ipynb\" target="_blank">
+<a href="https://colab.research.google.com/github/Alimurod777/savebotnew/blob/wzgram/colab_runner.ipynb\" target="_blank">
   <img src="https://raw.githubusercontent.com/SudoR2spr/SudoR2spr/main/assets/angel-op/VJ-WOODcraft-Colab.png" alt="Deploy To Google Colab" style="width:150px;"/>
 </a>
 

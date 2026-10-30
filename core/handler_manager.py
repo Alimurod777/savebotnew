@@ -276,7 +276,7 @@ class OneTimeHandler:
         group: int = 0
     ) -> bool:
         """Register the one-time handler."""
-        from pyrogram.handlers import MessageHandler
+        from wzgram.handlers import MessageHandler
         
         self._client = client
         
@@ -338,8 +338,8 @@ class WaitingHandler:
         Returns:
             Message object or None on timeout
         """
-        from pyrogram import filters as pyro_filters
-        from pyrogram.handlers import MessageHandler
+        from wzgram import filters as pyro_filters
+        from wzgram.handlers import MessageHandler
         
         loop = asyncio.get_running_loop()
         self._future = loop.create_future()

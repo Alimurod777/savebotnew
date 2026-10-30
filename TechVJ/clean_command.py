@@ -36,8 +36,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Any
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from wzgram import Client, filters
+from wzgram.types import Message
 
 from config import OWNER_ID, TEMP_DOWNLOAD_DIR
 

@@ -21,9 +21,9 @@ import logging
 from typing import Optional, Callable, Union
 from pathlib import Path
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait
 
 from TechVJ.progress_controller import progress_controller, ProgressController
 

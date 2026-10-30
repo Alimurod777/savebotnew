@@ -740,3 +740,22 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   exceptions yaratadi; navbatdagi global command exceptionsni tozalaydi.
 - Role tekshirish `role_manager.get_role()`; effective ban tekshirish
   `async_db.is_banned()`; raw LocalStorage ban qiymatini guard uchun ishlatmang.
+
+
+### Wzgram branch policy (2026-10-30)
+- This copy uses native `wzgram` imports and Wzgram 3.1.6 pinned to upstream
+  commit `016ce19ef7136c3d8423bae26e5b3d4cd972bb44`. Install `requirements.txt`;
+  do not co-install Pyrogram/Pyrofork/Kurigram or TgCrypto. Crypto is WarpCrypto.
+- Existing routing/session-selection/caption/governance rules remain in force.
+- `core/wzgram_compat.py` is applied early by `core/__init__.py`: version-scoped
+  optional-vector parser fixes and legacy Pyrofork v4 file-storage migration.
+  Migration backs up the private `.session` before rebuilding username cache;
+  native Wzgram then adds DC address/port. Never commit session backup files.
+- Keep `core/pyrofork_compat.py` for compatibility with existing callers. Its old
+  reply patch MUST skip Wzgram's `reply_parameters` implementation. Opt-in
+  bounded upload FloodWait handling stays enabled for UserUploadWorker.
+- `ReplyParameters.quote` is text, not a boolean. The wrapper's old boolean
+  quote flag must not be forwarded into it. Preserve plain str/UTF-16 handling.
+- Source project `/home/telegramdata3/savebotnew` remains separate and unchanged.
+- Run `python verify_migration.py`, `python -m pip check` and the offline tests
+  before publishing this branch. Never run two live bots with the copied token.

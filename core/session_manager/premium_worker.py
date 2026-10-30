@@ -14,8 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from pyrogram import Client
-from pyrogram.errors import FloodWait
+from wzgram import Client
+from wzgram.errors import FloodWait
 
 from core.user_upload_worker import (
     UserUploadWorker,

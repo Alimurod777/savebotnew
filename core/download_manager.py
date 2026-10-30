@@ -15,8 +15,8 @@ import time
 import logging
 from typing import Optional, Dict, Set, List
 
-from pyrogram import Client
-from pyrogram.types import Message
+from wzgram import Client
+from wzgram.types import Message
 
 from core.models import DownloadTask, ProgressEvent, SHUTDOWN_SENTINEL
 from core.state_store import state_store

@@ -30,7 +30,7 @@ from typing import Optional, Dict, Any, List, Callable, TypeVar, Set
 from enum import Enum, auto
 from functools import wraps
 
-from pyrogram.errors import (
+from wzgram.errors import (
     FloodWait,
     AuthKeyDuplicated,
     AuthKeyUnregistered,

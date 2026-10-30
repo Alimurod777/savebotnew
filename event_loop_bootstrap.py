@@ -1,7 +1,7 @@
 """
 Helpers for import-time asyncio compatibility.
 
-Pyrofork/Pyrogram imports ``pyrogram.sync`` at module import time and emits
+Pyrofork/Pyrogram imports ``wzgram.sync`` at module import time and emits
 ``DeprecationWarning: There is no current event loop`` on Python 3.10+.
 We suppress only that exact upstream warning here.
 
@@ -17,7 +17,7 @@ import warnings
 
 
 def ensure_current_event_loop() -> None:
-    # Pyrofork 2.3.69 imports pyrogram.sync at module import time and triggers
+    # Pyrofork 2.3.69 imports wzgram.sync at module import time and triggers
     # this exact warning on Python 3.10+. Keep the filter narrowly scoped.
     warnings.filterwarnings(
         "ignore",

@@ -28,10 +28,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, BadRequest, RPCError
-from pyrogram.enums import MessageMediaType
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, BadRequest, RPCError
+from wzgram.enums import MessageMediaType
 
 from TechVJ.async_progress import (
     async_progress_controller,

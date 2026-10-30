@@ -18,9 +18,9 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Callable
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, MessageNotModified, MessageIdInvalid
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, MessageNotModified, MessageIdInvalid
 import logging
 
 logger = logging.getLogger(__name__)

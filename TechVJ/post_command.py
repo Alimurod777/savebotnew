@@ -26,10 +26,10 @@ import logging
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
 
-from pyrogram import Client, filters
-from pyrogram.types import Message, MessageEntity
-from pyrogram.enums import MessageMediaType, MessageEntityType
-from pyrogram.errors import (
+from wzgram import Client, filters
+from wzgram.types import Message, MessageEntity
+from wzgram.enums import MessageMediaType, MessageEntityType
+from wzgram.errors import (
     FloodWait,
     ChannelPrivate,
     ChannelInvalid,

@@ -1382,3 +1382,33 @@ Tekshiruv: toza staged-tree nusxada (real .env/session/DBsiz, mavjud venv bilan)
 162 passed, 22 subtests passed; 147 Python AST tekshiruvi; secret formatlari va
 lokal .env qiymatlari bo'yicha staged scan, ignore va diff-check o'tdi.
 Docker build/live Telegram startup ushbu tekshiruvga kirmaydi.
+
+
+## BUG-069: Wzgram 3.1.6 parses absent optional TL vectors as iterable lists
+**Holat:** ✅ Hal qilindi (wzgram branch)
+**Sabab:** User/Chat parsers iterate absent usernames/restriction_reason; Message
+parser iterates absent restriction_reason. Raw Telegram objects use None for
+these optional vectors, causing TypeError in ordinary user/channel/topic reads.
+**Yechim:** Version-scoped, idempotent static parser wrappers in
+`core/wzgram_compat.py` normalize only absent optional vectors. Loaded early by
+`core/__init__.py`. Actual raw Message/User/Chat parsing and topic regressions pass.
+
+## BUG-070: Wzgram cannot migrate Pyrofork v4 file-session schema directly
+**Holat:** ✅ Hal qilindi (wzgram branch)
+**Sabab:** Both forks use version 4 for different schemas. Pyrofork already has
+update_state and usernames(id TEXT, peer_id); Wzgram's v4 migration recreates
+update_state and expects usernames(id INTEGER, username), failing bot startup.
+**Yechim:** Detect the legacy schema before FileStorage.open, create a private
+0600 SQLite backup, transactionally convert username cache preserving auth, peers
+and update state, then run native migrations 6->8. Synthetic old-file migration,
+auth preservation, backup content and second-open idempotency were tested.
+Original source project's real sessions were not opened or migrated.
+
+## BUG-071: Old reply patch and boolean quote flags are incompatible with Wzgram
+**Holat:** ✅ Hal qilindi (wzgram branch)
+**Sabab:** Legacy get_reply_to monkey patch would replace Wzgram's newer
+ReplyParameters signature; quote=True is not literal quoted text and Wzgram has
+no allow_sending_without_reply constructor argument.
+**Yechim:** Skip legacy patch when native reply_parameters exists, detect send
+signature, preserve reply targets using native ReplyParameters and keep boolean
+legacy flags out of its constructor. Native TL reply serialization tested.

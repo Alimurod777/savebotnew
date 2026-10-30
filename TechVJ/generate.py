@@ -7,13 +7,13 @@ import os
 import asyncio
 import struct
 import logging
-from pyrogram.types import Message
-from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
-from pyrogram.raw import functions, types as raw_types
+from wzgram.types import Message
+from wzgram import Client, filters
+from wzgram.enums import ParseMode
+from wzgram.raw import functions, types as raw_types
 from asyncio.exceptions import TimeoutError
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import (
+from wzgram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from wzgram.errors import (
     ApiIdInvalid,
     PhoneNumberInvalid,
     PhoneCodeInvalid,
@@ -91,7 +91,7 @@ async def ask_message(
 
 def _install_handler(client: Client):
     """Install the response handler once."""
-    from pyrogram.handlers import MessageHandler
+    from wzgram.handlers import MessageHandler
     
     async def _response_handler(_, msg: Message):
         chat_id = msg.chat.id
@@ -137,8 +137,8 @@ async def send_code_raw(client, phone_number):
     IMPORTANT: Handles PhoneMigrate/NetworkMigrate — rebuilds session
     on the correct DC, exactly like Pyrogram's high-level send_code().
     """
-    from pyrogram.errors import PhoneMigrate, NetworkMigrate
-    from pyrogram.session import Session, Auth
+    from wzgram.errors import PhoneMigrate, NetworkMigrate
+    from wzgram.session import Session, Auth
 
     phone_number = phone_number.strip(" +")
 

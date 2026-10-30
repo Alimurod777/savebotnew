@@ -34,8 +34,8 @@ Usage:
 import logging
 from typing import List, Tuple, Optional, Set
 from dataclasses import dataclass
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 logger = logging.getLogger(__name__)
 

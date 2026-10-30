@@ -14,8 +14,8 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional, Dict
 from dataclasses import dataclass, field
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     AuthKeyDuplicated, AuthKeyUnregistered, SessionRevoked,
     UserDeactivated, FloodWait, RPCError
 )

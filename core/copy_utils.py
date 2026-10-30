@@ -52,12 +52,12 @@ class BotUploadUpdateWaiter:
         if self._started:
             return self
 
-        from pyrogram import filters
-        from pyrogram.handlers import MessageHandler
+        from wzgram import filters
+        from wzgram.handlers import MessageHandler
 
         try:
-            from pyrogram import StopPropagation
-        except Exception:  # pragma: no cover - depends on pyrogram flavor
+            from wzgram import StopPropagation
+        except Exception:  # pragma: no cover - depends on wzgram flavor
             StopPropagation = None
 
         async def _handler(_, message):

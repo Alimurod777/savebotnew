@@ -17,8 +17,8 @@ import logging
 from typing import Optional, Tuple
 from dataclasses import dataclass, asdict
 
-from pyrogram import Client
-from pyrogram.errors import FloodWait, RPCError
+from wzgram import Client
+from wzgram.errors import FloodWait, RPCError
 
 from config import API_ID, API_HASH, get_client_params
 

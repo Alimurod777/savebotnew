@@ -18,8 +18,8 @@ not Python len() which counts Unicode code points.
 import logging
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 from core.entity_splitter import utf16_len
 
@@ -273,7 +273,7 @@ async def send_text_with_entities(
     Returns:
         List of sent messages
     """
-    from pyrogram.types import LinkPreviewOptions
+    from wzgram.types import LinkPreviewOptions
     
     if not text:
         return []

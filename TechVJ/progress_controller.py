@@ -21,9 +21,9 @@ import time
 import logging
 from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass, field
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, MessageNotModified, MessageIdInvalid
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, MessageNotModified, MessageIdInvalid
 
 logger = logging.getLogger(__name__)
 

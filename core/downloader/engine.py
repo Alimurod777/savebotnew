@@ -17,9 +17,9 @@ import uuid
 import logging
 from typing import Optional, Callable, Any, Dict
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid, Timeout
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid, Timeout
 
 from core.downloader.progress import ProgressTracker, progress_tracker
 from core.downloader.worker import WorkerPool, DownloadTask, TaskStatus

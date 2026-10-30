@@ -4,9 +4,9 @@ import shutil
 import re
 import uuid
 from typing import List, Tuple, Optional
-from pyrogram import Client
-from pyrogram.types import Message, InputMediaPhoto
-from pyrogram.enums import MessageMediaType
+from wzgram import Client
+from wzgram.types import Message, InputMediaPhoto
+from wzgram.enums import MessageMediaType
 import logging
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,7 @@ async def send_photo_album(
                     for chunk in overflow_chunks:
                         for e in (chunk.entities or []):
                             try:
-                                from pyrogram.types import MessageEntity
+                                from wzgram.types import MessageEntity
                                 adjusted = MessageEntity(
                                     type=e.type,
                                     offset=e.offset + current_offset,
@@ -290,7 +290,7 @@ async def send_photo_album(
                     adjusted_overflow_entities = []
                     for e in overflow_entities:
                         try:
-                            from pyrogram.types import MessageEntity
+                            from wzgram.types import MessageEntity
                             adjusted = MessageEntity(
                                 type=e.type,
                                 offset=e.offset + header_utf16,

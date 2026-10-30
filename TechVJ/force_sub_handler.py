@@ -19,8 +19,8 @@ FOYDALANISH:
 """
 
 import logging
-from pyrogram import Client, filters
-from pyrogram.types import Message, CallbackQuery
+from wzgram import Client, filters
+from wzgram.types import Message, CallbackQuery
 
 from config import (
     FORCE_SUB_ENABLED,

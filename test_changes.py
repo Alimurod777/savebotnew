@@ -63,8 +63,8 @@ def test_entity_builder_bold_italic():
 
 def test_split_text_with_entities():
     from core.entity_splitter import split_text_with_entities, utf16_len, MESSAGE_LIMIT
-    from pyrogram.types import MessageEntity
-    from pyrogram.enums import MessageEntityType
+    from wzgram.types import MessageEntity
+    from wzgram.enums import MessageEntityType
     
     # Create text that exceeds limit
     text = "A" * 4000 + " " + "B" * 4000
@@ -79,8 +79,8 @@ def test_split_text_with_entities():
 
 def test_split_with_entity_preservation():
     from core.entity_splitter import split_text_with_entities, utf16_len
-    from pyrogram.types import MessageEntity
-    from pyrogram.enums import MessageEntityType
+    from wzgram.types import MessageEntity
+    from wzgram.enums import MessageEntityType
     
     # Text with a link near the split boundary
     prefix = "A" * 4050

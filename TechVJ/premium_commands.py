@@ -25,8 +25,8 @@ User commands (any user):
 import asyncio
 import logging
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from wzgram import Client, filters
+from wzgram.types import Message
 
 from config import OWNER_ID
 from database.async_db import async_db

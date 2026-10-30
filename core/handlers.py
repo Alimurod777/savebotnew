@@ -18,10 +18,10 @@ import re
 import logging
 from typing import Optional
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.handlers import MessageHandler
-from pyrogram.errors import FloodWait, ChatAdminRequired
+from wzgram import Client, filters
+from wzgram.types import Message
+from wzgram.handlers import MessageHandler
+from wzgram.errors import FloodWait, ChatAdminRequired
 
 from core.download_manager import get_download_manager
 from core.progress_manager import get_progress_manager
@@ -224,7 +224,7 @@ async def login_handler(client: Client, message: Message):
         "Send your Pyrogram session string.\n\n"
         "To get one, run:\n"
         "```python\n"
-        "from pyrogram import Client\n"
+        "from wzgram import Client\n"
         "app = Client('my', api_id=..., api_hash=...)\n"
         "async with app:\n"
         "    print(await app.export_session_string())\n"

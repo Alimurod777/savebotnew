@@ -10,10 +10,10 @@ import platform
 import hashlib
 from io import BytesIO
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.raw import functions, types as raw_types
-from pyrogram.errors import SessionPasswordNeeded
+from wzgram import Client, filters
+from wzgram.types import Message
+from wzgram.raw import functions, types as raw_types
+from wzgram.errors import SessionPasswordNeeded
 from asyncio.exceptions import TimeoutError
 
 from config import API_ID, API_HASH, get_client_params, ClientFingerprint
@@ -431,7 +431,7 @@ async def perform_qr_login(bot, message, user_id):
         
         # Handle 2FA if needed
         if needs_2fa:
-            from pyrogram.errors import PasswordHashInvalid
+            from wzgram.errors import PasswordHashInvalid
             
             max_2fa_attempts = 3
             for fa_attempt in range(max_2fa_attempts):

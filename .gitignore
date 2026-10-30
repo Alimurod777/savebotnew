@@ -65,3 +65,6 @@ id_ed25519*
 .coverage
 htmlcov/
 userdata_reports/
+
+# Private pre-migration Telegram session backups
+*.session.pyrofork-backup

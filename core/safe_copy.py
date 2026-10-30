@@ -18,13 +18,13 @@ import logging
 from typing import Optional, List, Tuple, Any, Union
 from dataclasses import dataclass
 
-from pyrogram import Client
-from pyrogram.types import (
+from wzgram import Client
+from wzgram.types import (
     Message, MessageEntity,
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
 )
-from pyrogram.enums import MessageMediaType, MessageEntityType
-from pyrogram.errors import FloodWait, MediaEmpty
+from wzgram.enums import MessageMediaType, MessageEntityType
+from wzgram.errors import FloodWait, MediaEmpty
 
 from core.entity_validator import (
     utf16_length,

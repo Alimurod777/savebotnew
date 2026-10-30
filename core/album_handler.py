@@ -29,9 +29,9 @@ from typing import List, Optional, Dict, Tuple, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-from pyrogram import Client
-from pyrogram.types import Message, InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
-from pyrogram.errors import FloodWait, ChatAdminRequired, MediaEmpty
+from wzgram import Client
+from wzgram.types import Message, InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
+from wzgram.errors import FloodWait, ChatAdminRequired, MediaEmpty
 
 from core.entity_validator import (
     utf16_length, 
@@ -411,7 +411,7 @@ class AlbumHandler:
         adjusted_entities = []
         for e in first_chunk.entities:
             try:
-                from pyrogram.types import MessageEntity
+                from wzgram.types import MessageEntity
                 adjusted = MessageEntity(
                     type=e.type,
                     offset=e.offset + header_len,

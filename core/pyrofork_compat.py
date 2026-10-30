@@ -1,34 +1,7 @@
-"""
-Pyrofork 2.3.69+ Compatibility Layer
+"""Wzgram send helpers and opt-in bounded upload-part retry.
 
-Production-grade compatibility layer for Pyrofork migration (MTProto layer >= 220).
-
-STRICT REQUIREMENTS:
-- pyrofork >= 2.3.69
-- tgcrypto-pyrofork == 1.2.8 (MANDATORY, fork-specific)
-- Markdown parse_mode ONLY (HTML is FORBIDDEN)
-- Auto-split messages at 4096 UTF-8 characters
-
-CRITICAL: Silent fallback + minimal reply strategy
-- Attempt reply_to_message_id ONLY ONCE for single, unsplit messages
-- On ANY warning/exception, silently fall back to normal send
-- NEVER retry replies, NEVER force reply on split messages
-
-Key features:
-- Safe message sending with Markdown-only parse mode
-- Auto-split long messages preserving Markdown integrity
-- Graceful fallback to plain text on parse failure
-- Silent reply fallback (eliminates Pyrofork reply warnings)
-- Handler registration safety (no duplicates, no orphans)
-- Dispatcher stability fixes
-- BUGFIX: Patches Pyrofork utils.get_reply_to() parameter name mismatch
-  (reply_to_message_id → reply_to_msg_id, etc.)
-
-Usage:
-    from core.pyrofork_compat import safe_send_message, safe_reply
-
-    await safe_send_message(client, chat_id, text)
-    await safe_reply(message, text)
+The legacy module name remains for callers. Wzgram owns reply construction;
+the old Pyrofork reply patch must never replace its ReplyParameters API.
 """
 
 import asyncio
@@ -42,8 +15,8 @@ from hashlib import md5
 from pathlib import PurePath
 from typing import Optional, Any, List, Union
 
-from pyrogram import StopTransmission, raw
-from pyrogram.session import Session as PyrogramSession
+from wzgram import StopTransmission, raw
+from wzgram.session import Session as PyrogramSession
 
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 
@@ -64,12 +37,15 @@ logger = logging.getLogger(__name__)
 
 def _patch_pyrofork_get_reply_to():
     """
-    Monkey-patch pyrogram.utils.get_reply_to to use correct parameter names
+    Monkey-patch wzgram.utils.get_reply_to to use correct parameter names
     for InputReplyToMessage TLObject.
     """
     try:
-        import pyrogram.utils as _utils
-        from pyrogram.raw import types as _raw_types
+        import wzgram.utils as _utils
+        from wzgram.raw import types as _raw_types
+
+        if "reply_parameters" in inspect.signature(_utils.get_reply_to).parameters:
+            return  # Wzgram has its own correct, richer reply implementation.
 
         # Check if the bug exists: InputReplyToMessage expects reply_to_msg_id
         _slots = getattr(_raw_types.InputReplyToMessage, '__slots__', [])
@@ -310,7 +286,7 @@ async def _flood_safe_save_file(
                             result = await _invoke_upload_part_with_retry(
                                 session,
                                 query,
-                                client_name=getattr(self, "name", "pyrogram"),
+                                client_name=getattr(self, "name", "wzgram"),
                                 max_retries=max_retries,
                                 long_wait_seconds=long_wait_seconds,
                                 max_total_wait=max_total_wait,
@@ -440,8 +416,8 @@ async def _flood_safe_save_file(
 def _patch_pyrofork_save_file() -> None:
     """Patch Pyrofork's upload worker only for explicitly opted-in clients."""
     try:
-        from pyrogram import Client as PyrogramClient
-        from pyrogram.methods.advanced.save_file import SaveFile
+        from wzgram import Client as PyrogramClient
+        from wzgram.methods.advanced.save_file import SaveFile
 
         original_save_file = SaveFile.save_file
         if getattr(original_save_file, "_techvj_flood_safe", False):
@@ -782,7 +758,7 @@ def get_message_media_type(message) -> Optional[str]:
     Returns string name of media type for consistency across versions.
     """
     try:
-        from pyrogram.enums import MessageMediaType
+        from wzgram.enums import MessageMediaType
         
         if message.media is None:
             return None
@@ -821,8 +797,8 @@ def get_message_media_type(message) -> Optional[str]:
 def get_pyrogram_version() -> str:
     """Get the installed Pyrogram/Pyrofork version."""
     try:
-        import pyrogram
-        return getattr(pyrogram, '__version__', 'unknown')
+        import wzgram
+        return getattr(wzgram, '__version__', 'unknown')
     except ImportError:
         return 'not installed'
 
@@ -830,9 +806,11 @@ def get_pyrogram_version() -> str:
 def is_pyrofork() -> bool:
     """Check if running on Pyrofork (vs original Pyrogram)."""
     try:
-        import pyrogram
-        version = getattr(pyrogram, '__version__', '')
-        # Pyrofork has version >= 2.3.x
+        import wzgram
+        version = getattr(wzgram, '__version__', '')
+        if "wzgram" in getattr(wzgram, "__fork__", "").lower():
+            return False
+        # Legacy compatibility only.
         major, minor = version.split('.')[:2]
         return int(minor) >= 3
     except Exception:

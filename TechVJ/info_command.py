@@ -17,11 +17,11 @@ Returns:
 
 import re
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ChatType
+from wzgram import Client, filters
+from wzgram.types import Message
+from wzgram.enums import ChatType
 from core.reply_compat import build_reply_kwargs_from_message
-from pyrogram.raw import functions, types
+from wzgram.raw import functions, types
 
 from config import API_ID, API_HASH, OWNER_ID, get_client_params
 from database.async_db import async_db

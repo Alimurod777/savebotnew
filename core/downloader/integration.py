@@ -25,8 +25,8 @@ from typing import Optional, Callable, Union, Awaitable
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from pyrogram import Client
-from pyrogram.types import Message
+from wzgram import Client
+from wzgram.types import Message
 
 from core.downloader.adaptive_engine import (
     AdaptiveDownloadEngine,

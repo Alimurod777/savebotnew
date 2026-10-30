@@ -32,9 +32,9 @@ from typing import Optional, List, Dict, Any, Tuple, Union, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pyrogram import Client
-from pyrogram.types import Message, MessageEntity, Dialog
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.types import Message, MessageEntity, Dialog
+from wzgram.errors import (
     ChannelInvalid, ChannelPrivate, ChatIdInvalid,
     PeerIdInvalid, UsernameInvalid, UsernameNotOccupied,
     MessageIdInvalid, MessageNotModified, MessageEmpty,

@@ -28,10 +28,10 @@ from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.raw import functions, types
-from pyrogram.errors import (
+from wzgram import Client, filters
+from wzgram.types import Message
+from wzgram.raw import functions, types
+from wzgram.errors import (
     FloodWait,
     ChannelPrivate,
     ChannelInvalid,

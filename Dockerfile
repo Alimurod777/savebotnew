@@ -3,7 +3,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       build-essential ffmpeg libmediainfo0v5 p7zip-full \
+       git build-essential ffmpeg libmediainfo0v5 p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.txt

@@ -10,8 +10,8 @@ from event_loop_bootstrap import ensure_current_event_loop
 
 ensure_current_event_loop()
 
-from pyrogram import Client, idle
-from pyrogram.errors import AuthKeyUnregistered, FloodWait, BadMsgNotification
+from wzgram import Client, idle
+from wzgram.errors import AuthKeyUnregistered, FloodWait, BadMsgNotification
 from config import API_ID, API_HASH, BOT_TOKEN, get_client_params, DEFAULT_CLIENT_FINGERPRINT
 
 # Import StateManager for per-user state with local cache fallback
@@ -134,9 +134,10 @@ logging.getLogger("TechVJ").setLevel(logging.INFO)
 logging.getLogger("core").setLevel(logging.INFO)
 # Suppress noisy logs that caused 12GB log files
 logging.getLogger("pymongo").setLevel(logging.WARNING)
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-logging.getLogger("pyrogram.session").setLevel(logging.WARNING)  # Sent/Received JSON dumps
-logging.getLogger("pyrogram.connection").setLevel(logging.WARNING)  # Connection debug
+logging.getLogger("wzgram").setLevel(logging.WARNING)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)  # Wzgram internal logger namespace
+logging.getLogger("wzgram.session").setLevel(logging.WARNING)  # Sent/Received JSON dumps
+logging.getLogger("wzgram.connection").setLevel(logging.WARNING)  # Connection debug
 
 # Setup uvloop for improved performance if not on Windows
 def setup_event_loop():

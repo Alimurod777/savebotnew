@@ -27,9 +27,13 @@ INTERNAL MODULES (do NOT import directly in TechVJ/):
 # ==================== PUBLIC API ====================
 # Bot code should ONLY import these
 
-# IMPORTANT: Import pyrofork_compat FIRST — it patches Pyrofork's
-# utils.get_reply_to() parameter name bug on import.
-import core.pyrofork_compat  # noqa: F401 — side-effect: monkey-patches get_reply_to
+from core.wzgram_compat import apply_patches as _apply_wzgram_patches
+
+_apply_wzgram_patches()
+
+# IMPORTANT: Import pyrofork_compat FIRST — it installs bounded upload retries.
+# The old reply patch skips Wzgram's native ReplyParameters implementation.
+import core.pyrofork_compat  # noqa: F401 — side-effect: opt-in upload retries
 
 from core.api import (
     DownloadService,

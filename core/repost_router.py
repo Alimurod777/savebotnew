@@ -26,10 +26,10 @@ import uuid
 import logging
 from typing import Optional, List, Tuple, Any
 
-from pyrogram import Client
-from pyrogram.types import Message, MessageEntity
-from pyrogram.enums import MessageEntityType
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.types import Message, MessageEntity
+from wzgram.enums import MessageEntityType
+from wzgram.errors import (
     FloodWait, AuthKeyUnregistered, AuthKeyInvalid,
     SessionRevoked, SessionExpired, UserDeactivated,
     RPCError, Timeout,

@@ -22,7 +22,7 @@ import asyncio
 import logging
 from typing import Any, Callable, List, Optional, Set, Tuple
 
-from pyrogram import Client
+from wzgram import Client
 
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 from core.copy_utils import (

@@ -34,8 +34,8 @@ import re
 from typing import List, Tuple, Optional, Union
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType, ParseMode
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType, ParseMode
 
 logger = logging.getLogger(__name__)
 
@@ -772,7 +772,7 @@ async def smart_send_message(
     
     Returns list of sent messages.
     """
-    from pyrogram.types import LinkPreviewOptions
+    from wzgram.types import LinkPreviewOptions
     
     chunks = renderer.render_chunks()
     sent = []

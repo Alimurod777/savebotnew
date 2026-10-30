@@ -4,8 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from pyrogram.enums import MessageEntityType
-from pyrogram.types import MessageEntity
+from wzgram.enums import MessageEntityType
+from wzgram.types import MessageEntity
 
 from core.copy_utils import (
     get_bot_copy_source_chat_id,
@@ -236,8 +236,8 @@ def test_source_context_message_replies_to_original_link_with_source_name_only()
 
         assert msg is not None
         assert msg.text == "📡 Manba: Maqsad Club"
-        assert client.kwargs.get("reply_to_message_id") == 55
-        assert "reply_parameters" not in client.kwargs
+        assert client.kwargs["reply_parameters"].message_id == 55
+        assert "reply_to_message_id" not in client.kwargs
 
     asyncio.run(run())
 
@@ -281,7 +281,7 @@ def test_send_source_name_message_uses_user_session_title_and_replies():
 
         assert msg.text == "📡 Manba: Courses Hub"
         assert bot.sent[0] == 123
-        assert bot.sent[2].get("reply_to_message_id") == 55
+        assert bot.sent[2]["reply_parameters"].message_id == 55
 
     asyncio.run(run())
 
@@ -381,9 +381,9 @@ def test_public_copy_caption_too_long_falls_back_to_captionless_copy_and_text():
         assert copied.id == 99
         assert "caption" not in bot.copy_calls[0]
         assert bot.copy_calls[1]["caption"] == ""
-        assert bot.copy_calls[1]["reply_to_message_id"] == 55
+        assert bot.copy_calls[1]["reply_parameters"].message_id == 55
         assert bot.send_calls[0]["text"] == caption
-        assert bot.send_calls[0]["reply_to_message_id"] == 55
+        assert bot.send_calls[0]["reply_parameters"].message_id == 55
 
     asyncio.run(run())
 
@@ -597,7 +597,7 @@ def test_bot_upload_update_waiter_resolves_without_history():
 
             async def emit(self, message):
                 try:
-                    await self.handler.original_callback(self, message)
+                    await self.handler.callback(self, message)
                 except Exception as err:
                     if err.__class__.__name__ != "StopPropagation":
                         raise
@@ -750,7 +750,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             async def emit(self, message):
                 await asyncio.sleep(0)
                 try:
-                    await self.handler.original_callback(self, message)
+                    await self.handler.callback(self, message)
                 except Exception as err:
                     if err.__class__.__name__ != "StopPropagation":
                         raise
@@ -1243,7 +1243,7 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
             async def emit(self, message):
                 await asyncio.sleep(0)
                 try:
-                    await self.handler.original_callback(self, message)
+                    await self.handler.callback(self, message)
                 except Exception as err:
                     if err.__class__.__name__ != "StopPropagation":
                         raise
@@ -1571,7 +1571,7 @@ def test_topic_extractor_hydrates_existing_missing_range_anchor():
 
 def test_topic_extractor_uses_raw_search_when_thread_filter_missing():
     async def run():
-        from pyrogram import raw
+        from wzgram import raw
         from core.topic_extractor import TopicExtractor, TopicExtractorConfig
 
         topic_id = 5
@@ -1657,6 +1657,10 @@ def test_topic_extractor_uses_raw_search_when_thread_filter_missing():
                 self.history_calls = 0
                 self.invoke_calls = 0
                 self.message_cache = {}
+                from collections import defaultdict
+                self.topic_cache = defaultdict(lambda: None)
+                self.fetch_topics = False
+                self.fetch_replies = False
 
             def get_chat_history(self, chat_id, **kwargs):
                 self.history_calls += 1
@@ -1700,7 +1704,7 @@ def test_topic_extractor_uses_raw_search_when_thread_filter_missing():
 
 def test_topic_extractor_falls_back_to_raw_get_replies_when_search_missing():
     async def run():
-        from pyrogram import raw
+        from wzgram import raw
         from core.topic_extractor import TopicExtractor, TopicExtractorConfig
 
         topic_id = 5
@@ -1753,6 +1757,10 @@ def test_topic_extractor_falls_back_to_raw_get_replies_when_search_missing():
                 self.search_calls = 0
                 self.reply_calls = 0
                 self.message_cache = {}
+                from collections import defaultdict
+                self.topic_cache = defaultdict(lambda: None)
+                self.fetch_topics = False
+                self.fetch_replies = False
 
             def get_chat_history(self, chat_id, **kwargs):
                 self.history_calls += 1
@@ -1797,7 +1805,7 @@ def test_topic_extractor_falls_back_to_raw_get_replies_when_search_missing():
 def test_topic_extractor_serves_range_from_topic_cache():
     async def run():
         import tempfile
-        from pyrogram import raw
+        from wzgram import raw
         import core.topic_extractor as topic_extractor_module
         from core.topic_cache import TopicCache, TopicCacheEntry
         from core.topic_extractor import TopicExtractor, TopicExtractorConfig
@@ -1847,6 +1855,10 @@ def test_topic_extractor_serves_range_from_topic_cache():
                 self.search_calls = 0
                 self.get_messages_calls = 0
                 self.message_cache = {}
+                from collections import defaultdict
+                self.topic_cache = defaultdict(lambda: None)
+                self.fetch_topics = False
+                self.fetch_replies = False
 
             def get_chat_history(self, chat_id, **kwargs):
                 self.history_calls += 1
@@ -2117,8 +2129,8 @@ def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
 
 def test_user_upload_worker_enables_flood_safe_part_upload_defaults():
     from core import user_upload_worker as worker_module
-    from pyrogram import Client
-    from pyrogram.methods.advanced.save_file import SaveFile
+    from wzgram import Client
+    from wzgram.methods.advanced.save_file import SaveFile
 
     assert worker_module.UPLOAD_PART_WORKERS == 2
     assert worker_module.UPLOAD_PART_FLOOD_RETRIES == 5

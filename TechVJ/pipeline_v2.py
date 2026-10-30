@@ -20,9 +20,9 @@ import logging
 from typing import Optional, List, Set, Tuple, Callable, Coroutine
 from dataclasses import dataclass
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.enums import MessageMediaType, ParseMode
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.enums import MessageMediaType, ParseMode
 
 from TechVJ.session_handler import (
     create_user_session,

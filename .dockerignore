@@ -25,3 +25,6 @@ userdata_reports
 *.key
 id_rsa*
 id_ed25519*
+
+# Private pre-migration Telegram session backups
+*.session.pyrofork-backup

@@ -12,7 +12,7 @@ Features:
 - Progress callbacks
 - All file I/O via asyncio.to_thread (non-blocking)
 
-NOTE: kurigram==2.2.17 installs under the "pyrogram" namespace.
+NOTE: Wzgram installs under the "wzgram" namespace.
 """
 
 import asyncio
@@ -22,11 +22,11 @@ import logging
 from typing import Optional, Callable, Dict, Awaitable
 from dataclasses import dataclass
 
-# Pyrogram imports (provided by kurigram==2.2.17)
-from pyrogram import Client
-from pyrogram.raw import functions, types
-from pyrogram.raw.base import InputFileLocation
-from pyrogram.errors import (
+# Wzgram client imports
+from wzgram import Client
+from wzgram.raw import functions, types
+from wzgram.raw.base import InputFileLocation
+from wzgram.errors import (
     FloodWait, FileMigrate,
     FileReferenceExpired, FileReferenceEmpty, FileReferenceInvalid,
     AuthBytesInvalid, Timeout, BadRequest, RPCError
@@ -34,7 +34,7 @@ from pyrogram.errors import (
 
 # Tuple of all file reference related errors for Kurigram compatibility
 FILE_REFERENCE_ERRORS = (FileReferenceExpired, FileReferenceEmpty, FileReferenceInvalid)
-from pyrogram.file_id import FileId, FileType, PHOTO_TYPES
+from wzgram.file_id import FileId, FileType, PHOTO_TYPES
 
 from core.models import DownloadTask, DownloadResult, SpeedTracker, ProgressEvent
 from core.structured_log import op_log

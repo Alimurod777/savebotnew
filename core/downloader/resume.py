@@ -19,9 +19,9 @@ from typing import Optional, Callable, Dict, Any, Union
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, FileReferenceExpired, FileReferenceInvalid
 
 logger = logging.getLogger(__name__)
 

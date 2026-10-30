@@ -588,7 +588,7 @@ def _extract_flood_wait(exc: Exception) -> Optional[float]:
     Pyrogram FloodWait → .value yoki .x
     Boshqa exception → None
     """
-    # pyrogram.errors.FloodWait check
+    # wzgram.errors.FloodWait check
     cls_name = type(exc).__name__
     if cls_name == "FloodWait" or "FLOOD_WAIT" in str(exc).upper():
         val = getattr(exc, 'value', None)

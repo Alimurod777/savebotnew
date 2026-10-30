@@ -31,9 +31,9 @@ from event_loop_bootstrap import ensure_current_event_loop
 
 ensure_current_event_loop()
 
-from pyrogram import Client
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait, MessageIdInvalid, MessageNotModified
+from wzgram import Client
+from wzgram.types import Message
+from wzgram.errors import FloodWait, MessageIdInvalid, MessageNotModified
 
 from core.message_utils import (
     split_text, split_caption, sanitize_markdown,
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 def get_parse_mode():
     """Get default parse mode (DISABLED to avoid markdown/entity splitting issues)."""
     try:
-        from pyrogram.enums import ParseMode
+        from wzgram.enums import ParseMode
         return ParseMode.DISABLED
     except (ImportError, AttributeError):
         return None
@@ -60,7 +60,7 @@ def get_parse_mode():
 def get_disabled_mode():
     """Get disabled parse mode for fallback."""
     try:
-        from pyrogram.enums import ParseMode
+        from wzgram.enums import ParseMode
         return ParseMode.DISABLED
     except (ImportError, AttributeError):
         return None
@@ -1099,7 +1099,7 @@ def _adjust_entities_for_header(
     
     for e in entities:
         try:
-            from pyrogram.types import MessageEntity
+            from wzgram.types import MessageEntity
             new_entity = MessageEntity(
                 type=e.type,
                 offset=e.offset + header_utf16,

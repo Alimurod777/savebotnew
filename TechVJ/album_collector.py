@@ -18,9 +18,9 @@ import uuid
 import re
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
-from pyrogram import Client
-from pyrogram.types import Message, InputMediaPhoto
-from pyrogram.enums import MessageMediaType, ParseMode
+from wzgram import Client
+from wzgram.types import Message, InputMediaPhoto
+from wzgram.enums import MessageMediaType, ParseMode
 import logging
 
 logger = logging.getLogger(__name__)
@@ -437,7 +437,7 @@ class AlbumCollector:
                             for chunk in overflow_chunks:
                                 for e in (chunk.entities or []):
                                     try:
-                                        from pyrogram.types import MessageEntity
+                                        from wzgram.types import MessageEntity
                                         adjusted = MessageEntity(
                                             type=e.type,
                                             offset=e.offset + current_offset,
@@ -517,7 +517,7 @@ class AlbumCollector:
                             adjusted_overflow_entities = []
                             for e in overflow_entities:
                                 try:
-                                    from pyrogram.types import MessageEntity
+                                    from wzgram.types import MessageEntity
                                     adjusted = MessageEntity(
                                         type=e.type,
                                         offset=e.offset + header_utf16,

@@ -19,10 +19,10 @@ import logging
 import os
 from typing import List, Optional, Tuple, Any, Callable
 
-from pyrogram import Client
-from pyrogram.types import Message, MessageEntity
-from pyrogram.errors import FloodWait, MediaEmpty, MessageTooLong
-from pyrogram.enums import MessageEntityType
+from wzgram import Client
+from wzgram.types import Message, MessageEntity
+from wzgram.errors import FloodWait, MediaEmpty, MessageTooLong
+from wzgram.enums import MessageEntityType
 
 from core.entity_splitter import (
     split_text_with_entities,
@@ -298,7 +298,7 @@ async def send_album_with_entities(
     Returns:
         List of sent messages (album + overflow)
     """
-    from pyrogram.types import (
+    from wzgram.types import (
         InputMediaPhoto, InputMediaVideo, 
         InputMediaDocument, InputMediaAudio
     )

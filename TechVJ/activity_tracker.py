@@ -31,8 +31,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional, Callable, Any
 
-from pyrogram import Client
-from pyrogram.types import Message, CallbackQuery
+from wzgram import Client
+from wzgram.types import Message, CallbackQuery
 
 logger = logging.getLogger(__name__)
 

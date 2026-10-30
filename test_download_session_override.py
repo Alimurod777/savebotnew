@@ -1,7 +1,7 @@
 """
 Regression test: download-only session override (/dlsession).
 
-Verifies, without Telegram/pyrogram:
+Verifies, without Telegram/wzgram:
   * no override        -> download client is built from the user's own DB session
   * override set       -> download client is built from the override session
   * invalid override   -> DownloadSessionError (NOT SessionInvalidError, so the DB

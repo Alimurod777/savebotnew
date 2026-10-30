@@ -44,8 +44,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     FloodWait,
     AuthKeyUnregistered,
     AuthKeyInvalid,

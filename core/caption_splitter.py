@@ -29,8 +29,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from pyrogram.types import MessageEntity
-from pyrogram.enums import MessageEntityType
+from wzgram.types import MessageEntity
+from wzgram.enums import MessageEntityType
 
 from core.utf16_utils import utf16_len, utf16_to_char_index, char_to_utf16_offset
 from core.entity_rebuilder import strip_custom_emoji_entities, validate_entities

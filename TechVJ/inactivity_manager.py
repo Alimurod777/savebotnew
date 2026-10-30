@@ -30,8 +30,8 @@ from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 from enum import Enum, auto
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     AuthKeyUnregistered,
     AuthKeyDuplicated,
     SessionRevoked,

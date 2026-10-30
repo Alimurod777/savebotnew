@@ -13,8 +13,8 @@ Rules:
 import asyncio
 import logging
 from typing import Optional
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     FloodWait,
     AuthKeyUnregistered,
     AuthKeyInvalid,

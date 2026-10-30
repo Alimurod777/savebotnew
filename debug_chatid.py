@@ -1,8 +1,8 @@
 import asyncio
 import sys
-from pyrogram import Client
-from pyrogram import raw
-from pyrogram.raw import functions, types
+from wzgram import Client
+from wzgram import raw
+from wzgram.raw import functions, types
 from config import API_ID, API_HASH, get_client_params
 from database.db import database
 

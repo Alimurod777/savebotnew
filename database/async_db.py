@@ -457,7 +457,12 @@ class AsyncDatabase:
     
     @classmethod
     async def is_banned(cls, user_id: int) -> bool:
-        """Check if a user is banned"""
+        """Check the effective role policy before legacy ban storage."""
+        from core.role_manager import role_manager, UserRole
+
+        policy_role = role_manager.get_policy_role(user_id)
+        if policy_role is not None:
+            return policy_role == UserRole.BANNED
         local = cls._get_local()
         if local:
             try:
@@ -477,7 +482,12 @@ class AsyncDatabase:
 
     @classmethod
     async def get_all_banned(cls):
-        """Get all banned users"""
+        """Get effective bans, respecting the global role reset."""
+        from core.role_manager import role_manager
+
+        policy_bans = role_manager.get_policy_banned_users()
+        if policy_bans is not None:
+            return policy_bans
         local = cls._get_local()
         if local:
             try:

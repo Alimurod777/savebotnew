@@ -991,3 +991,26 @@ ish tartibini format yangilash bahonasida o'zgartirmaslik.
 Tekshiruv: 72 unittest; 132 pytest + 15 subtest o'tdi, oldingi aloqasiz SQLite
 testi deselect qilindi. Compile va diff tekshiruvlari o'tdi. Bot restart/deploy
 qilinmadi, production baza va sessiyalarga tegilmadi.
+
+## Sessiya (2026-10-30) — Owner uchun global rol komandasi
+
+So'rov: ownerdan boshqa hammaning rolini `/setrole global <rol>` orqali
+almashtirish; yangi foydalanuvchilarga ham qo'llash; konfliktlarni oldini olish.
+Aniqlashtirish: barcha yangi foydalanuvchilar ham tanlangan rolni oladi.
+
+Qo'shildi: persistent atomik global policy, owner VIP himoyasi, yangi va mavjud
+userlar uchun yagona role resolution, keyingi individual /setrole /ban /unban
+exceptions, global resetda eski banlarning ham almashtirilishi. `globale` aliasi
+ham qabul qilinadi. Login ban guard, /banlist va /userinfo policy bilan moslandi;
+/ownerhelp yangilandi. Testlar vaqtinchalik fayllar va mock DB bilan ishlaydi.
+Bot restart/deploy qilinmadi, real global rol buyrug'i bajarilmadi.
+
+Umumiy yo'nalish: owner buyruqlari yangi userlar uchun ham persistent sozlamalarni
+boshqarsin; eski DB/file snapshotlari amaldagi global policyga zid bo'lmasin.
+
+Tekshiruv: `venv/bin/python -m pytest -q` — 162 passed, 22 subtests passed.
+Global policy uchun 8 regression test o'tdi; py_compile va diff --check o'tdi.
+
+Davomi: foydalanuvchi GitHubga push qilishni so'radi. Faqat global rolga
+tegishli kod/test/hujjatlar commitga olindi; oldingi userdata o'zgarishlari va
+lokal runtime baza ishchi papkada saqlandi.

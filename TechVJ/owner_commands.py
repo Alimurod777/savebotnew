@@ -6,7 +6,7 @@ All commands check OWNER_ID. Silent return on non-owner.
 Commands:
   /ban <user_id>
   /unban <user_id>
-  /setrole <user_id> <new_user|normal_user|vip_user>
+  /setrole <user_id|global> <new_user|normal_user|vip_user>
   /userinfo <user_id>
   /set_parallel_limit <role> <n>
   /set_rate_limit <role> <n>
@@ -227,17 +227,23 @@ async def _collect_user_state(uid: int) -> dict:
         state["sync_ok"] = False
         state["notes"].append("mongo_resolved_session_mismatch")
 
-    if state["db_role"] and state["runtime_role"] and state["db_role"] != state["runtime_role"]:
+    policy_active = (
+        _GOVERNANCE_AVAILABLE and role_manager.has_global_policy()
+    )
+    if policy_active:
+        state["notes"].append("global_policy_active; file/DB/ban rows are legacy snapshots")
+
+    if not policy_active and state["db_role"] and state["runtime_role"] and state["db_role"] != state["runtime_role"]:
         state["sync_ok"] = False
         state["notes"].append("db_role_mismatch")
 
-    if state["file_role"] and state["runtime_role"] and state["file_role"] != state["runtime_role"]:
+    if not policy_active and state["file_role"] and state["runtime_role"] and state["file_role"] != state["runtime_role"]:
         state["sync_ok"] = False
         state["notes"].append("file_role_mismatch")
 
     expected_banned = state["runtime_role"] == UserRole.BANNED.value
     for key in ("local_banned", "legacy_banned"):
-        if state[key] is not None and bool(state[key]) != expected_banned:
+        if not policy_active and state[key] is not None and bool(state[key]) != expected_banned:
             state["sync_ok"] = False
             state["notes"].append(f"{key}_mismatch")
 
@@ -362,16 +368,35 @@ async def cmd_setrole(client: Client, message: Message):
         return
     parts = message.text.split()
     if len(parts) < 3:
-        await message.reply("Usage: /setrole <user_id> <new_user|normal_user|vip_user>")
-        return
-    try:
-        uid = int(parts[1])
-    except ValueError:
-        await message.reply("user_id must be an integer.")
+        await message.reply("Usage: /setrole <user_id|global> <new_user|normal_user|vip_user>")
         return
     role = _parse_role(parts[2])
     if role is None:
         await message.reply("Valid roles: new_user, normal_user, vip_user")
+        return
+    if parts[1].lower() in ("global", "globale"):
+        try:
+            await role_manager.set_global_role(role)
+        except (OSError, ValueError):
+            logger.exception("Global role update failed")
+            await message.reply("❌ Global rol saqlanmadi. Bot loglarini tekshiring.",
+                                parse_mode=ParseMode.DISABLED)
+            return
+        await message.reply(
+            f"✅ Ownerdan boshqa barcha mavjud va yangi foydalanuvchilar: {role.value}\n"
+            "Owner: vip_user (o'zgarmaydi).\n"
+            "Oldingi individual rollar va banlar ham almashtirildi.\n"
+            "Keyingi /setrole, /ban va /unban alohida user uchun ustun bo'ladi.",
+            parse_mode=ParseMode.DISABLED,
+        )
+        return
+    try:
+        uid = int(parts[1])
+    except ValueError:
+        await message.reply("user_id must be an integer, or use global.")
+        return
+    if uid == OWNER_ID:
+        await message.reply("Owner account is always vip_user.", parse_mode=ParseMode.DISABLED)
         return
     await role_manager.set_role(uid, role)
     role_manager.invalidate(uid)
@@ -581,6 +606,7 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/ban <uid>` — Foydalanuvchini ban qilish\n"
         "`/unban <uid>` — Foydalanuvchini unban qilish\n"
         "`/setrole <uid> <rol>` — Rol o'rnatish (new_user|normal_user|vip_user)\n"
+        "`/setrole global <rol>` — Ownerdan boshqa mavjud va yangi userlar (banlar ham almashtiriladi)\n"
         "`/userinfo <uid>` — Foydalanuvchi ma'lumotlari\n"
         "`/set_rate_limit <rol> <n>` — Rate limit o'rnatish (req/10s)\n"
         "`/set_parallel_limit <rol> <n>` — Parallel worker soni\n"

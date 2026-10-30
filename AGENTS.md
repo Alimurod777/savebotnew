@@ -384,6 +384,7 @@ Spill-over: bo'sh slotlar pastki prioritetga beriladi.
 /ban <uid>                     — banned_user
 /unban <uid>                   — normal_user ga qaytarish
 /setrole <uid> <rol>           — new_user|normal_user|vip_user
+/setrole global <rol>          — ownerdan boshqa mavjud/yangi userlar; eski banlar ham reset
 /userinfo <uid>                — rol, rate limit, queue holati
 /set_rate_limit <rol> <n>      — n req/10s (runtime, restart shart emas)
 /set_parallel_limit <rol> <n>  — parallel worker soni (runtime)
@@ -729,3 +730,13 @@ relay_uploader.set_enabled(bool)  # on/off
 relay_uploader.reload_sessions(strings)  # hot-reload
 ```
 **MUHIM:** `relay_uploader.upload_via_relay()` — bu funksiya HECH QACHON chaqirilmasin (AGENTS.md §19 ga qarang). Upload faqat UserUploadWorker yoki SessionManager orqali.
+
+
+### Global role policy (2026-10-30)
+- `/setrole global <new_user|normal_user|vip_user>` (`globale` aliasi ham bor).
+- `data/roles/global.json` faol bo'lsa, eski role file/DB qiymatlaridan ustun.
+- Barcha mavjud/yangi userlar, ownerdan tashqari; owner doim VIP.
+- Oldingi individual rollar va banlar ham reset. Keyingi /setrole /ban /unban
+  exceptions yaratadi; navbatdagi global command exceptionsni tozalaydi.
+- Role tekshirish `role_manager.get_role()`; effective ban tekshirish
+  `async_db.is_banned()`; raw LocalStorage ban qiymatini guard uchun ishlatmang.

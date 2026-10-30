@@ -2,7 +2,8 @@
 core/role_manager.py — User role management.
 
 Storage: MongoDB (via async_db) + local file cache at data/roles/<user_id>.txt
-Default role for unknown users: new_user
+Default role for unknown users: new_user until /setrole global changes it.
+Global policy overrides legacy files/DB; later individual commands override policy.
 Roles never auto-upgrade — only owner can change via /setrole.
 
 KEY RULES:
@@ -14,10 +15,12 @@ KEY RULES:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import tempfile
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,76 @@ class RoleManager:
             except Exception:
                 pass
         return self._owner_id
+
+    def _read_policy(self) -> Optional[Dict]:
+        """Read every time so other instances and restarts see committed changes.
+
+        A broken policy must raise rather than silently restore old permissions.
+        """
+        try:
+            with open(os.path.join(_DATA_DIR, "global.json"), encoding="utf-8") as f:
+                policy = json.load(f)
+        except FileNotFoundError:
+            return None
+        if (
+            not isinstance(policy, dict)
+            or policy.get("role") not in _VALID_ROLES - {UserRole.BANNED.value}
+            or not isinstance(policy.get("overrides"), dict)
+            or any(value not in _VALID_ROLES for value in policy["overrides"].values())
+        ):
+            raise ValueError("Invalid global role policy")
+        return policy
+
+    def _write_policy(self, policy: Dict) -> None:
+        """Publish the whole policy atomically; failed writes keep the old policy."""
+        path = os.path.join(_DATA_DIR, "global.json")
+        fd, temporary = tempfile.mkstemp(prefix=".global-", dir=_DATA_DIR)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(policy, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def get_policy_role(self, user_id: int) -> Optional[UserRole]:
+        """Effective policy role, or None when legacy role storage is active."""
+        owner_id = self._get_owner_id()
+        if owner_id and user_id == owner_id:
+            return UserRole.VIP_USER
+        policy = self._read_policy()
+        if policy is None:
+            return None
+        return UserRole(policy["overrides"].get(str(user_id), policy["role"]))
+
+    def has_global_policy(self) -> bool:
+        return self._read_policy() is not None
+
+    def get_policy_banned_users(self) -> Optional[List[Dict]]:
+        """Effective ban list after a global reset; None means use legacy DB."""
+        policy = self._read_policy()
+        if policy is None:
+            return None
+        owner_id = self._get_owner_id()
+        return [
+            {"user_id": int(uid), "banned": True}
+            for uid, role in policy["overrides"].items()
+            if role == UserRole.BANNED.value and int(uid) != owner_id
+        ]
+
+    async def set_global_role(self, role: UserRole) -> None:
+        """Reset everyone except owner, including future users and previous bans.
+
+        Later /setrole, /ban and /unban create individual exceptions. The next
+        global command clears those exceptions. No user enumeration is needed.
+        """
+        if not isinstance(role, UserRole) or role == UserRole.BANNED:
+            raise ValueError("Global role must be new_user, normal_user or vip_user")
+        async with self._lock:
+            self._write_policy({"role": role.value, "overrides": {}})
+            self._cache.clear()
 
     def _file_path(self, user_id: int) -> str:
         return os.path.join(_DATA_DIR, f"{user_id}.txt")
@@ -99,6 +172,10 @@ class RoleManager:
         if owner_id and user_id == owner_id:
             return UserRole.VIP_USER
 
+        policy_role = self.get_policy_role(user_id)
+        if policy_role is not None:
+            return policy_role
+
         # Always prefer the file so role changes are visible immediately even
         # when another process updates the role and this process has stale cache.
         role = self._read_file(user_id)
@@ -107,6 +184,9 @@ class RoleManager:
             return role
 
         async with self._lock:
+            policy_role = self.get_policy_role(user_id)
+            if policy_role is not None:
+                return policy_role
             role = self._read_file(user_id)
             if role is None:
                 role = await self._read_db_role(user_id)
@@ -118,7 +198,7 @@ class RoleManager:
             return role
 
     async def set_role(self, user_id: int, role: UserRole) -> None:
-        """Set role. Writes file + updates cache. Mongo sync BACKGROUND.
+        """Set an individual role and persist legacy storage best-effort.
 
         CRITICAL: Owner's role cannot be changed — silently ignored.
         Cache is always invalidated after write so next get_role is fresh.
@@ -130,36 +210,40 @@ class RoleManager:
             return
 
         async with self._lock:
+            policy = self._read_policy()
+            if policy is not None:
+                policy["overrides"][str(user_id)] = role.value
+                self._write_policy(policy)
             self._write_file(user_id, role)
             self._cache[user_id] = role
 
-        # Persist to local-first user storage immediately so other processes that
-        # read roles via LocalStorage/Mongo can see the change without waiting.
-        try:
-            from database.async_db import async_db
-            await async_db.update_user(
-                user_id,
-                {"role": role.value},
-                immediate_sync=True,
-            )
-        except Exception as e:
-            logger.debug("RoleManager: async_db role persist failed (non-fatal): %s", e)
-
-        # Keep the legacy ban table in lockstep with the role. Command guards
-        # still consult this table in a few compatibility paths, so this local
-        # write must complete before /ban or /unban reports success.
-        try:
-            from database.async_db import async_db
-            if role == UserRole.BANNED:
-                await async_db.ban_user(
+            # Persist to local-first user storage immediately so other processes that
+            # read roles via LocalStorage/Mongo can see the change without waiting.
+            try:
+                from database.async_db import async_db
+                await async_db.update_user(
                     user_id,
-                    owner_id or 0,
+                    {"role": role.value},
                     immediate_sync=True,
                 )
-            else:
-                await async_db.unban_user(user_id, immediate_sync=True)
-        except Exception as e:
-            logger.warning("RoleManager: legacy ban state persist failed: %s", e)
+            except Exception as e:
+                logger.debug("RoleManager: async_db role persist failed (non-fatal): %s", e)
+
+            # Keep the legacy ban table in lockstep with the role. Command guards
+            # still consult this table in a few compatibility paths, so this local
+            # write must complete before /ban or /unban reports success.
+            try:
+                from database.async_db import async_db
+                if role == UserRole.BANNED:
+                    await async_db.ban_user(
+                        user_id,
+                        owner_id or 0,
+                        immediate_sync=True,
+                    )
+                else:
+                    await async_db.unban_user(user_id, immediate_sync=True)
+            except Exception as e:
+                logger.warning("RoleManager: legacy ban state persist failed: %s", e)
 
     async def is_banned(self, user_id: int) -> bool:
         return (await self.get_role(user_id)) == UserRole.BANNED

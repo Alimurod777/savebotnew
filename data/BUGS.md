@@ -1256,3 +1256,28 @@ Updated help and regression tests for nonowner denial, owner target jobs and del
 Validation: 72 focused unittest cases passed; 132 pytest tests and 15 subtests
 passed with the previously recorded unrelated SQLite test deselected. Compilation
 and git diff whitespace checks passed. No live Telegram operation was performed.
+
+## BUG-067: Global rol uchun eski file/DB rollari va legacy banlar qayta ustun kelishi
+**Sana:** 2026-10-30
+**Holat:** ✅ Hal qilindi
+
+Yangi `/setrole global <rol>` faqat defaultni almashtirsa, mavjud role fayllari,
+DBdagi default `new_user` va legacy banned_users tekshiruvlari boshqa natija
+berishi mumkin edi. Global o'zgarish barcha mavjud va kelajak userlarga tegishli.
+
+Yechim: `data/roles/global.json` atomik yoziladigan authoritative global policy.
+Owner har doim VIP. Global buyruq eski individual rollar va banlarni ham bosadi;
+keyingi /setrole, /ban va /unban policy exceptions yaratadi. Keyingi global buyruq
+exceptionsni tozalaydi. File/DB eski snapshotlari policy faol bo'lganda ustun
+kelmaydi; legacy `async_db.is_banned()` va `/banlist` ayni policyga qaraydi.
+Userinfo eski snapshotlarni ochiq ko'rsatib, policy ustunligini izohlaydi.
+Bir jarayonda individual role/DB/ban yozuvi va global reset bitta asyncio lock
+bilan ketma-ket bajariladi. Restart policy va exceptionsni saqlaydi. Policy
+saqlanishi muvaffaqiyatsiz bo'lsa global command muvaffaqiyat deb javob bermaydi.
+
+Regression: mavjud/yangi/DB-only userlar, owner, restart, keyingi individual
+buyruqlar, banlist, disk write failure, invalid role, owner-only command va
+parallel ban/reset tartibi. Production role policy bajarilmadi/yaranmadi.
+
+Tekshiruv: full pytest — 162 passed, 22 subtests passed; global rol bo'yicha
+8 test. Python compilation va git diff whitespace tekshiruvi o'tdi.

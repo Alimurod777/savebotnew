@@ -10,6 +10,7 @@ from pathlib import Path
 from wzgram import __version__
 from wzgram.types import Chat, Message, User
 from wzgram.storage import FileStorage
+from wzgram.storage.sqlite_storage import SQLiteStorage
 
 
 def _patch_optional_vectors(owner, method_name: str, argument: str, fields, *, asynchronous=False):
@@ -93,14 +94,32 @@ def _migrate_pyrofork_database(path: Path) -> None:
 
 
 def _patch_legacy_file_storage() -> None:
-    original = FileStorage.open
+    # Client uses SQLiteStorage directly in this release; FileStorage is only
+    # a compatibility class. Cover both entry points, including memory sessions.
+    for storage_type in (SQLiteStorage, FileStorage):
+        _patch_storage_open(storage_type)
+
+
+def _patch_storage_open(storage_type) -> None:
+    original = storage_type.open
     if getattr(original, "_savebot_legacy_storage", False):
         return
 
     @functools.wraps(original)
     async def open_storage(self):
-        await asyncio.to_thread(_migrate_pyrofork_database, self.database)
-        return await original(self)
+        try:
+            if isinstance(self.database, Path):
+                await asyncio.to_thread(_migrate_pyrofork_database, self.database)
+            return await original(self)
+        except BaseException:
+            # A failed native open leaves an aiosqlite thread and file lock
+            # behind, although Client.is_connected is still False. Release
+            # both before Client retries opening this same storage instance.
+            try:
+                await self.close()
+            except Exception:
+                pass
+            raise
 
     open_storage._savebot_legacy_storage = True
-    FileStorage.open = open_storage
+    storage_type.open = open_storage

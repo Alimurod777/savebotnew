@@ -9,6 +9,8 @@ import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 import core
 import wzgram
 import pyrogram
@@ -101,10 +103,20 @@ def test_opted_in_upload_returns_native_input_file_and_closes_session(tmp_path):
     asyncio.run(run())
 
 
-def test_pyrofork_file_session_migrates_preserving_auth_and_peer_cache(tmp_path):
+@pytest.mark.parametrize("storage_kind", ["legacy", "client"])
+def test_pyrofork_file_session_migrates_preserving_auth_and_peer_cache(tmp_path, storage_kind):
     import sqlite3
     from wzgram.storage import FileStorage
     from core.wzgram_compat import apply_patches
+
+    if storage_kind == "client":
+        from wzgram import Client
+        assert type(Client("probe", workdir=tmp_path).storage) is not FileStorage
+
+    def make_storage():
+        if storage_kind == "client":
+            return Client("legacy", workdir=tmp_path).storage
+        return FileStorage("legacy", tmp_path)
 
     path = tmp_path / "legacy.session"
     with sqlite3.connect(path) as conn:
@@ -125,7 +137,7 @@ def test_pyrofork_file_session_migrates_preserving_auth_and_peer_cache(tmp_path)
 
     async def run():
         apply_patches()  # idempotent on repeated startup imports
-        storage = FileStorage("legacy", tmp_path)
+        storage = make_storage()
         try:
             await storage.open()
             assert await storage.version() == 8
@@ -140,7 +152,7 @@ def test_pyrofork_file_session_migrates_preserving_auth_and_peer_cache(tmp_path)
             if storage.conn:
                 await storage.close()
         # Native format is reopened without another migration or backup.
-        storage = FileStorage("legacy", tmp_path)
+        storage = make_storage()
         try:
             await storage.open()
             assert await storage.user_id() == 123456789
@@ -152,3 +164,25 @@ def test_pyrofork_file_session_migrates_preserving_auth_and_peer_cache(tmp_path)
     assert backup.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(backup) as conn:
         assert conn.execute("SELECT number FROM version").fetchone()[0] == 4
+
+
+def test_failed_native_storage_open_releases_connection_and_lock(tmp_path):
+    from wzgram import Client
+
+    async def run():
+        storage = Client("failed-open", workdir=tmp_path).storage
+        await storage.open()
+        await storage.close()
+        with patch.object(type(storage), "update", new=AsyncMock(side_effect=RuntimeError("schema failure"))):
+            with pytest.raises(RuntimeError, match="schema failure"):
+                await storage.open()
+        assert storage.conn is None
+        assert storage._lock_fd is None
+        # The same object can retry without leaking the previous connection.
+        await storage.open()
+        try:
+            assert await storage.version() == 8
+            assert storage.conn is not None
+        finally:
+            await storage.close()
+    asyncio.run(run())

@@ -1123,3 +1123,28 @@ login/upload/download, live bot startup va Docker build bajarilmadi.
 
 UMUMIY YO'NALISH: Wzgram variantini alohida branch/papkada yuritish; original
 production loyihani o'zgartirmaslik, sessiya vakolatlari va routingni saqlash.
+
+## Sessiya (2026-10-31) — Single-instance olib tashlash va startup schema xatosi
+
+So'rov: single-instance mexanizmini olib tashlash va logdagi startup muammosini
+bartaraf etish. bot.py dagi process lock va uning startup guardi olib tashlandi.
+Asosiy `update_state already exists` sababi: migratsiya faqat FileStorage.open ga
+qo'yilgan, native Client esa SQLiteStorage ishlatadi. Mavjud backup/migratsiya
+shu entry pointga ham qo'llandi; xatoli open connection va session lockni yopadi.
+Memory sessiyalar migratsiyaga kirmaydi. Client.storage va failure/retry regressiyalari
+qo'shildi. Real session read-only schema orqali tekshirildi, bot ishga tushirilmadi.
+
+UMUMIY YO'NALISH: Wzgram native storage yo'llarini test bilan qamrash, session
+auth va update state saqlanishi, restart urinishlarida resurslarni bo'shatish.
+
+Tekshiruv: `venv/bin/python -m pytest -q` — 170 passed, 22 subtests passed.
+O'zgargan Python fayllar AST va `git diff --check` tekshiruvidan o'tdi.
+
+## Sessiya davomi (2026-10-31) — Single-instance himoyasini qaytarish
+
+So'rov: single-instance himoyasini qaytarish. bot.py dagi avvalgi OS lock va
+startup guard to'liq tiklandi. BUG-072 session migratsiyasi va failed-open
+cleanup tuzatishlari saqlandi. bot.py HEAD bilan aynan bir xil; AST va diff
+whitespace tekshiruvi o'tdi. Bot ishga tushirilmadi.
+
+UMUMIY YO'NALISH: single-instance himoyasi yoqilgan holda qolsin.

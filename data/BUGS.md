@@ -1412,3 +1412,25 @@ no allow_sending_without_reply constructor argument.
 **Yechim:** Skip legacy patch when native reply_parameters exists, detect send
 signature, preserve reply targets using native ReplyParameters and keep boolean
 legacy flags out of its constructor. Native TL reply serialization tested.
+
+## BUG-072: Bot startup bypassed legacy session migration and leaked storage locks
+**Sana:** 2026-10-31
+**Holat:** ✅ Hal qilindi
+
+Wzgram 3.1.6 Client creates SQLiteStorage directly, while BUG-070 wrapped only
+FileStorage.open. Real Pyrofork v4 sessions therefore reached the native migration
+and failed with `table update_state already exists`. Failed opens left aiosqlite
+connections and session locks alive, producing lock warnings on subsequent retries.
+
+Fix: apply the existing backup-preserving migration to both SQLiteStorage and
+FileStorage file opens; skip migration for memory storage. Close storage on failed
+opens before propagating the original exception. Regression coverage now uses the
+actual Client.storage entry point, preserves auth/peers/update state, checks native
+reopen, and injects an update failure to verify connection/lock release and retry.
+The separate bot.py process-wide single-instance lock was initially removed, then
+restored at the user's subsequent request; it is enabled.
+The native session database lock remains. Real session data was inspected read-only;
+no live Telegram login or bot restart was performed.
+
+Validation: full pytest — 170 passed, 22 subtests passed; changed Python AST and
+whitespace checks passed. Live Telegram startup remains untested.

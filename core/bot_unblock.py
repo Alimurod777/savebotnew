@@ -76,10 +76,11 @@ async def try_unblock_bot(
                 )
                 return False
 
-            # Step 3: chatni arxivlash (best-effort)
+            # Step 3: owner archive policy (best-effort)
             try:
                 chat = await acc.get_chat(uname)
-                await acc.archive_chats([chat.id])
+                from core.bot_archive import apply_bot_archive
+                await apply_bot_archive(acc, chat.id)
             except Exception:
                 pass  # non-fatal
 

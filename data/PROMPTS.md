@@ -1148,3 +1148,41 @@ cleanup tuzatishlari saqlandi. bot.py HEAD bilan aynan bir xil; AST va diff
 whitespace tekshiruvi o'tdi. Bot ishga tushirilmadi.
 
 UMUMIY YO'NALISH: single-instance himoyasi yoqilgan holda qolsin.
+
+
+## Sessiya (2026-11-02) — Fayl/document videolarni video qilib upload qilish
+
+So'rov: video/mp4, tekshirish.mp4 kabi fayl turidagi videolarni qayta uploadda
+video qilib yuborish; shu loyiha va alohida Wzgram nusxasini ham tuzatish.
+Asosiy va queued direct uploadga umumiy local upload preparation ulandi:
+video MIME/kengaytmali document → Video, FFmpeg metadata va thumbnail,
+streaming send_video. Mavjud worker/session/caption routing saqlandi.
+10 yangi regression test o'tdi; full suite 180 passed, 22 subtests passed.
+Bot restart, deploy, commit/push va live Telegram upload bajarilmadi.
+
+UMUMIY YO'NALISH: document sifatida kelgan video qayta yuklanganda Telegram
+video sifatida chiqsin; oddiy hujjatlar va mavjud session qoidalari saqlansin.
+
+
+## Sessiya (2026-11-02) — Owner autoarchive boshqaruvi va GitHubga push
+
+So'rov: ikkala loyihada /ownerhelp orqali avtomatik bot arxivlash ON/OFF;
+sessiyasi borlarda ON arxivlash, OFF arxivdan chiqarish; GitHubga push.
+
+Qo'shildi: /autoarchive on|off|status, /ownerhelp inline ON/OFF, persistent
+atomik policy (default ON), barcha mavjud configured sessiyalar uchun best-effort
+sync, connected worker reuse, yangi login/worker policy integratsiyasi. Oddiy
+text va media routing/session-selection saqlandi; status faqat botdan ownerga.
+Video-document upload tuzatishlari ham shu pushga kiradi.
+
+Remote main avval Wzgram migration PR bilan birlashtirilgani aniqlandi. Original
+Pyrofork kodini o'chirmaslik uchun pyrofork branchida saqlash; Wzgram branchini
+va amaldagi mainni yangilash tanlandi. Force push ishlatilmaydi. Real sessiyalar
+bilan archive RPC va live bot startup/restart bajarilmadi.
+
+UMUMIY YO'NALISH: arxivlash sozlamasi sessiyasi bor userlar uchun persistent va
+ikki tomonga ishlasin; Pyrofork/Wzgram variantlari GitHubda saqlansin.
+
+Yakuniy tekshiruv: full pytest 200 passed, 22 subtests passed; 20 archive
+va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.
+Wzgram migration verification: 617 import symbols, 0 failures; pip check o‘tdi.

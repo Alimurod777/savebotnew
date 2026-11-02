@@ -759,3 +759,15 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Source project `/home/telegramdata3/savebotnew` remains separate and unchanged.
 - Run `python verify_migration.py`, `python -m pip check` and the offline tests
   before publishing this branch. Never run two live bots with the copied token.
+
+
+### Bot archive policy (2026-11-02)
+- `/autoarchive on|off|status` va `/ownerhelp` ON/OFF tugmalari — faqat owner.
+- `core/bot_archive.py`: `data/bot_archive.json` persistent policy, default ON.
+- ON → user session `archive_chats`; OFF → `unarchive_chats`.
+- Login/unblock va UserUploadWorker preparation policyga qarasin; hardcoded
+  archive_chats qo'shmang. Mavjud dialog early return ham policyga amal qilsin.
+- Toggle existing configured sessionsni best-effort yangilaydi, connected
+  worker clientlarini qayta ishlatadi; qolganlar create_user_session orqali.
+- Policy save failureda success demang; bulk sync failed sonini ko'rsating.
+- Autoarchive command/callback text faqat botdan ownerga yuboriladi.

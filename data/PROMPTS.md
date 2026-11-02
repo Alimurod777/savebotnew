@@ -1123,3 +1123,66 @@ login/upload/download, live bot startup va Docker build bajarilmadi.
 
 UMUMIY YO'NALISH: Wzgram variantini alohida branch/papkada yuritish; original
 production loyihani o'zgartirmaslik, sessiya vakolatlari va routingni saqlash.
+
+## Sessiya (2026-10-31) — Single-instance olib tashlash va startup schema xatosi
+
+So'rov: single-instance mexanizmini olib tashlash va logdagi startup muammosini
+bartaraf etish. bot.py dagi process lock va uning startup guardi olib tashlandi.
+Asosiy `update_state already exists` sababi: migratsiya faqat FileStorage.open ga
+qo'yilgan, native Client esa SQLiteStorage ishlatadi. Mavjud backup/migratsiya
+shu entry pointga ham qo'llandi; xatoli open connection va session lockni yopadi.
+Memory sessiyalar migratsiyaga kirmaydi. Client.storage va failure/retry regressiyalari
+qo'shildi. Real session read-only schema orqali tekshirildi, bot ishga tushirilmadi.
+
+UMUMIY YO'NALISH: Wzgram native storage yo'llarini test bilan qamrash, session
+auth va update state saqlanishi, restart urinishlarida resurslarni bo'shatish.
+
+Tekshiruv: `venv/bin/python -m pytest -q` — 170 passed, 22 subtests passed.
+O'zgargan Python fayllar AST va `git diff --check` tekshiruvidan o'tdi.
+
+## Sessiya davomi (2026-10-31) — Single-instance himoyasini qaytarish
+
+So'rov: single-instance himoyasini qaytarish. bot.py dagi avvalgi OS lock va
+startup guard to'liq tiklandi. BUG-072 session migratsiyasi va failed-open
+cleanup tuzatishlari saqlandi. bot.py HEAD bilan aynan bir xil; AST va diff
+whitespace tekshiruvi o'tdi. Bot ishga tushirilmadi.
+
+UMUMIY YO'NALISH: single-instance himoyasi yoqilgan holda qolsin.
+
+
+## Sessiya (2026-11-02) — Fayl/document videolarni video qilib upload qilish
+
+So'rov: video/mp4, tekshirish.mp4 kabi fayl turidagi videolarni qayta uploadda
+video qilib yuborish; shu loyiha va alohida Wzgram nusxasini ham tuzatish.
+Asosiy va queued direct uploadga umumiy local upload preparation ulandi:
+video MIME/kengaytmali document → Video, FFmpeg metadata va thumbnail,
+streaming send_video. Mavjud worker/session/caption routing saqlandi.
+10 yangi regression test o'tdi; full suite 180 passed, 22 subtests passed.
+Bot restart, deploy, commit/push va live Telegram upload bajarilmadi.
+
+UMUMIY YO'NALISH: document sifatida kelgan video qayta yuklanganda Telegram
+video sifatida chiqsin; oddiy hujjatlar va mavjud session qoidalari saqlansin.
+
+
+## Sessiya (2026-11-02) — Owner autoarchive boshqaruvi va GitHubga push
+
+So'rov: ikkala loyihada /ownerhelp orqali avtomatik bot arxivlash ON/OFF;
+sessiyasi borlarda ON arxivlash, OFF arxivdan chiqarish; GitHubga push.
+
+Qo'shildi: /autoarchive on|off|status, /ownerhelp inline ON/OFF, persistent
+atomik policy (default ON), barcha mavjud configured sessiyalar uchun best-effort
+sync, connected worker reuse, yangi login/worker policy integratsiyasi. Oddiy
+text va media routing/session-selection saqlandi; status faqat botdan ownerga.
+Video-document upload tuzatishlari ham shu pushga kiradi.
+
+Remote main avval Wzgram migration PR bilan birlashtirilgani aniqlandi. Original
+Pyrofork kodini o'chirmaslik uchun pyrofork branchida saqlash; Wzgram branchini
+va amaldagi mainni yangilash tanlandi. Force push ishlatilmaydi. Real sessiyalar
+bilan archive RPC va live bot startup/restart bajarilmadi.
+
+UMUMIY YO'NALISH: arxivlash sozlamasi sessiyasi bor userlar uchun persistent va
+ikki tomonga ishlasin; Pyrofork/Wzgram variantlari GitHubda saqlansin.
+
+Yakuniy tekshiruv: full pytest 200 passed, 22 subtests passed; 20 archive
+va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.
+Wzgram migration verification: 617 import symbols, 0 failures; pip check o‘tdi.

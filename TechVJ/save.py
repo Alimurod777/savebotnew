@@ -1228,6 +1228,24 @@ async def _get_local_video_artifacts(video_path: str, source_msg=None) -> Tuple[
     return meta, thumb_path
 
 
+async def _prepare_local_upload(acc, msg, msg_type: str, file_path: str):
+    """Choose upload type without changing the source attachment classification."""
+    document = getattr(msg, "document", None)
+    if msg_type == "Document" and document:
+        mime = str(getattr(document, "mime_type", "") or "").split(";", 1)[0].strip().lower()
+        filename = str(getattr(document, "file_name", "") or "")
+        if mime.startswith("video/") or is_video_file(filename) or is_video_file(file_path):
+            msg_type = "Video"
+
+    video_meta = None
+    thumb_path = None
+    if msg_type == "Video":
+        video_meta, thumb_path = await _get_local_video_artifacts(file_path, msg)
+    if msg_type in ("Video", "Document") and not thumb_path:
+        thumb_path = await get_thumbnail(acc, msg)
+    return msg_type, video_meta, thumb_path
+
+
 def _build_split_part_caption(
     part_num: int,
     total_parts: int,
@@ -4437,7 +4455,7 @@ async def _dispatch_with_priority(
     "login", "logout", "qrlogin", "status", "chatinfo", "msgstats", "members",
     "comment", "comments", "session", "post", "group", "queue", "lang", "clean", "cleanstatus",
     "setrole", "userinfo", "set_rate_limit", "set_parallel_limit", "queue_status",
-    "stats", "maintenance", "ownerhelp", "sessionupdate", "sessionremove",
+    "stats", "maintenance", "ownerhelp", "autoarchive", "sessionupdate", "sessionremove",
     "enable_global_sessions", "disable_global_sessions",
     "premium", "setpremium", "removepremium", "premiumstatus", "checkpremium",
     "add_premium_session", "remove_premium_session",
@@ -7149,6 +7167,7 @@ async def _send_post_direct(client: Client, acc, user_id: int, msg, msg_type: st
         # Media - download and send via user session
         if msg.media:
             file_path = None
+            thumb_path = None
             try:
                 download_dir = temp_dir or "downloads/temp"
                 file_path = await acc.download_media(msg, file_name=f"{download_dir}/")
@@ -7157,11 +7176,18 @@ async def _send_post_direct(client: Client, acc, user_id: int, msg, msg_type: st
                     caption_entities = list(msg.caption_entities) if hasattr(msg, 'caption_entities') and msg.caption_entities else None
                     target_chat_id = _get_user_session_target_chat_id(client, user_id)
 
+                    msg_type, video_meta, thumb_path = await _prepare_local_upload(
+                        acc, msg, msg_type, file_path
+                    )
                     # Send based on type via user session
                     if msg_type == "Photo":
                         await acc.send_photo(target_chat_id, file_path, caption=caption, caption_entities=caption_entities)
                     elif msg_type == "Video":
-                        await acc.send_video(target_chat_id, file_path, caption=caption, caption_entities=caption_entities)
+                        await acc.send_video(
+                            target_chat_id, file_path, caption=caption,
+                            caption_entities=caption_entities, supports_streaming=True,
+                            thumb=thumb_path, **(video_meta or {}),
+                        )
                     elif msg_type == "Audio":
                         await acc.send_audio(target_chat_id, file_path, caption=caption, caption_entities=caption_entities)
                     elif msg_type == "Voice":
@@ -7178,6 +7204,11 @@ async def _send_post_direct(client: Client, acc, user_id: int, msg, msg_type: st
                         )
                     return True
             finally:
+                if thumb_path and os.path.exists(thumb_path):
+                    try:
+                        os.remove(thumb_path)
+                    except OSError:
+                        pass
                 if file_path and os.path.exists(file_path):
                     try:
                         os.remove(file_path)
@@ -7443,13 +7474,9 @@ async def download_and_send_media(
             return False
 
         split_target_chat_id = route_bot_id or _get_user_session_target_chat_id(client, ctx_target_chat_id)
-        local_video_meta = None
-        if msg_type == "Video" and is_video_file(file_path):
-            local_video_meta, thumb_path = await _get_local_video_artifacts(file_path, msg)
-            if not thumb_path:
-                thumb_path = await get_thumbnail(acc, msg)
-        elif msg_type == "Document":
-            thumb_path = await get_thumbnail(acc, msg)
+        msg_type, local_video_meta, thumb_path = await _prepare_local_upload(
+            acc, msg, msg_type, file_path
+        )
         
         # Get caption with entities early - needed by both split and normal paths
         caption, caption_entities = get_caption_with_entities(msg)

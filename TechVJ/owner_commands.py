@@ -35,7 +35,7 @@ from typing import Optional
 
 from wzgram import Client, filters
 from wzgram.enums import ParseMode
-from wzgram.types import Message, CallbackQuery
+from wzgram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import OWNER_ID
 from database.async_db import async_db
@@ -594,6 +594,86 @@ def is_maintenance() -> bool:
     return _maintenance_mode
 
 
+# ── /autoarchive ──────────────────────────────────────────────────────────────
+
+def _archive_controls():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📦 Arxivlash ON", callback_data="bot_archive:on"),
+        InlineKeyboardButton("📂 Arxivlash OFF", callback_data="bot_archive:off"),
+    ]])
+
+
+def _archive_status_text():
+    from core.bot_archive import bot_archive_settings
+    state = "ON — bot chatini arxivlash" if bot_archive_settings.enabled else "OFF — bot chatini arxivdan chiqarish"
+    return f"Avtomatik arxivlash: {state}"
+
+
+async def _change_bot_archive(client: Client, message: Message, enabled: bool):
+    from core.bot_archive import bot_archive_settings, sync_bot_archive
+    from core.safe_send import safe_edit_message
+
+    async with bot_archive_settings.change_lock:
+        me = getattr(client, "me", None) or await client.get_me()
+        username = getattr(me, "username", None)
+        if not username:
+            await message.reply("Bot username aniqlanmadi. Sozlama o'zgarmadi.", parse_mode=ParseMode.DISABLED)
+            return
+        try:
+            await bot_archive_settings.set_enabled(enabled)
+        except OSError:
+            await message.reply("Sozlamani saqlab bo'lmadi. Qayta urinib ko'ring.", parse_mode=ParseMode.DISABLED)
+            return
+        progress = await message.reply(
+            _archive_status_text() + "\nMavjud sessiyalar yangilanmoqda...",
+            parse_mode=ParseMode.DISABLED,
+        )
+        try:
+            result = await sync_bot_archive(username)
+            text = (
+                _archive_status_text()
+                + f"\nSessiyalar: {result['total']}"
+                + f"\nYangilandi: {result['updated']}"
+                + f"\nMuvaffaqiyatsiz: {result['failed']}"
+            )
+            if result['source_errors']:
+                text += f"\nO'qilmagan sessiya manbalari: {result['source_errors']}"
+            text += "\nSozlama saqlandi; yangi login va upload sessiyalariga ham qo'llanadi."
+        except Exception:
+            logger.warning("Bot archive sync could not finish")
+            text = _archive_status_text() + "\nSozlama saqlandi, lekin sessiyalarni yangilash tugamadi. /autoarchive bilan qayta urinib ko'ring."
+        await safe_edit_message(progress, text=text, parse_mode=ParseMode.DISABLED, reply_markup=_archive_controls())
+
+
+@Client.on_message(filters.command("autoarchive") & filters.private)
+async def cmd_autoarchive(client: Client, message: Message):
+    if not _owner(message):
+        return
+    parts = message.text.split()
+    if len(parts) == 1 or (len(parts) == 2 and parts[1].lower() == "status"):
+        await message.reply(
+            _archive_status_text() + "\n/autoarchive on — arxivlash\n/autoarchive off — arxivdan chiqarish",
+            parse_mode=ParseMode.DISABLED, reply_markup=_archive_controls(),
+        )
+        return
+    if len(parts) != 2 or parts[1].lower() not in ("on", "off"):
+        await message.reply("Usage: /autoarchive <on|off|status>", parse_mode=ParseMode.DISABLED)
+        return
+    await _change_bot_archive(client, message, parts[1].lower() == "on")
+
+
+@Client.on_callback_query(filters.regex(r"^bot_archive:(on|off)$"))
+async def cb_bot_archive(client: Client, query: CallbackQuery):
+    if not query.from_user or query.from_user.id != OWNER_ID:
+        await query.answer("Faqat owner.", show_alert=True)
+        return
+    if not query.message or query.message.chat.id != OWNER_ID:
+        await query.answer("Owner private chatida ishlating.", show_alert=True)
+        return
+    await query.answer("Sessiyalar yangilanmoqda...")
+    await _change_bot_archive(client, query.message, query.data == "bot_archive:on")
+
+
 # ── /ownerhelp ────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("ownerhelp") & filters.private)
@@ -613,6 +693,8 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/queue_status` — Queue holati\n"
         "`/stats` — Umumiy statistika\n"
         "`/maintenance <on|off>` — Texnik xizmat rejimi\n\n"
+        "**Bot chatini arxivlash:**\n"
+        "/autoarchive on|off|status — sessiyalarda arxivlash/arxivdan chiqarish\n\n"
         "**User sessiyalar (DB):**\n"
         "`/sessionupdate <uid> <session>` — User sessiyasini almashtirish\n"
         "`/sessionremove <uid>` — User sessiyasini o'chirish\n"
@@ -664,7 +746,8 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/uploadsetting [auto|force_split|no_split]` — Upload rejimi\n"
         "`/split_media [on|off|auto]` — Caption bo'lish\n"
     )
-    await message.reply(text, parse_mode=ParseMode.DISABLED)
+    text += "\n" + _archive_status_text()
+    await message.reply(text, parse_mode=ParseMode.DISABLED, reply_markup=_archive_controls())
 
 
 def _short_failed_log_value(value, limit: int = 120) -> str:

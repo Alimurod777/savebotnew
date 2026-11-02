@@ -1382,3 +1382,54 @@ Tekshiruv: toza staged-tree nusxada (real .env/session/DBsiz, mavjud venv bilan)
 162 passed, 22 subtests passed; 147 Python AST tekshiruvi; secret formatlari va
 lokal .env qiymatlari bo'yicha staged scan, ignore va diff-check o'tdi.
 Docker build/live Telegram startup ushbu tekshiruvga kirmaydi.
+
+
+## BUG-073: Document sifatida kelgan videolar fayl sifatida qayta upload bo'lishi
+**Sana:** 2026-11-02
+**Holat:** ✅ Hal qilindi
+
+Sabab: asosiy save pipeline source turini Document deb saqlab, video/mp4 va
+.mp4 kabi video fayllarni send_document(force_document=True) orqali yuborardi.
+Alohida video_converter handleridagi konversiya save pipelinega ulanmagan edi.
+
+Yechim: download tugagach upload turi alohida tanlanadi: document MIME video/*
+yoki mavjud video kengaytmalaridan biri bo'lsa Video. Manba klassifikatsiyasi va
+file-size/download aniqlash o'zgarmaydi. Mavjud FFmpeg metadata/thumbnail olinadi;
+SessionManager, legacy worker, premium va queued direct yo'llar send_video bilan
+streaming upload qiladi. Oddiy PDF/ZIP/audio documentlar document bo'lib qoladi.
+Caption/overflow routing va session-selection qoidalari saqlanadi.
+
+Tekshiruv: 10 yangi offline regression test (MIME, katta/kichik harfli kengaytma,
+nomsiz document, oddiy document, worker send_video, metadata/thumbnail, queued
+upload va cleanup). Full pytest: 172 passed, 22 subtests passed.
+Live Telegram upload va bot restart bajarilmadi.
+
+
+## BUG-074: Bot chatini avtomatik arxivlashni owner boshqara olmasligi
+**Sana:** 2026-11-02
+**Holat:** ✅ Hal qilindi
+
+Sabab: user worker va login/unblock yo'llari arxivlashni hardcode qilgan;
+arxivdan chiqarish yoki persistent o'chirish sozlamasi yo'q edi. Workerda
+mavjud dialog get_chat bilan topilsa early return arxivlashni ham o'tkazib yuborgan.
+
+Yechim: core/bot_archive.py global ON/OFF policy (default ON, atomik disk yozuvi).
+/ownerhelp ON/OFF tugmalari, owner-only /autoarchive on|off|status. ON mavjud
+bot chatlarini arxivlaydi, OFF arxivdan chiqaradi. Toggle DB login sessiyalari,
+SessionManager, legacy premium va login text-file fallback sessiyalarini yig'adi;
+dedup qiladi, connected worker clientlarini qayta ishlatadi. Qolgan sessiyalar
+create_user_session orqali qisqa muddatga ulanadi. Yangi login va worker bot-chat
+preparation shu policyga qaraydi. Toggle sync yangi /start yoki unblock yubormaydi;
+faqat bot chatining archive holatini o'zgartiradi. RPC xatolari best-effort,
+ownerga updated/failed va source-error sonlari ko'rsatiladi. Sozlama saqlanmasa
+muvaffaqiyat javobi yo'q. Togglelar ketma-ket; eski RPC tugamay yangi policy
+saqlanmaydi. Runtime JSON Gitdan ignored, maxfiy sessiyalar logga chiqarilmaydi.
+
+Regression: persistence/restart, disk failure, ON/OFF RPC routing, workerning
+mavjud/yangi dialogi, login unblock, owner authorization, callback/help/status,
+dedup/source failure, connected worker reuse, invalid sessiondan keyin davom,
+in-flight archive/change tartibi va ephemeral cleanup. Live Telegram yoki real
+archive policy komandasi bajarilmadi; production botlar restart qilinmadi.
+
+Yakuniy tekshiruv: full pytest 192 passed, 22 subtests passed; 20 archive
+va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.

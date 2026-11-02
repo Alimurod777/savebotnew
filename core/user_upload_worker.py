@@ -523,7 +523,7 @@ class UserUploadWorker:
           1. Try unblock_user — silently skip if bot is not blocked.
           2. Send /start — if this fails because the bot is still blocked,
              raise WorkerBotBlockedError so caller skips this session.
-          3. Archive the chat (best-effort).
+          3. Apply the owner's archive/unarchive policy (best-effort).
 
         /start is sent only once per worker lifetime (worker is reused between tasks).
         """
@@ -535,7 +535,9 @@ class UserUploadWorker:
 
         # Step 0: check dialog
         try:
-            await self._client.get_chat(uname)
+            chat = await self._client.get_chat(uname)
+            from core.bot_archive import apply_bot_archive
+            await apply_bot_archive(self._client, chat.id)
             self._bot_prepared = True
             return
         except UserIsBlocked:
@@ -576,10 +578,11 @@ class UserUploadWorker:
             )
             return
 
-        # Step 3: archive chat (best-effort)
+        # Step 3: apply owner archive policy (best-effort)
         try:
+            from core.bot_archive import apply_bot_archive
             chat = await self._client.get_chat(uname)
-            await self._client.archive_chats([chat.id])
+            await apply_bot_archive(self._client, chat.id)
         except Exception:
             pass
 
@@ -840,6 +843,16 @@ class UserWorkerRegistry:
                     worker.session_user_id,
                 )
             return worker
+
+    async def archive_clients_snapshot(self):
+        """Connected user clients for owner archive sync; no new connections."""
+        async with self._lock:
+            return [
+                (worker._session_string, worker._user_id, worker._client)
+                for worker in self._workers.values()
+                if worker._running and worker._client is not None
+                and worker._client.is_connected
+            ]
 
     async def remove(self, user_id: int) -> None:
         """Remove all workers for a user (e.g. on logout)."""

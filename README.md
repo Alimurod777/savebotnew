@@ -195,3 +195,13 @@ The changes are made because resources in Colab are prioritized for interactive 
 [License-Badge]:        https://img.shields.io/badge/License-MIT-blue.svg
 [^1]:                   https://research.google.com/colaboratory/faq.html#limitations-and-restrictions
 
+
+
+### Bot chatini avtomatik arxivlash (owner)
+
+`/ownerhelp` ichidagi **Arxivlash ON/OFF** tugmalari yoki
+`/autoarchive on`, `/autoarchive off`, `/autoarchive status` ishlatiladi.
+ON sessiyalarda bot chatini arxivlaydi, OFF arxivdan chiqaradi. Mavjud user va
+pool sessiyalari darhol best-effort yangilanadi; natijada yangilangan/xatoli
+sessiyalar soni ko'rsatiladi. Sozlama `data/bot_archive.json`da saqlanadi va yangi
+login/upload sessiyalariga ham qo'llanadi. Default ON. Komanda faqat ownerga ochiq.

@@ -1136,3 +1136,85 @@ ikki tomonga ishlasin; Pyrofork/Wzgram variantlari GitHubda saqlansin.
 
 Yakuniy tekshiruv: full pytest 192 passed, 22 subtests passed; 20 archive
 va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.
+
+
+## Sessiya (2026-11-02) — Owner-only /broadcast va /ownerhelp integratsiyasi
+
+So'rov: mavjud arxitekturani saqlagan holda registered userlarga owner broadcast;
+text/reply media, bounded rate/retry/FloodWait, cancellation, statistikalar va
+mock testlar. Ushbu vazifa uchun commit/push/deployga ruxsat berilmadi.
+
+Ikki saqlanayotgan lokal variantda bir xil targeted feature qo'shildi. Mavjud
+_owner()/OWNER_ID, DB registry, effective ban policy, entity va retry helperlari
+qayta ishlatildi. Existing /ownerhelp yangilandi; ikkinchi help handler yaratilmadi.
+/stop broadcast download TaskManagerga tegmasdan broadcastni bekor qiladi.
+Native Pyrofork/Wzgram importlari ajratilgan holda saqlandi. Oldingi push qilingan
+video/arxivlash funksiyalari o'zgartirilmadi. Baza/auth/session/.env ga tegilmadi.
+
+Tekshiruv: 33 yangi mocked broadcast case, full suite 225 passed,
+22 subtests passed; AST va diff whitespace o'tdi. Live broadcast/restart yo'q.
+UMUMIY YO'NALISH: ownerdan ruxsatsiz job boshlanmasin; faqat registered bot
+userlari, bot identity orqali yuborish; unrelated downloadlar bekor bo'lmasin;
+o'zgarishlar review uchun lokal va uncommitted qolsin.
+
+
+## Sessiya (2026-11-03) — 3.91 GB ZIP split SendMedia FloodWait
+
+So‘rov: BITTU VIP Courses 62-post uchun split upload FLOOD_WAIT_X xatosi va
+failed-post reportini tahlil qilish/tuzatish. Sabab: split helperda flood retry
+yo‘q, ichki catch xatoni error_split/False sifatida yashirgan.
+
+Mavjud helperga joriy bo‘lak uchun 3 flood retry va jami 300s kutish limiti,
+Telegram wait + 1s, 5s stop polling, bot statusi qo‘shildi. Ikkala split yo‘li
+ulandi; retry exhaustion original floodni tashqi handlerga uzatadi. Finally
+split fayllarni error/cancelda ham tozalaydi. 17 offline regression case o‘tdi.
+Oldingi broadcast va boshqa lokal o‘zgarishlar saqlandi; live send, restart,
+commit/push/deploy bajarilmadi.
+
+UMUMIY YO‘NALISH: vaqtinchalik Telegram upload cheklovi joriy bo‘lakda bounded
+retry qilinsin; oldingi yuborilgan bo‘laklar takrorlanmasin; media/text routing
+va userning /stop boshqaruvi saqlansin.
+
+Yakuniy tekshiruv: full pytest — 242 passed, 22 subtests passed; py_compile va git diff --check o‘tdi.
+
+
+## Sessiya (2026-11-03) — Split FloodWait uchun tushunarli user xabari
+
+So‘rov: userga FloodWait bo‘lgani va kutishdan keyin qolgan bo‘laklar
+yuborilishini aytish. Split retry statusi uchun alohida EN/UZ matn qo‘shildi:
+Telegram cheklovi, kutish soniyalari, avtomatik davom etish va havolani qayta
+yuborish shart emasligi. Matn faqat rejalashtirilgan retry kutishida bot orqali
+ko‘rsatiladi; umumiy error_flood va retry limitlari o‘zgarmadi.
+UMUMIY YO‘NALISH: kutish sababini va keyingi avtomatik harakatni aniq tushuntirish.
+
+
+## Sessiya (2026-11-03) — Owner log kanal/guruh va barcha tuzatishlarni push
+
+So‘rov: owner runtime’da va ENV orqali log kanal/guruhni to‘liq boshqarsin,
+konflikt bo‘lmasin; `.env.example` repoda tursin va barcha lokal tuzatishlar
+GitHubga push qilinsin. Keyin user identity ko‘rinsin deb aniqlashtirildi.
+Oxirgi tuzatish: kontentni copy qilish emas, oddiy forward; identity har xabarda
+emas, user bloki boshida yoki uzun tanaffusdan keyin. Shu oxirgi yo‘nalish
+oldingi quote-free/copy tavsifini bekor qiladi.
+
+Amalga oshirildi: /logchannel set/status/on/off/remove/reset/test, owner-only
+validation, runtime atomic config va ENV precedence, bot private incoming/send
+result observation, oddiy native forwards/albomlar, 5min idle yoki user switchda
+ism/@username/ID header, bounded async queue va nonfatal retry/status counters.
+Yangi log funksiyasi bot identity bilan ishlaydi; normal media routing o‘zgarmadi.
+README, AGENTS, BUGS va .env.example yangilandi. Oldingi broadcast hamda split
+FloodWait tuzatishlari push scope’iga user ruxsati bilan kiritiladi.
+
+UMUMIY YO‘NALISH: owner to‘liq va persistent boshqarsin; ENV bilan yagona aniq
+precedence; user kontenti chatdan oddiy forward qilinsin; kimga tegishli ekanligi
+blok boshida aniq bo‘lsin, takroriy sarlavhalar bo‘lmasin. Joriy loyiha pyrofork
+branchida; remote main boshqa Wzgram variantida, u almashtirilmaydi.
+
+Davomi: user /home/telegramdata3/savebotnew-wzgram papkasiga ham barcha
+o‘zgarishlarni moslashtirishni so‘radi. Log kanal va split FloodWait tuzatishlari
+Wzgram native import/APIlariga moslashtirildi; oldingi broadcast/archiving/video
+o‘zgarishlari ham saqlanib, pyrofork, wzgram va Wzgram asosidagi main push scope’iga kirdi.
+
+Yakuniy tekshiruv: full pytest — 268 passed, 22 subtests passed;
+AST, diff whitespace va staged runtime/secret-format tekshiruvlari o‘tdi.
+Real bot restart/deploy yoki live xabar yuborish bajarilmadi.

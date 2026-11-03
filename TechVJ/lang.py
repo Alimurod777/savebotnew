@@ -59,6 +59,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "error_not_found": "❌ File not found",
         "error_timeout": "⏱️ Request timed out",
         "error_flood": "⚠️ Too many requests. Wait {seconds}s",
+        "split_flood_wait": "⏳ Telegram temporarily limited uploads (FloodWait). Please wait {seconds} seconds; I will then automatically continue sending the remaining parts. You do not need to send the link again.",
         "error_split": "❌ Failed to split large file: {error}",
         
         # Login/Logout
@@ -155,6 +156,7 @@ Send a media link or forward a message to download/save it.""",
         "error_not_found": "❌ Fayl topilmadi",
         "error_timeout": "⏱️ Vaqt tugadi",
         "error_flood": "⚠️ Juda ko'p so'rov. {seconds}s kuting",
+        "split_flood_wait": "⏳ Telegram yuborishni vaqtincha chekladi (FloodWait). Iltimos, {seconds} soniya kuting. Shundan keyin qolgan bo‘laklarni avtomatik yuborishda davom etaman. Havolani qayta yuborishingiz shart emas.",
         "error_split": "❌ Katta faylni bo'lib bo'lmadi: {error}",
         
         # Login/Logout

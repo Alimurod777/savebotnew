@@ -51,7 +51,7 @@ from core.failure_classifier import (
     should_notify_user,
     stage_indicates_processing,
 )
-from core.retry_utils import get_floodwait_seconds, is_floodwait_error
+from core.retry_utils import MAX_FLOODWAIT_SECONDS, get_floodwait_seconds, is_floodwait_error
 from pyrogram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
 from pyrogram.raw import functions, types
 import time
@@ -1147,40 +1147,72 @@ async def _send_split_part_with_peer_retry(
     msg_type: str,
     chunk_path: str,
     send_kwargs: dict,
+    check_cancelled=None,
+    status_msg=None,
+    status_chat_id: Optional[int] = None,
 ) -> Message:
-    """
-    Send one split chunk via the user session, retrying once after peer warm-up.
-    """
+    """Send the current chunk with bounded flood retries and one peer refresh."""
     async def _send(dest):
         if msg_type != "Document" and is_video_file(chunk_path):
             return await acc.send_video(dest, chunk_path, **send_kwargs)
         return await acc.send_document(dest, chunk_path, **send_kwargs)
 
-    try:
-        return await _send(target_chat_id)
-    except Exception as first_err:
-        if not _is_peer_invalid_error(first_err):
-            raise
-        retry_bot_id = bot_id
-        if retry_bot_id is None:
-            try:
-                retry_bot_id = int(target_chat_id)
-            except Exception:
-                retry_bot_id = _get_user_session_target_chat_id(bot_client, 0)
-        refreshed_chat_id, bot_username = await _ensure_user_session_bot_peer(
-            acc,
-            bot_client,
-            int(retry_bot_id),
-            force=True,
-        )
-        logger.warning(
-            "Split part upload peer refresh after %s; retrying target=%s username=%s",
-            type(first_err).__name__,
-            refreshed_chat_id,
-            bot_username,
-        )
-        retry_target = bot_username or refreshed_chat_id
-        return await _send(retry_target)
+    target = target_chat_id
+    peer_refreshed = False
+    flood_retries = 0
+    flood_waited = 0
+    while True:
+        if check_cancelled and await check_cancelled():
+            raise asyncio.CancelledError()
+        try:
+            return await _send(target)
+        except Exception as err:
+            if is_floodwait_error(err):
+                # Retry only this unsent chunk. Never restart the split loop:
+                # earlier chunks may already have reached the recipient.
+                seconds = get_floodwait_seconds(err)
+                delay = seconds + 1
+                if flood_retries >= 3 or flood_waited + delay > MAX_FLOODWAIT_SECONDS:
+                    raise
+                flood_retries += 1
+                flood_waited += delay
+                logger.warning(
+                    "Split part upload FloodWait %ss; retry %s/3 for %s",
+                    seconds, flood_retries, os.path.basename(chunk_path),
+                )
+                if status_msg is not None and status_chat_id is not None:
+                    from TechVJ.lang import get_string
+                    await _safe_status_edit_message(
+                        bot_client, status_chat_id, status_msg.id,
+                        get_string(status_chat_id, "split_flood_wait", seconds=delay),
+                    )
+                # Poll the stop flag during the cooldown as well as honoring
+                # task.cancel(). Do not retry before Telegram's full wait.
+                remaining = delay
+                while remaining > 0:
+                    if check_cancelled and await check_cancelled():
+                        raise asyncio.CancelledError()
+                    step = min(5, remaining)
+                    await asyncio.sleep(step)
+                    remaining -= step
+                continue
+            if peer_refreshed or not _is_peer_invalid_error(err):
+                raise
+            peer_refreshed = True
+            retry_bot_id = bot_id
+            if retry_bot_id is None:
+                try:
+                    retry_bot_id = int(target_chat_id)
+                except Exception:
+                    retry_bot_id = _get_user_session_target_chat_id(bot_client, 0)
+            refreshed_chat_id, bot_username = await _ensure_user_session_bot_peer(
+                acc, bot_client, int(retry_bot_id), force=True,
+            )
+            logger.warning(
+                "Split part upload peer refresh after %s; retrying target=%s username=%s",
+                type(err).__name__, refreshed_chat_id, bot_username,
+            )
+            target = bot_username or refreshed_chat_id
 
 
 def _positive_int(value) -> Optional[int]:
@@ -4046,6 +4078,12 @@ async def stop_command(client: Client, message: Message):
     - DownloadEngine worker pool
     - User download queue
     """
+    parts = str(message.text or "").split()
+    if len(parts) > 1 and parts[1].lower() == "broadcast":
+        from TechVJ.owner_commands import stop_owner_broadcast
+        await stop_owner_broadcast(client, message)
+        return
+
     user_id = message.from_user.id
     active_tasks = await task_manager.get_active_task_count(user_id)
 
@@ -4455,7 +4493,7 @@ async def _dispatch_with_priority(
     "login", "logout", "qrlogin", "status", "chatinfo", "msgstats", "members",
     "comment", "comments", "session", "post", "group", "queue", "lang", "clean", "cleanstatus",
     "setrole", "userinfo", "set_rate_limit", "set_parallel_limit", "queue_status",
-    "stats", "maintenance", "ownerhelp", "autoarchive", "sessionupdate", "sessionremove",
+    "stats", "maintenance", "ownerhelp", "autoarchive", "broadcast", "logchannel", "sessionupdate", "sessionremove",
     "enable_global_sessions", "disable_global_sessions",
     "premium", "setpremium", "removepremium", "premiumstatus", "checkpremium",
     "add_premium_session", "remove_premium_session",
@@ -7366,6 +7404,8 @@ async def download_and_send_media(
     - progress_tracker for progress updates
     - ReplyParameters (not deprecated reply_to_message_id)
     """
+    chunk_paths = []
+    _chunks = []
     file_path = None
     thumb_path = None
     status_msg = None
@@ -7612,6 +7652,9 @@ async def download_and_send_media(
                                 msg_type=msg_type,
                                 chunk_path=chunk_path,
                                 send_kwargs=part_video_kwargs,
+                                check_cancelled=pipeline.check_cancelled,
+                                status_msg=status_msg,
+                                status_chat_id=ctx_target_chat_id,
                             )
                         else:
                             _pre_part_latest_id = (
@@ -7643,6 +7686,9 @@ async def download_and_send_media(
                                 msg_type="Document",
                                 chunk_path=chunk_path,
                                 send_kwargs=_part_doc_kwargs,
+                                check_cancelled=pipeline.check_cancelled,
+                                status_msg=status_msg,
+                                status_chat_id=ctx_target_chat_id,
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -7692,6 +7738,8 @@ async def download_and_send_media(
                     return True
 
                 except Exception as split_err:
+                    if is_floodwait_error(split_err):
+                        raise
                     logger.error(f"Large file split error: {split_err}")
                     if status_msg:
                         await _safe_status_edit_message(
@@ -7946,6 +7994,9 @@ async def download_and_send_media(
                                 msg_type=msg_type,
                                 chunk_path=_cp,
                                 send_kwargs=_part_video_kwargs,
+                                check_cancelled=pipeline.check_cancelled,
+                                status_msg=status_msg,
+                                status_chat_id=ctx_target_chat_id,
                             )
                         else:
                             _pre_part_latest_id = (
@@ -7977,6 +8028,9 @@ async def download_and_send_media(
                                 msg_type="Document",
                                 chunk_path=_cp,
                                 send_kwargs=_part_doc_kwargs,
+                                check_cancelled=pipeline.check_cancelled,
+                                status_msg=status_msg,
+                                status_chat_id=ctx_target_chat_id,
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -8014,6 +8068,8 @@ async def download_and_send_media(
                                 return False
                             await asyncio.sleep(2)
                 except Exception as _fallback_err:
+                    if is_floodwait_error(_fallback_err):
+                        raise
                     logger.error("Split fallback after direct premium failure: %s", _fallback_err)
                     return False
         else:
@@ -8676,7 +8732,9 @@ async def download_and_send_media(
                 pass
         return False
     finally:
-        # GUARANTEED CLEANUP
+        # GUARANTEED CLEANUP, including failed/cancelled split uploads.
+        cleanup_chunks(chunk_paths)
+        cleanup_chunks(_chunks)
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)

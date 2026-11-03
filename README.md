@@ -8,7 +8,7 @@ Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-dev build-essential ffmpeg libmediainfo0v5 p7zip-full
-git clone https://github.com/Alimurod777/savebotnew.git
+git clone --branch pyrofork https://github.com/Alimurod777/savebotnew.git
 cd savebotnew
 python3 -m venv venv
 source venv/bin/activate
@@ -55,6 +55,51 @@ Testlar (Telegramga real login yoki bot start talab qilmaydi):
 python -m pip install pytest pytest-subtests
 python -m pytest -q
 ```
+
+## Log kanal/guruh
+
+Bu branch Pyrofork variantidir; `main` Wzgram variantini saqlaydi.
+Botni log kanal yoki guruhga admin qiling (kanalda xabar yozish huquqi kerak).
+`.env.example` ichidagi ixtiyoriy qiymat:
+
+```dotenv
+LOG_CHANNEL_ID=-1001234567890
+```
+
+ENV yozilmagan bo‘lsa ham owner private chatda sozlay oladi; restart kerak emas:
+
+```text
+/logchannel set -1001234567890
+/logchannel set @your_log_channel
+/logchannel status
+/logchannel off
+/logchannel on
+/logchannel test
+/logchannel remove
+/logchannel reset
+```
+
+`set` manzilni o‘rnatadi/almashtiradi va logni yoqadi. `off` manzilni saqlab
+o‘chiradi; `remove` manzilni ham olib tashlab, ENV bo‘lsa ham o‘chiq qoldiradi.
+Owner tanlovi `data/chat_log.json`da atomik saqlanadi va restartdan keyin ham
+ENVdan ustun turadi. `reset` owner override’ini olib tashlaydi: mavjud
+`LOG_CHANNEL_ID`ga qaytadi, ENV bo‘sh bo‘lsa o‘chadi. ENVni tahrirlash restartda
+o‘qiladi; owner komandasi esa darhol amal qiladi. `/ownerhelp`da ham ko‘rsatilgan.
+
+Bot–user private chatidagi kiruvchi va chiquvchi text/media Telegramning oddiy
+`forward_messages` amali bilan yuboriladi: original forward manbasi saqlanadi,
+download/reupload yoki yashirin copy yo‘q. User o‘zgarganda yoki 5 daqiqadan uzun
+tanaffusdan keyin blok boshida ism, @username va user ID alohida yuboriladi;
+har xabarda qaytarilmaydi. Albom bir marta, xabarlar ID tartibida forward qilinadi.
+Log kanalning o‘z xabarlari qayta log qilinmaydi. Asosiy media/session routing
+va /stop ishlashi o‘zgarmaydi; faqat log uchun bot identity ishlatiladi.
+
+Log navbati asosiy yuborishni kutdirmaydi. Statusda sent/failed/dropped va navbat
+ko‘rinadi. Telegram forward qilishga ruxsat bermagan, o‘chirilgan yoki endi mavjud
+bo‘lmagan xabarlar uchun reupload fallback yo‘q. Navbat RAMda (1000 eventgacha),
+restart/shutdown yoki to‘lib qolish holatida yozuvlar tushib qolishi mumkin;
+cheksiz arxiv/resume kafolati yo‘q. Manzil almashtirilganda/o‘chirilganda eski
+navbat yangi kanalga ko‘chirilmaydi. Userlar uchun alohida log kvotasi qo‘yilmagan.
 
 <!-- WOODcraft -->
 <p align="center">
@@ -205,3 +250,23 @@ ON sessiyalarda bot chatini arxivlaydi, OFF arxivdan chiqaradi. Mavjud user va
 pool sessiyalari darhol best-effort yangilanadi; natijada yangilangan/xatoli
 sessiyalar soni ko'rsatiladi. Sozlama `data/bot_archive.json`da saqlanadi va yangi
 login/upload sessiyalariga ham qo'llanadi. Default ON. Komanda faqat ownerga ochiq.
+
+
+### Owner broadcast
+
+`/broadcast Your message` sends text to registered bot users. Alternatively,
+reply to text, photo, video, document, audio, voice, animation or sticker with
+`/broadcast`. Reply content is copied using the bot account; protected content
+and unsupported message types are rejected. Only the configured owner may start
+or cancel a broadcast. `/ownerhelp` lists this command.
+
+Owner progress updates approximately every five seconds. `/stop broadcast`
+cancels only the broadcast, leaving downloads/uploads alone. Sending is sequential,
+limited to four attempts per second and three attempts per recipient. Effective
+bans, existing blocked/deactivated/opt-out states are respected. Statistics show
+eligible, processed, successful, failed, skipped, pending and policy-excluded counts.
+A cancellation during recipient selection explicitly marks the total incomplete.
+Jobs are in memory and are not resumed after restart. Network acknowledgement
+failures can cause duplicates on retry; owner status delivery is best-effort if
+Telegram rejects status messages. Historical users absent from the registered-user
+DB cannot be enumerated; no contacts or unrelated chats are used.

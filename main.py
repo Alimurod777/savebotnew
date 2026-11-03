@@ -211,6 +211,10 @@ class Bot(Client):
             lang_code=fp['lang_code'],
         )
         
+        # Observe bot send results; no global Client monkey-patch/user-session hooks.
+        from core.chat_log import chat_logger
+        chat_logger.attach(self)
+
         # Setup ask_message response handler
         if ASK_HANDLER_AVAILABLE:
             setup_ask_handler(self)
@@ -243,6 +247,8 @@ class Bot(Client):
                 
                 await super().start()
                 self._is_connected = True
+                from core.chat_log import chat_logger
+                await chat_logger.start(self)
                 logger.info('Bot Started Modified By WOODcraft')
                 print('Bot Started Modified By WOODcraft')
                 
@@ -399,6 +405,12 @@ class Bot(Client):
     async def stop(self, *args):
         """Stop the bot with improved error handling"""
         try:
+            # Stop only the isolated owner broadcast before disconnecting the bot.
+            try:
+                from core.broadcast import broadcast_manager
+                await broadcast_manager.shutdown()
+            except Exception as error:
+                logger.warning("Broadcast shutdown warning: %s", type(error).__name__)
             self._is_connected = False
             
             # Shutdown download engine first (stops all workers)
@@ -457,6 +469,8 @@ class Bot(Client):
             except Exception as e:
                 logger.warning(f"UserUploadWorker shutdown warning: {e}")
 
+            from core.chat_log import chat_logger
+            await chat_logger.stop()
             await super().stop()
             logger.info('Bot Stopped Successfully')
             print('Bot Stopped Bye')

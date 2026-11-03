@@ -33,6 +33,14 @@ API_HASH = _get("API_HASH")
 BOT_SESSION = _get("BOT_SESSION", "")
 DB_URI = _get("DB_URI")
 
+# Private conversation log destination. Owner /logchannel settings override ENV.
+try:
+    LOG_CHANNEL_ID = int(_get("LOG_CHANNEL_ID", "0") or "0")
+    if LOG_CHANNEL_ID > 0:
+        LOG_CHANNEL_ID = 0
+except (TypeError, ValueError):
+    LOG_CHANNEL_ID = 0
+
 # Owner
 OWNER_ID = int(_get("OWNER_ID", "0"))
 OWNER_USERNAME = _get("OWNER_USERNAME")

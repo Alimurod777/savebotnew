@@ -1437,7 +1437,7 @@ va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.
 
 ## BUG-075: Registered userlar uchun owner broadcast komandasi yo'q
 **Sana:** 2026-11-02
-**Holat:** ✅ Hal qilindi (lokal, commit/push qilinmagan)
+**Holat:** ✅ Hal qilindi (GitHubga nashr qilindi, 2026-11-03)
 
 Tekshiruv: /broadcast, /boadcart va /ownnerhelp mavjud emas; yagona /ownerhelp
 TechVJ/owner_commands.py da. Owner gate config.OWNER_ID va _owner() orqali.
@@ -1478,7 +1478,7 @@ restart, .env/session credential o'zgarishi, commit, push yoki deploy bajarilmad
 
 ## BUG-076: Split chunk SendMedia FloodWait postni yuborishdan to‘xtatadi
 **Sana:** 2026-11-03
-**Holat:** ✅ Hal qilindi (lokal)
+**Holat:** ✅ Hal qilindi (GitHubga nashr qilindi, 2026-11-03)
 
 Report: BITTU VIP Courses, post 62, 4194304000-byte ZIP. Birinchi 1.30 GB
 bo‘lakdagi messages.SendMedia FLOOD_WAIT_X generic split exceptionga tushgan;

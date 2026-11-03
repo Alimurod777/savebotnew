@@ -1270,3 +1270,11 @@ ham shu vazifaning davomiga kiritildi; original Pyrofork alohida qoladi.
 Yakuniy tekshiruv: full pytest — 276 passed, 22 subtests passed;
 AST, diff whitespace va staged runtime/secret-format tekshiruvlari o‘tdi.
 Real bot restart/deploy yoki live xabar yuborish bajarilmadi.
+
+Nashr yakuni (2026-11-03): GitHub ilovasi orqali pyrofork, wzgram va main
+yangilandi. Feature commitlar: pyrofork 37f3065, wzgram c2cff93; main merge
+b531a9a. Har variantning Git tree SHA qiymati testlangan lokal nusxaga aynan
+mosligi tekshirildi. Oddiy git push HTTPS credential yo‘qligi sabab ishlamadi;
+API orqali expected-head lease bilan, force’siz nashr qilindi. Lokal tarixlar
+backup branchlarda saqlandi, working tree o‘zgarmasdan published refga moslandi.
+Live bot restart/deploy yoki real log/broadcast yuborish bajarilmadi.

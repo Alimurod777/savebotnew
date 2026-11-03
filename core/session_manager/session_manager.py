@@ -307,11 +307,13 @@ class SessionManager:
                     pre_upload_latest_id = await get_bot_latest_message_id(bot_client, copy_source_chat_id)
 
             try:
+                from core.upload_coordinator import upload_wait_notifier
                 sent_msg = await bridge.enqueue_task(
                     worker,
                     send_fn,
                     is_media=True,
                     owner_user_id=user_id,
+                    on_wait=upload_wait_notifier(bot_client, user_id),
                 )
             finally:
                 if not is_pool_upload and update_waiter is not None:

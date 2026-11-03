@@ -800,3 +800,21 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   discard stale queued events. Status exposes failed/dropped counts. No log loops.
 - Log destination and runtime state must remain ignored; `.env.example` is tracked.
 - Tests use synthetic bot/user IDs and mocks; no live user messages sent by tests.
+- Bot download/upload, split-part and batch progress text is excluded from chat
+  logs. User text, media captions and final results stay logged. Recheck queued
+  bot text before native forward because the original may have been edited.
+
+### Shared upload queue and FloodWait (2026-11-03)
+- `core/upload_coordinator.py`: worker and split uploads share one lock/cooldown
+  per actual Telegram account ID, across requester IDs and session strings.
+- Resolve account identity before upload; do not key the guard by requesting user.
+- All worker send attempts/retries and both split paths must use the coordinator.
+- Upload-part FloodWait also updates the shared deadline; shorter waits never
+  replace a longer one. Keep split clients opted into the flood-safe uploader
+  and sleep_threshold=0, matching worker behavior.
+- Queue/cooldown notices go through the BOT only. Short waits continue within
+  existing retry bounds; long/exhausted waits explicitly stop the attempt.
+- Cooldowns are process-local; no cross-process or restart persistence/resume.
+- Private final summary must preserve surfaced FloodWait, count the unfinished
+  post and explain possible partial split delivery. Never overwrite it with
+  "nothing sent / errors 0" or promise automatic resume after termination.

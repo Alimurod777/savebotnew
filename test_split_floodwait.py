@@ -9,6 +9,17 @@ from wzgram.errors import FloodWait
 
 from TechVJ import save
 from core import premium_logic
+from core import upload_coordinator as coordinator_module
+
+
+@pytest.fixture(autouse=True)
+def cooldown_clock(monkeypatch):
+    # Existing retry tests mock sleep; advance the account clock by the same
+    # amount so the new shared cooldown expires only after the full wait.
+    def now():
+        sleep = save.asyncio.sleep
+        return sum(call.args[0] for call in getattr(sleep, 'await_args_list', []))
+    monkeypatch.setattr(coordinator_module, 'monotonic', now)
 
 
 class PremiumFlood(Exception):
@@ -17,6 +28,7 @@ class PremiumFlood(Exception):
 
 
 async def send_part(acc, **kwargs):
+    acc.me = SimpleNamespace(id=123)
     return await save._send_split_part_with_peer_retry(
         acc=acc, target_chat_id=777, bot_client=SimpleNamespace(),
         msg_type=kwargs.pop('msg_type', 'Document'),
@@ -78,8 +90,8 @@ def test_flood_after_peer_refresh_retries_refreshed_target(monkeypatch):
 def test_cancel_during_flood_wait_never_sends_again(monkeypatch, task_cancel):
     async def run():
         send = AsyncMock(side_effect=FloodWait(20))
-        stop = AsyncMock(side_effect=[False, False, True])
         sleep = AsyncMock(side_effect=asyncio.CancelledError() if task_cancel else None)
+        stop = AsyncMock(side_effect=lambda: sleep.await_count > 0)
         monkeypatch.setattr(save.asyncio, 'sleep', sleep)
         with pytest.raises(asyncio.CancelledError):
             await send_part(SimpleNamespace(send_document=send), check_cancelled=stop)
@@ -108,7 +120,7 @@ def test_split_pipeline_preserves_completed_parts_and_cleans_files(monkeypatch, 
         chunks = [tmp_path / f'part.{i}' for i in range(3)]
         for path in chunks:
             path.write_bytes(b'part')
-        acc = SimpleNamespace(send_document=AsyncMock())
+        acc = SimpleNamespace(send_document=AsyncMock(), me=SimpleNamespace(id=123))
         sent_paths = []
         failed_once = False
 

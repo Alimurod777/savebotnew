@@ -1278,3 +1278,58 @@ mosligi tekshirildi. Oddiy git push HTTPS credential yo‘qligi sabab ishlamadi;
 API orqali expected-head lease bilan, force’siz nashr qilindi. Lokal tarixlar
 backup branchlarda saqlandi, working tree o‘zgarmasdan published refga moslandi.
 Live bot restart/deploy yoki real log/broadcast yuborish bajarilmadi.
+
+## Sessiya (2026-11-03) — Log kanalidan transfer progressini chiqarish
+
+So‘rov: download/upload foizlari, Qism 2/3 va batch progress log kanalga
+kelmasin. Bot outbound text uchun transfer UI filtri va queued textni native
+forward oldidan qayta tekshirish qo‘shildi. User kontenti, media captionlari,
+yakuniy natija/xatolar va user chatdagi progress saqlandi. 36 chat-log mock test
+o‘tdi. Restart/deploy yoki live Telegram xabari yuborilmadi.
+
+UMUMIY YO‘NALISH: log kanal foydali chat kontentini saqlasin; vaqtinchalik
+transfer progress tahrirlari kanalni to‘ldirmasin.
+Yakuniy tekshiruv: full pytest — 278 passed, 22 subtests passed; git diff --check o‘tdi.
+
+## Sessiya (2026-11-03) — Akkaunt bo‘yicha upload navbati va userga tushuntirish
+
+So‘rov: loyiha FloodWait paytida ayni akkauntdan yangi upload boshlamasin,
+split va workerlar umumiy navbat/cooldown ishlatsin; userga ham holat aytilsin.
+Actual account ID bo‘yicha umumiy coordinator, barcha worker retry va split
+sendlariga guard, split uchun flood-safe upload-part patch va shared flood
+signallari qo‘shildi. Bot queue/flood/stopped izohini userga yuboradi. Private
+summaryda FloodWait sababi yo‘qolishi va Xato 0 hisoblagichi tuzatildi.
+
+UMUMIY YO‘NALISH: bir akkaunt — bir faol upload; cooldown to‘liq tugamaguncha
+yangi upload yo‘q. Userga kutish va to‘xtashni farqlab aytish, terminate qilingan
+vazifaga avtomatik resume va’da qilmaslik. Bounded retry va oldin yetkazilgan
+split bo‘laklarni shu urinishda takrorlamaslik saqlansin. Holat process-local;
+restart/cross-process shared storage/resume qo‘shilmadi. Live Telegram send,
+restart, commit/push/deploy bajarilmadi.
+
+Yakuniy tekshiruv: full pytest — 296 passed, 22 subtests passed; 51 focused
+regression qayta o‘tdi. py_compile va git diff --check o‘tdi. O‘zgarishlar lokal;
+real bot restart yoki foydalanuvchilarga test xabarlari yuborilmadi.
+
+## Sessiya (2026-11-03) — Upload/log tuzatishlarini GitHubga push qilish
+
+So‘rov: joriy tuzatishlarni GitHubga push qilish. Scope: pyrofork branchidagi
+progress log filtri, shared account upload navbati/cooldown, bot user notices,
+FloodWait final report va regression testlar. Oldingi 296 passed / 22 subtests
+va 51 focused test natijalari saqlandi. Runtime .env/session/chat-log sozlamalari
+commitga kiritilmaydi; bot restart/deploy bu so‘rovga kirmaydi.
+
+## Sessiya (2026-11-03) — Wzgram nusxasiga shared upload va log filtrini moslashtirish
+
+User qo‘shimcha so‘radi: /home/telegramdata3/savebotnew-wzgram papkasi va wzgram
+branchiga ham shu o‘zgarishlar kiritilsin. Pyrofork feature commitidagi logic
+patch qo‘llandi; barcha yangi importlar native wzgramga moslashtirildi. Mavjud
+Wzgram reply/vector/storage compatibility va WarpCrypto dependencysi saqlandi.
+Yangi coordinator/shared cooldown, split upload-part himoyasi, bot notices,
+final FloodWait report va progress log filtri Wzgramda ham ishlaydi.
+
+Tekshiruv: 304 passed, 22 subtests passed; verify_migration — Wzgram 3.1.6,
+WarpCrypto 2.1.0, 638 import symbols, 0 failures; pip check toza. git diff --check
+o‘tdi. Nashr scope: pyrofork va wzgram; main branchi yoki live bot o‘zgartirilmaydi.
+UMUMIY YO‘NALISH: ikkala variant bir xil upload/navbat va user status xatti-harakatini
+saqlasin, lekin har biri o‘z Telegram library import/APIlarida qolsin.

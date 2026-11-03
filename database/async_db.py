@@ -1,5 +1,6 @@
 import logging
 import time
+from contextlib import aclosing
 from typing import Dict, Any, Tuple
 
 _async_db_logger = logging.getLogger(__name__)
@@ -273,6 +274,44 @@ class AsyncDatabase:
                     _async_db_logger.debug(f"MongoDB update_user fallback failed: {e}")
 
     
+    @classmethod
+    async def iter_registered_users(cls, batch_size: int = 200):
+        """Stream existing registrations, SQLite first then MongoDB-only users.
+
+        Includes logged-out registered users; never enumerates session contacts.
+        No new storage or writes. Exceptions propagate so a partial scan is not
+        reported as a successfully completed broadcast.
+        """
+        if not 1 <= batch_size <= 1000:
+            raise ValueError("Invalid recipient batch size")
+        local = cls._get_local()
+        local_complete = False
+        if local:
+            try:
+                async with aclosing(local.iter_registered_users(batch_size)) as rows:
+                    async for row in rows:
+                        yield row
+                local_complete = True
+            except Exception as error:
+                _async_db_logger.warning("Recipient SQLite scan failed: %s", type(error).__name__)
+        coll = get_sessions_collection()
+        if coll is None:
+            if local_complete:
+                return
+            raise RuntimeError("Registered user database unavailable")
+        projection = {name: 1 for name in (
+            'chat_id', 'is_bot', 'chat_type', 'blocked', 'is_blocked',
+            'deactivated', 'is_deleted', 'deleted', 'broadcast_opt_out',
+            'broadcast_enabled',
+        )}
+        projection['_id'] = 0
+        cursor = coll.find({}, projection).batch_size(batch_size)
+        try:
+            async for row in cursor:
+                yield row
+        finally:
+            await cursor.close()
+
     @classmethod
     async def get_all_logged_in_users(cls):
         """Get all logged-in users (for admin session command)"""

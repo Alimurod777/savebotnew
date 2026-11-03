@@ -594,6 +594,31 @@ def is_maintenance() -> bool:
     return _maintenance_mode
 
 
+# ── /broadcast ────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("broadcast") & filters.private)
+async def cmd_broadcast(client: Client, message: Message):
+    # Reject before parsing the source, enumerating recipients or starting work.
+    if not _owner(message):
+        return
+    from core.broadcast import BroadcastContent, BroadcastBusy, broadcast_manager
+    try:
+        content = BroadcastContent.from_command(message)
+        await broadcast_manager.start(client, message.from_user.id, content)
+    except (ValueError, BroadcastBusy, PermissionError) as error:
+        await client.send_message(OWNER_ID, str(error), parse_mode=ParseMode.DISABLED)
+
+
+async def stop_owner_broadcast(client: Client, message: Message):
+    """Targeted /stop broadcast; never call the download cancellation pipeline."""
+    if not _owner(message):
+        return
+    from core.broadcast import broadcast_manager
+    cancelled = broadcast_manager.cancel(message.from_user.id)
+    text = "Broadcast cancellation requested. In-flight delivery will finish safely." if cancelled else "No active broadcast."
+    await client.send_message(OWNER_ID, text, parse_mode=ParseMode.DISABLED)
+
+
 # ── /autoarchive ──────────────────────────────────────────────────────────────
 
 def _archive_controls():
@@ -674,6 +699,79 @@ async def cb_bot_archive(client: Client, query: CallbackQuery):
     await _change_bot_archive(client, query.message, query.data == "bot_archive:on")
 
 
+@Client.on_message(filters.command("logchannel") & filters.private)
+async def cmd_logchannel(client: Client, message: Message):
+    if not _owner(message):
+        return
+    from core.chat_log import chat_logger, LogPolicy, validate_log_chat
+
+    async def reply(text):
+        await client.send_message(message.chat.id, text, parse_mode=ParseMode.DISABLED)
+
+    parts = str(message.text or "").split()
+    action = parts[1].lower() if len(parts) > 1 else "status"
+    settings = chat_logger.settings
+    try:
+        if action == "status":
+            policy = settings.policy
+            await reply(
+                f"Log: {'ON' if policy.enabled else 'OFF'}\n"
+                f"Manzil: {policy.chat_id or 'belgilanmagan'}\n"
+                f"Manba: {policy.source} (owner sozlamasi ENVdan ustun)\n"
+                f"Navbat: {chat_logger.queue.qsize()} | Yuborildi: {chat_logger.sent}\n"
+                f"Xato: {chat_logger.failed} | Tushirib qoldirildi: {chat_logger.dropped}\n"
+                f"Oxirgi xato: {chat_logger.last_error}\n\n"
+                "/logchannel set <kanal/guruh ID yoki @username>\n"
+                "/logchannel on|off|remove|reset|test|status\n"
+                "reset — ENVga qaytish; remove — ENV bo‘lsa ham o‘chirish."
+            )
+            return
+        if action == "off":
+            await chat_logger.configure(LogPolicy(settings.policy.chat_id, False, 'owner'))
+        elif action == "remove":
+            await chat_logger.configure(LogPolicy(source='owner'))
+        elif action == "reset":
+            if settings.env_chat_id:
+                await validate_log_chat(client, settings.env_chat_id)
+            await chat_logger.configure(LogPolicy(settings.env_chat_id, bool(settings.env_chat_id)))
+        elif action == "on":
+            if not settings.policy.chat_id:
+                await reply("Avval /logchannel set <kanal/guruh ID> bilan manzil kiriting.")
+                return
+            chat_id = await validate_log_chat(client, settings.policy.chat_id)
+            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+        elif action == "test":
+            policy = settings.policy
+            if not policy.enabled or not policy.chat_id:
+                await reply("Log o‘chiq. Avval /logchannel set yoki /logchannel on ishlating.")
+                return
+            await validate_log_chat(client, policy.chat_id)
+            await client.send_message(policy.chat_id, "✅ Log kanal/guruh testi muvaffaqiyatli.",
+                                      parse_mode=ParseMode.DISABLED)
+            await reply("✅ Test xabari log manziliga yuborildi.")
+            return
+        else:
+            target = parts[2] if action == 'set' and len(parts) == 3 else (parts[1] if len(parts) == 2 and action.startswith(('-', '@')) else None)
+            if target is None:
+                await reply("/logchannel set <kanal/guruh ID yoki @username>\n"
+                            "/logchannel status|on|off|remove|reset|test")
+                return
+            if target.lstrip('-').isdigit():
+                target = int(target)
+            elif not target.startswith('@'):
+                raise ValueError('Kanal/guruh ID yoki @username kiriting.')
+            chat_id = await validate_log_chat(client, target)
+            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+        policy = settings.policy
+        await reply(f"✅ Log sozlamasi saqlandi: {'ON' if policy.enabled else 'OFF'}\n"
+                    f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}")
+    except ValueError as error:
+        await reply(str(error))
+    except Exception as error:
+        await reply(f"❌ Log sozlamasi bajarilmadi: {type(error).__name__}. "
+                    "Bot adminligi, manzil va diskka yozish imkonini tekshiring.")
+
+
 # ── /ownerhelp ────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("ownerhelp") & filters.private)
@@ -693,6 +791,15 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/queue_status` — Queue holati\n"
         "`/stats` — Umumiy statistika\n"
         "`/maintenance <on|off>` — Texnik xizmat rejimi\n\n"
+        "**Broadcast:**\n"
+        "/broadcast — Send a message to all registered bot users. Owner only.\n"
+        "/broadcast Your message\n"
+        "Or reply to text/media with /broadcast.\n"
+        "Progress is displayed only to the owner. Cancel: /stop broadcast\n\n"
+        "**Log kanal/guruh:**\n"
+        "/logchannel set <ID yoki @username> — log manzilini o‘rnatish/almashtirish\n"
+        "/logchannel status|on|off|remove|reset|test — to‘liq boshqarish\n"
+        "Owner sozlamasi ENVdan ustun; reset ENVga qaytaradi.\n\n"
         "**Bot chatini arxivlash:**\n"
         "/autoarchive on|off|status — sessiyalarda arxivlash/arxivdan chiqarish\n\n"
         "**User sessiyalar (DB):**\n"

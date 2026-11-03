@@ -771,3 +771,32 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   worker clientlarini qayta ishlatadi; qolganlar create_user_session orqali.
 - Policy save failureda success demang; bulk sync failed sonini ko'rsating.
 - Autoarchive command/callback text faqat botdan ownerga yuboriladi.
+
+
+### Owner broadcast (2026-11-02)
+- `/broadcast text` yoki supported xabarga reply `/broadcast`: faqat OWNER_ID.
+- `core/broadcast.py` singleton, bir vaqtning o'zida faqat bitta broadcast job.
+- Explicit owner broadcast istisnosi: text VA media broadcast faqat bot identity
+  (`client.send_message/copy_message`) orqali. User session/worker ishlatilmasin.
+- Recipientlar faqat mavjud sessions registratsiyasidan, contacts/channels emas.
+- `/stop broadcast` faqat broadcastni bekor qiladi; download TaskManagerga tegmang.
+- Broadcastlar in-memory; avtomatik resume yoki restartda resend qo'shmang.
+- Testlarda haqiqiy recipient/bot tarmog'iga xabar yuborilmasin.
+
+
+### Owner chat log policy (2026-11-03)
+- `/logchannel set <ID|@username>`, `status|on|off|remove|reset|test`: owner private only.
+- `LOG_CHANNEL_ID` ENV default; atomic `data/chat_log.json` owner override wins.
+  off/remove must survive restart and suppress ENV; reset restores ENV defaults.
+- `core/chat_log.py`, `TechVJ/log_channel.py`: observe incoming private updates
+  and bot instance send results; no global Client monkey-patch or user-session hooks.
+- Explicit owner chat-log exception to media routing: log text/header AND native
+  media forwards use the bot identity. User delivery media routing stays unchanged.
+- Latest user instruction: ordinary forward_messages, preserve forward author;
+  do NOT use drop_author=True, copy_message or download/reupload for log contents.
+- User identity (name, username, ID) appears at the start of a new user's block or
+  after >5 minutes idle, not on every log message. Keep content/captions unchanged.
+- Queue isolated/bounded, errors do not fail user delivery; destination changes
+  discard stale queued events. Status exposes failed/dropped counts. No log loops.
+- Log destination and runtime state must remain ignored; `.env.example` is tracked.
+- Tests use synthetic bot/user IDs and mocks; no live user messages sent by tests.

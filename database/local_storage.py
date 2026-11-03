@@ -217,6 +217,34 @@ class LocalStorage:
             await db.close()
     
     @staticmethod
+    async def iter_registered_users(batch_size: int = 200):
+        """Read registered users in batches without loading session strings."""
+        await init_tables()
+        db = await _get_db()
+        if db is None:
+            raise RuntimeError("Registered user database unavailable")
+        try:
+            async with db.execute(
+                "SELECT chat_id, data_json FROM sessions WHERE chat_id > 0 ORDER BY chat_id"
+            ) as cursor:
+                while True:
+                    rows = await cursor.fetchmany(batch_size)
+                    if not rows:
+                        break
+                    for row in rows:
+                        try:
+                            extra = json.loads(row['data_json'] or '{}')
+                        except (ValueError, TypeError):
+                            extra = {}
+                        fields = ('is_bot', 'chat_type', 'blocked', 'is_blocked', 'deactivated',
+                                  'is_deleted', 'deleted', 'broadcast_opt_out', 'broadcast_enabled')
+                        state = {key: extra[key] for key in fields if isinstance(extra, dict) and key in extra}
+                        # Always use the actual primary key, never JSON overrides.
+                        yield {**state, 'chat_id': row['chat_id']}
+        finally:
+            await db.close()
+
+    @staticmethod
     async def get_all_logged_in_users() -> list:
         await init_tables()
         db = await _get_db()

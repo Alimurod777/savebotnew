@@ -1486,3 +1486,111 @@ archive policy komandasi bajarilmadi; production botlar restart qilinmadi.
 Yakuniy tekshiruv: full pytest 200 passed, 22 subtests passed; 20 archive
 va 10 video-document regression case. Git diff whitespace tekshiruvi o‘tdi.
 Wzgram migration verification: 617 import symbols, 0 failures; pip check o‘tdi.
+
+
+## BUG-075: Registered userlar uchun owner broadcast komandasi yo'q
+**Sana:** 2026-11-02
+**Holat:** ✅ Hal qilindi (lokal, commit/push qilinmagan)
+
+Tekshiruv: /broadcast, /boadcart va /ownnerhelp mavjud emas; yagona /ownerhelp
+TechVJ/owner_commands.py da. Owner gate config.OWNER_ID va _owner() orqali.
+Mavjud sessions registry SQLite primary/MongoDB backup bo'lib, logged-out
+registratsiyalar ham saqlanadi. Eski /stop esa barcha download/uploadlarni
+bekor qilgani uchun broadcastga to'g'ridan ulash unrelated joblarni to'xtatardi.
+
+Yechim: core/broadcast.py alohida process-local singleton job, bot-account
+tekshiruvi, commanddan OLDIN owner gate, reply media/text uchun bot.copy_message,
+inline text uchun UTF-16 entity offsetlarini saqlaydigan bot.send_message.
+Protected/unsupported source explicit rad etiladi, download/reupload fallback yo'q.
+SQLite fetchmany(200) va Mongo cursor.batch_size(200) session auth/phone ustunlarisiz
+registratsiyalarni o'qiydi; local-first precedence, Mongo-only registrationlar,
+ID dedup va faqat musbat user IDlar. Effective global role/ban, mavjud blocked
+store va row metadata opt-out/deactivated holatlari hisobga olinadi. Baza
+reset/migration/recipient state yozuvi yoki yangi user storage yo'q.
+
+Bitta delivery (4 attempt/s), 3 urinishgacha, mavjud transient/backoff va FloodWait
+helperlari. Surface qilingan FloodWait to'liq kutish + 1s buffer, >300s bo'lsa
+job Stopped; cooldown keyingi jobga ham saqlanadi. Native client o'zining qisqa
+waitlarini boshqaradi; har delivery attempt 90s bilan bounded. Progress faqat
+ownerga ~5s; total eligible = processed + pending, processed = success+failed+skipped.
+Policy excluded alohida. Selection vaqtida cancel bo'lsa total incomplete deb
+aniq belgilanadi. /stop broadcast faqat shu jobni signal qiladi, in-flight
+finishiga ruxsat beradi; oddiy /stop download semantikasi o'zgarmaydi.
+Bot.stop() broadcast va progress taskini ham yopadi. DB cursorlar early exitda yopiladi.
+
+Limitlar: in-memory job restartdan keyin resume qilinmaydi; recipient snapshot
+uchun faqat IDlar xotirada saqlanadi. Telegram transport xatosi tasdiqni yo'qotsa,
+retry bir recipientda duplicate keltirishi mumkin (exactly-once kafolat yo'q).
+Owner unreachable/FloodWait bo'lsa progress/yakuniy edit best-effort. DBda hech
+qachon qayd etilmagan tarixiy /start-only userlarni aniqlab bo'lmaydi; scraping yo'q.
+
+Tekshiruv: 33 focused broadcast mock case; full pytest 233 passed,
+22 subtests passed. AST va whitespace tekshiruvi o'tdi. Real broadcast, bot
+restart, .env/session credential o'zgarishi, commit, push yoki deploy bajarilmadi.
+
+
+## BUG-076: Split chunk SendMedia FloodWait postni yuborishdan to‘xtatadi
+**Sana:** 2026-11-03
+**Holat:** ✅ Hal qilindi (lokal)
+
+Report: BITTU VIP Courses, post 62, 4194304000-byte ZIP. Birinchi 1.30 GB
+bo‘lakdagi messages.SendMedia FLOOD_WAIT_X generic split exceptionga tushgan;
+post False qaytib, vaqtinchalik upload cheklovi faylni bo‘lish xatosi sifatida
+ko‘rsatilgan. Split helper faqat peer-invalid xatoni retry qilardi.
+
+Yechim: mavjud _send_split_part_with_peer_retry ichida is_floodwait_error va
+get_floodwait_seconds qayta ishlatildi. Oddiy/Premium flood uchun joriy bo‘lak
+3 martagacha qayta yuboriladi; jami kutish MAX_FLOODWAIT_SECONDS (300s) bilan
+cheklangan. Har kutish Telegram vaqti + 1s; stop flag 5s oraliqda tekshiriladi,
+CancelledError yutilmaydi. Peer refresh bir martalik bo‘lib qoladi va yangi
+target flood retryda saqlanadi. Media faqat acc orqali, kutish statusi bot orqali.
+
+Ikkala split yo‘li (standard va premium-direct failure fallback) shu helperdan
+foydalanadi. Retry limiti tugaganda original flood tashqi mavjud handlerga
+uzatiladi; generic error_split/False ga aylantirilmaydi. Oldin yetkazilgan
+bo‘laklar shu urinish ichida qayta yuborilmaydi. Finally qolgan split fayllarni
+success/error/cancellation holatlarida tozalaydi. Uzoq floodda postning to‘liq
+yetkazilishi kafolatlanmaydi; restartdan keyin resume qo‘shilmadi.
+
+Tekshiruv: test_split_floodwait.py — 17 mocked regression case: document/video,
+FloodWait/FloodPremiumWait legacy x, bounded retries/wait, peer→flood, stop/task
+cancellation, unrelated error, ikkala pipeline uchun success/exhaustion/cancel,
+birinchi bo‘lak takrorlanmasligi va temp cleanup. Live Telegram upload yoki
+62-postni qayta yuborish, bot restart/deploy bajarilmadi.
+
+Yakuniy tekshiruv: full pytest — 242 passed, 22 subtests passed; py_compile va git diff --check o‘tdi.
+
+
+## BUG-077: Owner boshqaradigan persistent chat-log kanal/guruh yo‘q
+**Sana:** 2026-11-03
+**Holat:** ✅ Hal qilindi (yangi funksiya)
+
+Owner runtime’da log manzilini qo‘shish/almashtirish, yoqish/o‘chirish, test va
+ENVga qaytish imkoniga ega bo‘lishi so‘raldi. `LOG_CHANNEL_ID` default va atomik
+`data/chat_log.json` owner override precedence qo‘shildi. off/remove ENV orqali
+restartda qayta yoqilmaydi; reset ENVga qaytaradi. Disk xatosida muvaffaqiyat
+javobi yo‘q; buzilgan override fail-closed. Bot destination adminligi tekshiriladi.
+
+Private inbound observer group=-10000 (interactive login’dan oldin) va faqat
+Bot instansiyasidagi outbound method wrapperlari qo‘shildi. Nested sends va
+update/send-result dublikatlari dedup qilinadi; logning o‘zi qayta loglanmaydi.
+Latest user correction: barcha kontent oddiy native forward_messages orqali,
+original forward author saqlanadi. Text copy, drop_author yoki media reupload yo‘q.
+Foydalanuvchi ismi/@username/ID blok boshida: user almashganda yoki 5 daqiqadan
+uzun idle gapdan keyin, har xabarda emas. Albomlar bitta native forward batch.
+
+Alohida bounded queue, bounded flood retry/cooldown, status counters, shutdown
+cleanup; log xatosi asosiy download/upload natijasiga ta’sir qilmaydi. Policy
+save va in-flight RPC bir lock orqali: off/set tasdig‘idan keyin eski queued
+xabar yuborilmaydi, boshqa manzilga ko‘chmaydi. RAM queue restart/overflowda
+yo‘qolishi mumkin; o‘chirilgan/protected xabarlar forward bo‘lmasligi statusda
+failed bo‘ladi; aynan-once yoki cheksiz tarix kafolati berilmaydi.
+
+`.env.example`, README, /ownerhelp va routing command exclusion yangilandi.
+26 mocked regression case: ENV/owner precedence, restart/off/remove/reset,
+invalid state/disk failure, destination rights, owner guard/runtime controls,
+ordinary text/media/album forward, user attribution/header grouping, dedup,
+nonfatal errors, policy switch, flood cancellation and queue overflow.
+
+Yakuniy tekshiruv (2026-11-03): full pytest — 276 passed, 22 subtests passed; AST va diff --check o‘tdi.
+Wzgram verify_migration: 635 import symbols, 0 failures; pip check o‘tdi.

@@ -1540,3 +1540,66 @@ ordinary text/media/album forward, user attribution/header grouping, dedup,
 nonfatal errors, policy switch, flood cancellation and queue overflow.
 
 Yakuniy tekshiruv (2026-11-03): full pytest — 268 passed, 22 subtests passed; AST va diff --check o‘tdi.
+
+## BUG-078: Chat-log kanalga download/upload progress ham forward bo‘lgan
+**Sana:** 2026-11-03
+**Holat:** ✅ Hal qilindi (lokal)
+
+Sabab: bot send/edit natijalarining umumiy observeri har bir transfer foizi,
+split Qism N/M va batch ID progressini oddiy xabardek navbatga qo‘shgan.
+Yechim: core/chat_log.py bot-authored text uchun mavjud transfer UI formatlarini
+submit vaqtida filtrlaydi. Native forward joriy matnni o‘qigani uchun queued bot
+text delivery oldidan get_messages bilan qayta tekshiriladi. Userning kiruvchi
+matni va media captionlari filtrlanmaydi; final result/error matnlari logda qoladi.
+Download/upload callbacklari va userga ko‘rinadigan progress o‘zgarmadi.
+
+Tekshiruv: test_chat_log.py — 36 mocked case o‘tdi, jumladan 10 yangi progress,
+inbound/caption preservation, queued edit va final result regression case.
+Real Telegram send, restart yoki deploy bajarilmadi.
+Yakuniy tekshiruv: full pytest — 278 passed, 22 subtests passed; git diff --check o‘tdi.
+
+## BUG-079: Split/worker upload uchun akkaunt bo‘yicha yagona navbat va cooldown yo‘q
+**Sana:** 2026-11-03
+**Holat:** ✅ Hal qilindi (lokal)
+
+Report: 62-postdagi ~3.9 GB ZIP uchun upload.SaveBigFilePart cheklovlari va
+1912s FloodWait. Worker navbati requester/session bilan ajratilgan; split yo‘li
+acc orqali to‘g‘ridan yuborib, worker part-level compatibility himoyasini
+chetlab o‘tgan. Bir akkauntning boshqa client/requestlari cooldownni bilmagan.
+
+Yechim: core/upload_coordinator.py actual Telegram account ID bo‘yicha umumiy
+lock va monotonic cooldown beradi. Workerning barcha send/retry urinishlari va
+ikkala split yo‘li shu guarddan o‘tadi; sessiya stringi yoki requester ID boshqa
+bo‘lsa ham bitta akkaunt parallel upload qilmaydi. Akkaunt identifikatsiyasi
+aniqlanmasa upload yuborilmaydi. Deadline faqat uzayadi; request fail/cancel bo‘lsa
+ham qoladi. Global upload semaphore faqat real sendda olinadi, cooldown kutayotgan
+worker boshqa akkauntlar slotlarini band qilmaydi.
+
+Split client sleep_threshold=0 va mavjud flood-safe save_file patchiga opt-in;
+part-level flood darhol umumiy cooldownni yangilaydi. Flooddan so‘ng keyingi
+file-part RPC ham deadlinega qaraydi. Userga bot orqali queue/flood remaining-time
+xabari, qisqa kutish uchun automatic continue, uzun kutish uchun joriy akkauntdagi
+upload to‘xtagani tushuntiriladi; status xatosi deliveryni buzmaydi. Bekor qilingan
+queued request upload boshlamaydi va shared worker keyingi requestga xizmat qiladi.
+
+Qo‘shimcha sabab: private loop uzun FloodWaitni failed hisobiga qo‘shmasdan
+break qilgan; umumiy final status sababni "Hech qanday xabar jo‘natilmadi / Xato 0"
+bilan almashtirgan. Endi oddiy/Premium flood bir xil hisoblanadi, tugallanmagan
+post IDsi va kutish sababi saqlanadi; partial split delivery ehtimoli va bu
+vazifa avtomatik resume qilinmasligi aniq yoziladi. Surfaced flooddan keyin
+keyingi postga sakrab ketilmaydi.
+
+Chegaralar: Telegram FloodWait butunlay yo‘qolishi kafolatlanmaydi. Coordinator
+bitta process/event loop doirasida; restart yoki bir nechta bot processlari
+orasida holat saqlanmaydi. Mavjud bounded retry (worker 60s threshold, split
+3 retry/jami 300s) saqlandi. Restart/resend uchun durable partial-file resume
+qo‘shilmadi. Oddiy media/text routing, pool copy va caption saqlanishi o‘zgarmadi.
+
+Tekshiruv: full pytest — 296 passed, 22 subtests passed. Yangi coordinator testlari
+18 case: split/worker same-account concurrency, boshqa akkaunt parallel davom etishi,
+full cooldown+buffer, long floodning keyingi workerga ta’siri, deadline extension,
+queue/cooldown stop/cancel, workerning canceldan keyin davom etishi, identity failure,
+bot notices va ordinary/Premium flood final summary. Mavjud split/flood-safe part
+regressionlari ham o‘tdi. Yakuniy status-timeout o‘zgarishidan keyin 51 focused test
+qayta o‘tdi; py_compile va git diff --check o‘tdi. Real Telegram upload/restart,
+commit/push/deploy bajarilmadi.

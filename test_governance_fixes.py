@@ -718,7 +718,7 @@ def test_session_manager_pool_copy_uses_sender_chat_and_deletes_after_success():
             async def get_worker(self, record, user_id):
                 return SimpleNamespace(session_user_id=222)
 
-            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None, on_wait=None):
                 assert owner_user_id == 123
                 await bot.emit(bot_side)
                 return sent
@@ -820,7 +820,7 @@ def test_session_manager_user_owned_upload_does_not_use_bot_history_or_copy():
 
                 return FakeWorker()
 
-            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None, on_wait=None):
                 assert owner_user_id == 123
                 return sent
 
@@ -899,7 +899,7 @@ def test_session_manager_user_owned_upload_resolves_reply_anchor_before_send():
             async def get_worker(self, record, user_id):
                 return FakeWorker()
 
-            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None, on_wait=None):
                 assert owner_user_id == 123
                 return sent
 
@@ -1027,6 +1027,7 @@ def test_split_part_upload_retries_peer_invalid_with_bot_username():
                 self.targets = []
                 self.started = []
                 self.unblocked = []
+                self.me = SimpleNamespace(id=123, is_bot=False)
 
             async def send_video(self, target, path, **kwargs):
                 self.targets.append(target)
@@ -1211,7 +1212,7 @@ def test_session_manager_pool_copy_failure_returns_none_without_delete():
             async def get_worker(self, record, user_id):
                 return SimpleNamespace(session_user_id=333)
 
-            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None, on_wait=None):
                 assert owner_user_id == 123
                 await bot.emit(bot_side)
                 return sent
@@ -1312,7 +1313,7 @@ def test_session_manager_pool_copy_does_not_fallback_to_sender_id_when_unresolve
             async def get_worker(self, record, user_id):
                 return SimpleNamespace(session_user_id=333)
 
-            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None):
+            async def enqueue_task(self, worker, send_fn, is_media=True, owner_user_id=None, on_wait=None):
                 assert owner_user_id == 123
                 return sent
 
@@ -2024,8 +2025,9 @@ def test_pyrofork_upload_part_surfaces_long_premium_flood_without_sleeping():
     asyncio.run(run())
 
 
-def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
+def test_pyrofork_flood_safe_save_file_retries_without_losing_part(monkeypatch):
     import core.pyrofork_compat as compat
+    from core import upload_coordinator as uploads
 
     class FloodPremiumWait(Exception):
         def __init__(self, seconds):
@@ -2069,6 +2071,7 @@ def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
         def __init__(self):
             self.save_file_semaphore = asyncio.Semaphore(1)
             self.me = SimpleNamespace(is_premium=False)
+            self._techvj_session_user_id = 123
             self.storage = FakeStorage()
             self.loop = asyncio.get_running_loop()
             self.executor = None
@@ -2090,6 +2093,7 @@ def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
             file_path.write_bytes(b"x" * (1024 * 1024 + 17))
             client = FakeClient()
             sleeps = []
+            monkeypatch.setattr(uploads, 'monotonic', lambda: 100 + sum(sleeps))
             original_session = compat.PyrogramSession
             original_sleep = compat.asyncio.sleep
 
@@ -2110,6 +2114,7 @@ def test_pyrofork_flood_safe_save_file_retries_without_losing_part():
             assert all(threshold == 0 for _, threshold in session.calls)
             assert sleeps == [12.0]
             assert client.floods == [11]
+            assert uploads.upload_coordinator.state(123).flood_until == 112
             assert session.stopped is True
 
     asyncio.run(run())

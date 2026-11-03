@@ -9,6 +9,7 @@ from functools import wraps
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -21,6 +22,19 @@ from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 
 logger = logging.getLogger(__name__)
 _inside_send = ContextVar('chat_log_inside_send', default=False)
+
+# Match the bot's transfer UI, never media captions or user-authored text.
+_PROGRESS_TEXT = re.compile(
+    r'(?im)^\s*[📥📤⬇️⬆️\s*`]*(?:Downloading|Uploading)\b'
+    r'|^\s*Qism\s+\d+/\d+\s*-\s*[\d.]+/[\d.]+'
+    r'|^\s*⏳\s*\d+/\d+\s*\|\s*ID:'
+    r'|^\s*⏳\s*\d+\s+ta post yuklanmoqda'
+)
+
+
+def _is_progress_text(msg):
+    text = getattr(msg, 'text', None)
+    return bool(text and _PROGRESS_TEXT.search(str(text)))
 
 
 @dataclass(frozen=True)
@@ -106,6 +120,7 @@ class LogEvent:
     album: bool = False
     user_name: str = ""
     username: str = ""
+    bot_text: bool = False
 
 
 class ChatLogger:
@@ -158,7 +173,7 @@ class ChatLogger:
             # Logging must never change the result of a successful user send.
             try:
                 for message in result if isinstance(result, (list, tuple)) else [result]:
-                    self.submit(message)
+                    self.submit(message, outbound=True)
             except Exception:
                 logger.warning('Chat log observation failed')
             return result
@@ -182,7 +197,7 @@ class ChatLogger:
         self._albums.clear()
         self._last_header_key = None
 
-    def submit(self, msg):
+    def submit(self, msg, outbound=False):
         if msg is None or self.task is None or self.task.done():
             return
         policy = self.settings.policy
@@ -193,6 +208,12 @@ class ChatLogger:
             return
         message_id = getattr(msg, 'id', None)
         if not message_id:
+            return
+        sender = getattr(msg, 'from_user', None)
+        bot_id = getattr(getattr(self.bot, 'me', None), 'id', None)
+        bot_authored = (outbound or getattr(msg, 'outgoing', False)
+                        or (bot_id is not None and getattr(sender, 'id', None) == bot_id))
+        if bot_authored and _is_progress_text(msg):
             return
         # Edits with new content may be logged, but update + send-return duplicates
         # and nested copy/send calls must not generate two log entries.
@@ -220,6 +241,7 @@ class ChatLogger:
             revision=self.settings.revision, target=policy.chat_id,
             chat_id=chat.id, message_id=message_id,
             album=bool(album_id), user_name=name, username=username,
+            bot_text=bool(bot_authored and text),
         )
         try:
             self.queue.put_nowait(event)
@@ -261,6 +283,14 @@ class ChatLogger:
                     return
                 token = _inside_send.set(True)
                 try:
+                    if event.bot_text:
+                        # Native forwards read current content: a queued initial
+                        # status may already have become a transfer progress edit.
+                        current = await asyncio.wait_for(self.bot.get_messages(
+                            event.chat_id, event.message_id,
+                        ), timeout=30)
+                        if _is_progress_text(current):
+                            return
                     header_key = (event.revision, event.chat_id)
                     if self._last_header_key != header_key or time.monotonic() - self._last_activity >= self.header_gap:
                         header = (f"👤 Foydalanuvchi: {event.user_name}\n"

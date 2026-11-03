@@ -137,6 +137,8 @@ async def _invoke_upload_part_with_retry(
     long_wait_seconds: int = 60,
     max_total_wait: int = 180,
     on_flood=None,
+    before_invoke=None,
+    on_wait=None,
     serialize_event: Optional[asyncio.Event] = None,
     serialize_lock: Optional[asyncio.Lock] = None,
 ):
@@ -153,7 +155,11 @@ async def _invoke_upload_part_with_retry(
                 and serialize_event.is_set()
             ):
                 async with serialize_lock:
+                    if before_invoke:
+                        await before_invoke()
                     return await session.invoke(query, sleep_threshold=0)
+            if before_invoke:
+                await before_invoke()
             return await session.invoke(query, sleep_threshold=0)
         except Exception as exc:
             if not is_floodwait_error(exc):
@@ -185,6 +191,11 @@ async def _invoke_upload_part_with_retry(
 
             retries += 1
             total_wait += sleep_for
+            if on_wait:
+                try:
+                    await asyncio.wait_for(on_wait('flood', int(sleep_for)), timeout=10)
+                except Exception:
+                    pass
             logger.warning(
                 "[%s] Upload part flood wait: method=%s wait=%ss retry=%s/%s",
                 client_name,
@@ -285,6 +296,10 @@ async def _flood_safe_save_file(
             )
 
             def mark_flood(wait_seconds: int) -> None:
+                account_id = getattr(self, '_techvj_session_user_id', None)
+                if isinstance(account_id, int):
+                    from core.upload_coordinator import upload_coordinator
+                    upload_coordinator.mark_flood(account_id, wait_seconds)
                 first_flood = not flood_event.is_set()
                 flood_event.set()
                 current_until = float(
@@ -298,6 +313,28 @@ async def _flood_safe_save_file(
                 )
                 if first_flood and callable(flood_callback):
                     flood_callback(wait_seconds)
+
+            async def wait_for_account() -> None:
+                account_id = getattr(self, '_techvj_session_user_id', None)
+                if not isinstance(account_id, int):
+                    return
+                from core.upload_coordinator import upload_coordinator, monotonic
+                state = upload_coordinator.state(account_id)
+                remaining = state.flood_until - monotonic()
+                if remaining > 0:
+                    if remaining >= long_wait_seconds:
+                        from pyrogram.errors import FloodWait
+                        import math
+                        raise FloodWait(math.ceil(remaining))
+                    notifier = getattr(self, '_techvj_upload_wait_notifier', None)
+                    if callable(notifier):
+                        try:
+                            await asyncio.wait_for(notifier('flood', int(remaining) + 1), timeout=10)
+                        except Exception:
+                            pass
+                    while remaining > 0:
+                        await asyncio.sleep(min(5, remaining))
+                        remaining = state.flood_until - monotonic()
 
             async def upload_worker() -> None:
                 while True:
@@ -315,6 +352,8 @@ async def _flood_safe_save_file(
                                 long_wait_seconds=long_wait_seconds,
                                 max_total_wait=max_total_wait,
                                 on_flood=mark_flood,
+                                before_invoke=wait_for_account,
+                                on_wait=getattr(self, '_techvj_upload_wait_notifier', None),
                                 serialize_event=flood_event,
                                 serialize_lock=serial_lock,
                             )

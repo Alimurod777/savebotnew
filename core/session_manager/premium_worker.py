@@ -90,6 +90,7 @@ class SessionWorkerBridge:
         send_fn: Callable[[Client], Any],
         is_media: bool = True,
         owner_user_id: Optional[int] = None,
+        on_wait=None,
     ) -> Any:
         """
         Enqueue *send_fn* on *worker* and return the result.
@@ -99,6 +100,7 @@ class SessionWorkerBridge:
             send_fn=send_fn,
             is_media=is_media,
             owner_user_id=owner_user_id,
+            on_wait=on_wait,
         )
         return await worker.enqueue(task)
 

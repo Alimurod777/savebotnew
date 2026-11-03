@@ -55,6 +55,7 @@ from pyrogram.enums import ParseMode
 
 from config import API_ID, API_HASH, get_client_params
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
+from core.upload_coordinator import upload_coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,7 @@ class UploadTask:
     future:        asyncio.Future = field(default=None)
     owner_user_id: Optional[int] = None
     request_id:    Optional[str] = None
+    on_wait:       Optional[Callable] = None
 
 
 # ── Per-session worker ────────────────────────────────────────────────────────
@@ -418,8 +420,18 @@ class UserUploadWorker:
         """
         self._last_activity = time.monotonic()
         task.future = asyncio.get_running_loop().create_future()
+        queued = self._busy or not self._queue.empty()
         await self._queue.put(task)
-        return await task.future
+        try:
+            if queued and task.on_wait:
+                try:
+                    await asyncio.wait_for(task.on_wait('queue', 0), timeout=10)
+                except Exception:
+                    pass
+            return await task.future
+        except asyncio.CancelledError:
+            task.future.cancel()
+            raise
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
@@ -607,6 +619,10 @@ class UserUploadWorker:
             except asyncio.CancelledError:
                 if not task.future.done():
                     task.future.cancel()
+                # A requester may cancel while this long-lived worker waits in
+                # the account queue. Keep serving other requests in that case.
+                if self._running and not getattr(asyncio.current_task(), 'cancelling', lambda: 0)():
+                    continue
                 raise
             except Exception as exc:
                 logger.exception(
@@ -634,6 +650,9 @@ class UserUploadWorker:
                 )
             return
 
+        if task.future.done():
+            return
+
         # Adaptive rate limit (replaces static gap)
         await self._throttle.wait_before_send(task.is_media)
 
@@ -653,8 +672,7 @@ class UserUploadWorker:
                 )
                 await asyncio.sleep(stagger)
 
-            async with sem:
-                result = await task.send_fn(self._client)
+            result = await self._send_coordinated(task)
             self._throttle.record_send()
             self._last_send_time = time.monotonic()
             self._last_activity = self._last_send_time
@@ -673,7 +691,7 @@ class UserUploadWorker:
                     recovered = False
             if recovered:
                 try:
-                    result = await task.send_fn(self._client)
+                    result = await self._send_coordinated(task)
                     self._last_send_time = time.monotonic()
                     self._last_activity = self._last_send_time
                     if not task.future.done():
@@ -700,7 +718,7 @@ class UserUploadWorker:
                             recovered = False
                     if recovered:
                         try:
-                            result = await task.send_fn(self._client)
+                            result = await self._send_coordinated(task)
                             self._last_send_time = time.monotonic()
                             self._last_activity = self._last_send_time
                             if not task.future.done():
@@ -741,8 +759,7 @@ class UserUploadWorker:
             # Retry once after short flood wait (with adaptive stagger)
             await self._throttle.wait_before_send(task.is_media)
             try:
-                async with _get_upload_semaphore():
-                    result = await task.send_fn(self._client)
+                result = await self._send_coordinated(task)
                 self._throttle.record_send()
                 self._last_send_time = time.monotonic()
                 if not task.future.done():
@@ -750,6 +767,21 @@ class UserUploadWorker:
             except Exception as retry_err:
                 if not task.future.done():
                     task.future.set_exception(retry_err)
+
+    async def _send_coordinated(self, task):
+        async def cancelled():
+            return task.future.done()
+
+        async def send(client):
+            async with _get_upload_semaphore():
+                if await cancelled():
+                    raise asyncio.CancelledError()
+                return await task.send_fn(client)
+
+        return await upload_coordinator.send(
+            self._client, send, check_cancelled=cancelled, on_wait=task.on_wait,
+            wait_limit=FLOOD_LONG_SEC - 1,
+        )
 
 
 # ── Global registry ───────────────────────────────────────────────────────────

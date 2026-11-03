@@ -52,6 +52,7 @@ from core.failure_classifier import (
     stage_indicates_processing,
 )
 from core.retry_utils import MAX_FLOODWAIT_SECONDS, get_floodwait_seconds, is_floodwait_error
+from core.upload_coordinator import upload_coordinator, upload_wait_notifier
 from pyrogram.enums import ChatType, ParseMode, UserStatus, PollType, MessageMediaType, MessageEntityType
 from pyrogram.raw import functions, types
 import time
@@ -812,6 +813,7 @@ async def _enqueue_media_delivery(
 
     try:
         upload_task = task_factory(send_fn=send_fn, is_media=True, owner_user_id=int(target_user_id))
+        upload_task.on_wait = upload_wait_notifier(bot_client, target_user_id)
         sent = await worker.enqueue(upload_task)
         if sent is None:
             return sent
@@ -1153,9 +1155,21 @@ async def _send_split_part_with_peer_retry(
 ) -> Message:
     """Send the current chunk with bounded flood retries and one peer refresh."""
     async def _send(dest):
-        if msg_type != "Document" and is_video_file(chunk_path):
-            return await acc.send_video(dest, chunk_path, **send_kwargs)
-        return await acc.send_document(dest, chunk_path, **send_kwargs)
+        # Split clients need the same part-level error propagation as workers.
+        acc.sleep_threshold = 0
+        acc._techvj_flood_safe_upload = True
+        acc._techvj_upload_part_workers = 2
+        acc._techvj_upload_part_flood_retries = 5
+        acc._techvj_upload_part_max_total_wait = 180
+        acc._techvj_upload_part_long_wait = 60
+        async def send(client):
+            if msg_type != "Document" and is_video_file(chunk_path):
+                return await client.send_video(dest, chunk_path, **send_kwargs)
+            return await client.send_document(dest, chunk_path, **send_kwargs)
+        return await upload_coordinator.send(
+            acc, send, check_cancelled=check_cancelled,
+            on_wait=upload_wait_notifier(bot_client, status_chat_id) if status_chat_id else None,
+        )
 
     target = target_chat_id
     peer_refreshed = False
@@ -6350,6 +6364,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             failed_ids = []  # Only existing but unsent posts (not deleted)
             deleted = 0
             albums_processed = 0
+            terminal_flood_wait = 0
 
             # Throttle-aware status tracker + batch controller
             if _THROTTLE_AVAILABLE:
@@ -6538,8 +6553,32 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
 
                         except asyncio.CancelledError:
                             raise
-                        except FloodWait as fw:
-                            wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
+                        except Exception as fw:
+                            if not is_floodwait_error(fw):
+                                e = fw
+                                logger.warning(f"Error processing post {post_id}: {e}")
+                                failed += 1
+                                failed_ids.append(post_id)
+                                await _notify_realtime_post_failure(
+                                    client,
+                                    acc,
+                                    user_id=user_id,
+                                    chat_id=parsed.channel_id,
+                                    post_id=post_id,
+                                    stage="private_loop",
+                                    reason="private post loop raised exception",
+                                    error=e,
+                                    request_message=message,
+                                    context=ctx,
+                                    parsed=parsed,
+                                    requested_total=total_posts,
+                                )
+                                if _batch:
+                                    _batch.record_error()
+                                continue
+                            wait_time = get_floodwait_seconds(fw)
+                            failed += 1
+                            failed_ids.append(post_id)
                             logger.warning(f"FloodWait {wait_time}s at post {post_id}")
                             await _notify_realtime_post_failure(
                                 client,
@@ -6557,52 +6596,12 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             )
                             if _batch:
                                 _batch.record_flood(wait_time)
-                            if wait_time > 120:
-                                if _status:
-                                    await _status.finish(
-                                        f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                        f"✅ {processed} processed, ❌ {failed} failed\n"
-                                        f"Retry in {wait_time // 60} min."
-                                    )
-                                else:
-                                    try:
-                                        await client.edit_message_text(
-                                            user_id, status_msg.id,
-                                            f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                            f"✅ {processed} processed, ❌ {failed} failed\n"
-                                            f"Retry in {wait_time // 60} min."
-                                        )
-                                    except Exception:
-                                        pass
-                                break
-                            else:
-                                await asyncio.sleep(wait_time)
-                                failed += 1
-                                continue
-                        except Exception as e:
-                            if is_floodwait_error(e):
-                                raise
-                            logger.warning(f"Error processing post {post_id}: {e}")
-                            failed += 1
-                            failed_ids.append(post_id)
-                            await _notify_realtime_post_failure(
-                                client,
-                                acc,
-                                user_id=user_id,
-                                chat_id=parsed.channel_id,
-                                post_id=post_id,
-                                stage="private_loop",
-                                reason="private post loop raised exception",
-                                error=e,
-                                request_message=message,
-                                context=ctx,
-                                parsed=parsed,
-                                requested_total=total_posts,
-                            )
-                            if _batch:
-                                _batch.record_error()
-                            continue
-                    
+                            # Upload retries are already bounded inside the send
+                            # path. Preserve the failure instead of skipping to
+                            # another post or overwriting it with an empty summary.
+                            terminal_flood_wait = wait_time
+                            break
+
             except SessionInvalidError as e:
                 await _handle_session_invalid(client, user_id, e)
                 try:
@@ -6641,7 +6640,18 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             
             deleted_info = f"\n🗑 O'chirilgan: {deleted}" if deleted > 0 else ""
             
-            if processed == 0 and failed == 0 and deleted > 0:
+            if terminal_flood_wait:
+                await client.edit_message_text(
+                    user_id, status_msg.id,
+                    f"⚠️ Telegram upload cheklovi — urinish to‘xtatildi\n"
+                    f"Kutish: {terminal_flood_wait} soniya\n"
+                    f"To‘liq yuborilgan postlar: {processed}/{total_posts}\n"
+                    f"❌ Tugallanmagan: {failed}\n"
+                    "Ayrim bo‘laklar yuborilgan bo‘lishi mumkin. Ularni saqlang.\n"
+                    "Bu vazifa avtomatik davom etmaydi; qayta urinishda bo‘laklar takrorlanishi mumkin."
+                    f"{failed_info}"
+                )
+            elif processed == 0 and failed == 0 and deleted > 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
                     f"⚠️ **Barcha xabarlar o'chirilgan**\n"

@@ -1608,3 +1608,12 @@ Yechim: bot ID bilan scope qilingan userdb.bot_settings policy backup/restore, l
 **Holat:** ✅ Hal qilindi
 
 Sabab: wzgram branchidagi progress filtri mainda yo'q edi. Yechim: mavjud progress detector, send/edit filtri va forward oldidan queued bot textni qayta tekshirish main'ga qo'llandi. User texti/media captioni va final natijalar filtrlanmaydi.
+
+
+## BUG-082: VideoNote upload parse_mode TypeError va owner hisobot yo'qolishi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Service logi: VideoNote worker yuborishida TypeError: Got unexpected keyword argument(s): {'parse_mode'}. make_send_fn caption/caption_entities ni olib tashlagan, lekin parse_mode qolgan; Wzgram send_video_note uni qabul qilmaydi. VideoNote kwargsdan parse_mode ham olib tashlandi.
+
+Ownerga hisobot yo'qolishi sababi: failure classifier PARSE tokeni sabab parse_mode TypeErrorni USER_INPUT_ERROR deb olgan. Programming exceptionlar endi URL-parse keywordlaridan oldin SYSTEM_FAILURE bo'ladi. System incident uchun qo'shimcha session/channel verification muvaffaqiyatsiz bo'lishi hisobotni to'xtatmaydi: verification issue aniq yoziladi, oddiy deleted/FloodWait siyosati saqlanadi. Userga ichki yuborish xatosi aniqroq aytiladi.

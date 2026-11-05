@@ -1303,3 +1303,12 @@ So'rov: owner log kanal sozlamasi boshqa serverda ham tiklansin; download progre
 Tekshiruv: 46 focused test; full pytest 296 passed, 22 subtests passed. pip check toza, verify_migration 635 symbols/0 failures, git diff --check o'tdi. Haqiqiy mavjud log policy MongoDBga saqlandi: synced; Telegramga test xabari yuborilmadi. Alwaysdata service boshqa hostda boshqariladi, panel Restart kerak; shu sessiyada service restart qilinmadi.
 
 UMUMIY YO'NALISH: owner log policy bir xil BOT_TOKEN/DB_URI bilan serverlar orasida tiklansin; progresslar logni to'ldirmasin. Bu vazifa main branchida, wzgram nusxasiga MongoDB yangilanishi kiritilmadi.
+
+
+## Sessiya (2026-11-05) — Post o'tkazib yuborilishi va owner diagnostikasi
+
+User Shukrona Standart 7-P post 3 generic skip xabarini ko'rsatib, nega ownerga sabab yuborilmaganini so'radi. Service logida VideoNote send_video_note parse_mode TypeError topildi; keyword olib tashlandi. failure_classifier PARSE substring orqali shu exceptionni USER_INPUT_ERRORga aylantirgan; programming exception precedence tuzatildi. Reportable system failure uchun verification failure endi reportni bekor qilmaydi, verification issue yoziladi. Userga ichki upload xatosi aniqroq aytiladi.
+
+Tekshiruv: 9 yangi offline regression; full pytest 305 passed, 22 subtests passed; pip check, verify_migration 637 symbols/0 failures, git diff --check o'tdi. Live Telegramga owner report yoki retry yuborilmadi, service restart qilinmadi.
+
+UMUMIY YO'NALISH: ichki upload xatolari aniq exception bilan ownerga borsin; deleted/FloodWait kabi oddiy Telegram holatlari avvalgi siyosatda qolsin. Main branch yangilanadi; Alwaysdata service Restartdan keyin yangi kodni yuklaydi.

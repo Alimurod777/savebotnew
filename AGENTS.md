@@ -815,3 +815,9 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Startup remote policy tiklanadi; pending_sync lokal o'zgarishlar stale remote'dan ustun. Legacy JSON remote yo'q bo'lsa avtomatik migrate qilinadi.
 - off/remove/reset ham bazaga yoziladi; reset yangi serverning ENV qiymatini ishlatadi. Baza xatosi non-fatal, pending state diskda; 60s retry. /logchannel status sync holatini ko'rsatsin.
 - Bot transfer progress texti va editlari logga forward qilinmasin; navbatdagi bot texti forwarddan oldin qayta tekshirilsin. User texti/media captioni va final natijalar saqlansin.
+
+
+### VideoNote va owner diagnostikasi (2026-11-05)
+- Wzgram send_video_note parse_mode qabul qilmaydi; make_send_fn VideoNote yo'lida caption/caption_entities/parse_mode ni olib tashlang.
+- TypeError/AttributeError/NameError/AssertionError user URL PARSE xatosi sifatida tasniflanmasin.
+- Reportable SYSTEM_FAILURE qo'shimcha session/channel verification ishlamasa ham ownerga yuborilsin; verification issue hisobotda ko'rsatilsin. Oddiy deleted/FloodWait notification siyosatini saqlang.

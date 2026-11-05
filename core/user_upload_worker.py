@@ -927,6 +927,7 @@ def make_send_fn(
         elif msg_type == "VideoNote":
             kw.pop("caption", None)
             kw.pop("caption_entities", None)
+            kw.pop("parse_mode", None)
             return await client.send_video_note(target_chat_id, file_path, **kw)
 
         elif msg_type == "Animation":

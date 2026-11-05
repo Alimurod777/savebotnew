@@ -193,6 +193,13 @@ def classify_failure(stage: Any, reason: Any, error: Any = None) -> FailureCateg
     if any(token in signal for token in _CRITICAL_SYSTEM_TOKENS):
         return FailureCategory.SYSTEM_FAILURE
 
+    # Programming errors mentioning parse_mode are not user URL parse errors.
+    programming_errors = (TypeError, AttributeError, NameError, AssertionError)
+    if isinstance(error, programming_errors) or any(
+        f"{kind.__name__.upper()}:" in signal for kind in programming_errors
+    ):
+        return FailureCategory.SYSTEM_FAILURE
+
     if any(token in signal for token in _USER_INPUT_TOKENS):
         return FailureCategory.USER_INPUT_ERROR
 

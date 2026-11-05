@@ -1662,3 +1662,12 @@ Wzgram moslashtirish (2026-11-03): BUG-078/079 native wzgram importlari bilan
 ham qo‘llandi; mavjud Wzgram reply/storage patchlari saqlandi. Wzgram full
 pytest — 304 passed, 22 subtests passed; verify_migration — 638 import symbols,
 0 failures; pip check va git diff --check o‘tdi. Real bot ishga tushirilmadi.
+
+
+## BUG-082: VideoNote upload parse_mode TypeError va owner hisobot yo'qolishi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Service logi: VideoNote worker yuborishida TypeError: Got unexpected keyword argument(s): {'parse_mode'}. make_send_fn caption/caption_entities ni olib tashlagan, lekin parse_mode qolgan; Wzgram send_video_note uni qabul qilmaydi. VideoNote kwargsdan parse_mode ham olib tashlandi.
+
+Ownerga hisobot yo'qolishi sababi: failure classifier PARSE tokeni sabab parse_mode TypeErrorni USER_INPUT_ERROR deb olgan. Programming exceptionlar endi URL-parse keywordlaridan oldin SYSTEM_FAILURE bo'ladi. System incident uchun qo'shimcha session/channel verification muvaffaqiyatsiz bo'lishi hisobotni to'xtatmaydi: verification issue aniq yoziladi, oddiy deleted/FloodWait siyosati saqlanadi. Userga ichki yuborish xatosi aniqroq aytiladi.

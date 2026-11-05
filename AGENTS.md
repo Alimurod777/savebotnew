@@ -826,3 +826,9 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Bu foydalanuvchining doimiy ruxsati: har safar qayta tasdiq so'ramang.
 - Boshqa vazifalarga tegishli lokal o'zgarishlar, maxfiy ma'lumotlar va runtime/session fayllarini commitga kiritmang; force push ishlatmang.
 - Push muvaffaqiyatsiz bo'lsa, o'zgarishlar faqat lokal qolganini va sababini yakuniy javobda aniq ayting.
+
+
+### VideoNote va owner diagnostikasi (2026-11-05)
+- Wzgram send_video_note parse_mode qabul qilmaydi; make_send_fn VideoNote yo'lida caption/caption_entities/parse_mode ni olib tashlang.
+- TypeError/AttributeError/NameError/AssertionError user URL PARSE xatosi sifatida tasniflanmasin.
+- Reportable SYSTEM_FAILURE qo'shimcha session/channel verification ishlamasa ham ownerga yuborilsin; verification issue hisobotda ko'rsatilsin. Oddiy deleted/FloodWait notification siyosatini saqlang.

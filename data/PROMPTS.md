@@ -1340,3 +1340,12 @@ saqlasin, lekin har biri o‘z Telegram library import/APIlarida qolsin.
 So'rov: lokal kod o'zgarsa, vazifa tugagach GitHubga push qilish qoidasini qo'shish. Main va wzgram nusxalarining AGENTS.md fayliga tegishli tekshiruvlardan keyin vazifa o'zgarishlarini commit/push qilish va qayta tasdiq so'ramaslik talabi qo'shildi.
 
 UMUMIY YO'NALISH: har bir o'zgarishli vazifa yakunida joriy branch GitHubga push qilinsin; maxfiy/runtime fayllar va boshqa vazifa o'zgarishlari kiritilmasin.
+
+
+## Sessiya (2026-11-05) — VideoNote va owner diagnostikasini wzgramga qo'llash
+
+User main'dagi oxirgi VideoNote/owner-report tuzatishini wzgram branchiga ham qo'llashni so'radi. Main 89b4fbc commitidagi kod va 9 offline regression moslashtirildi: VideoNote kwargsdan parse_mode olib tashlandi, programming exceptionlar URL PARSE xatosi deb tasniflanmaydi, tizim xatosi owner reporti context verification ishlamasa ham saqlanadi. Userga ichki yuborish xatosi aniq aytiladi. Mavjud shared upload coordinator, FloodWait, progress filtri va native Wzgram mosligi saqlandi.
+
+Tekshiruv: full pytest 313 passed, 22 subtests passed; pip check toza; verify_migration 640 symbols, 0 failures; git diff --check o'tdi. Testlar mavjud main .venv interpreterida wzgram repository CWD bilan bajarildi; real bot start/restart yoki Telegramga xabar yuborilmadi.
+
+UMUMIY YO'NALISH: VideoNote va owner diagnostics fix endi main va wzgramda bir xil. Bu task log-policy MongoDB funksiyasini wzgramga ko'chirishni o'z ichiga olmaydi.

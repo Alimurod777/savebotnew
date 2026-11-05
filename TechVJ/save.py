@@ -2367,14 +2367,13 @@ async def _notify_owner_channel_post_failure(
 
         verified, verify_info = await _owner_diag_verified_context(acc, chat_id)
         if not verified:
-            logger.debug(
-                "Skipping owner post-failure diagnostic for user=%s chat=%s post=%s: %s",
+            logger.warning(
+                "Owner diagnostic context unverified for user=%s chat=%s post=%s: %s",
                 user_id,
                 chat_id,
                 post_id,
                 verify_info.get("skip_reason"),
             )
-            return
 
         fetched_for_report = False
         source_fetch_error = None
@@ -2415,6 +2414,8 @@ async def _notify_owner_channel_post_failure(
             f"Error: {_owner_diag_error(error)}",
             "",
             "Verified before notify:",
+            f"Context verified: {'yes' if verified else 'no'}",
+            f"Verification issue: {verify_info.get('skip_reason') or '-'}",
             f"Session user: id={getattr(me, 'id', '-')} username=@{getattr(me, 'username', '-')}",
             f"Member status: {verify_info.get('member_status', '-')}",
         ]
@@ -2490,6 +2491,8 @@ def _user_failure_text(stage: str, reason: str, post_id: int, error: Any = None)
         short = "Post cheklangan yoki yuborishga ruxsat yo'q."
     elif "TIMEOUT" in joined:
         short = "Postni olish vaqti tugadi."
+    elif any(name in joined for name in ("TYPEERROR", "ATTRIBUTEERROR", "NAMEERROR", "ASSERTIONERROR")):
+        short = "Postni yuborishda botning ichki xatosi yuz berdi."
     else:
         short = "Postni olish yoki yuborishda xatolik yuz berdi."
 

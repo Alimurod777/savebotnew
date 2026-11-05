@@ -1617,3 +1617,13 @@ Sabab: wzgram branchidagi progress filtri mainda yo'q edi. Yechim: mavjud progre
 Service logi: VideoNote worker yuborishida TypeError: Got unexpected keyword argument(s): {'parse_mode'}. make_send_fn caption/caption_entities ni olib tashlagan, lekin parse_mode qolgan; Wzgram send_video_note uni qabul qilmaydi. VideoNote kwargsdan parse_mode ham olib tashlandi.
 
 Ownerga hisobot yo'qolishi sababi: failure classifier PARSE tokeni sabab parse_mode TypeErrorni USER_INPUT_ERROR deb olgan. Programming exceptionlar endi URL-parse keywordlaridan oldin SYSTEM_FAILURE bo'ladi. System incident uchun qo'shimcha session/channel verification muvaffaqiyatsiz bo'lishi hisobotni to'xtatmaydi: verification issue aniq yoziladi, oddiy deleted/FloodWait siyosati saqlanadi. Userga ichki yuborish xatosi aniqroq aytiladi.
+
+## BUG-083: Ko'rinmas belgi bilan nusxalangan bot havolasi rad etiladi
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: `https://t.me/b/filmlaruzbot/60131` oxiridagi U+2060 word joiner
+`str.strip()` bilan o'chmaydi va anchored URL regex mos kelmaydi.
+Yechim: asosiy parser faqat URL chetlaridagi whitespace, U+200B, U+200E,
+U+200F, U+2060 va BOM belgilarini tozalaydi; ichki path/query saqlanadi.
+Regression: bot route, chat va post ID, ko'rinmas edge belgilar hamda ichki
+query belgilarini o'zgartirmaslik tekshirildi.

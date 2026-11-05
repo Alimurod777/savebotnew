@@ -2374,3 +2374,24 @@ def test_grab_runs_in_background_and_stop_cancel_target_user_task(monkeypatch):
         assert await manager.get_active_task_count(target_user_id) == 0
 
     asyncio.run(run())
+
+
+def test_bot_link_copy_paste_invisible_edges():
+    from TechVJ.save import parse_telegram_url
+
+    for marker in ('', '\u2060', '\u200b', '\ufeff', '\u200e', '\u200f'):
+        parsed, error = parse_telegram_url(
+            f' {marker} https://t.me/b/filmlaruzbot/60131{marker} \n'
+        )
+        assert error is None
+        assert parsed.url_type == 'bot'
+        assert parsed.channel_id == 'filmlaruzbot'
+        assert parsed.post_ids == [60131]
+
+
+def test_url_cleanup_preserves_internal_query_characters():
+    from TechVJ.save import parse_telegram_url
+
+    parsed, error = parse_telegram_url('https://t.me/QuizBot?start=ab\u2060cd')
+    assert parsed is None
+    assert error is not None

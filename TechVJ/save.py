@@ -1871,7 +1871,9 @@ def parse_telegram_url(url: str) -> Tuple[Optional[ParsedURL], Optional[str]]:
     Returns:
         Tuple of (ParsedURL or None, error_message or None)
     """
-    url = url.strip()
+    # Telegram copy/paste can append invisible format characters. Strip only
+    # the edges so meaningful characters inside paths/query values stay intact.
+    url = re.sub(r'^[\s\u200b\u200e\u200f\u2060\ufeff]+|[\s\u200b\u200e\u200f\u2060\ufeff]+$', '', str(url))
     
     if not url.startswith(('https://t.me/', 'http://t.me/')):
         return None, "Invalid URL: Must start with https://t.me/"

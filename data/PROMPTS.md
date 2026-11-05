@@ -1312,3 +1312,12 @@ User Shukrona Standart 7-P post 3 generic skip xabarini ko'rsatib, nega ownerga 
 Tekshiruv: 9 yangi offline regression; full pytest 305 passed, 22 subtests passed; pip check, verify_migration 637 symbols/0 failures, git diff --check o'tdi. Live Telegramga owner report yoki retry yuborilmadi, service restart qilinmadi.
 
 UMUMIY YO'NALISH: ichki upload xatolari aniq exception bilan ownerga borsin; deleted/FloodWait kabi oddiy Telegram holatlari avvalgi siyosatda qolsin. Main branch yangilanadi; Alwaysdata service Restartdan keyin yangi kodni yuklaydi.
+
+## Sessiya (2026-11-05) — Bot chat havolasidagi ko'rinmas belgi
+
+So'rov: /b/filmlaruzbot/60131 havolasi Invalid URL format qaytardi.
+User matnidagi oxirgi U+2060 parserni buzayotgani aniqlandi. Asosiy URL
+parserga faqat chetdagi ko'rinmas copy/paste belgilarini tozalash va offline
+regression testlar qo'shildi. Upload/session routing o'zgarmadi.
+UMUMIY YO'NALISH: Telegramdan nusxalangan havolalar ko'rinmas edge belgilar
+sabab rad etilmasin; live xabar yuborish yoki bot restart bajarilmasin.

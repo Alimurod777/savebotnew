@@ -1358,3 +1358,10 @@ Tekshiruv: 9 yangi log regression case; full pytest 327 passed,
 22 subtests passed; migration 637 symbols/0 failures, pip check va whitespace
 tekshiruvi o'tdi. Direct send hook user session natijasini aynan qaytarishi va
 bot.copy_message qo'shmasligi ham tekshirildi.
+
+## Sessiya (2026-11-05) — Logdagi suhbat va statuslarni qayta tekshirish
+
+So'rov: user yuborgan havola va keyingi user/bot suhbati logda bo'lsin,
+download/upload statuslari bo'lmasin. O'zbekcha Yuklanmoqda/Yuborilmoqda va
+navbatdan yuklash statuslari filtrda yo'qligi aniqlandi va tuzatildi.
+Havola va yakuniy javob saqlanishi test qilindi; oldingi auth filtri saqlandi.

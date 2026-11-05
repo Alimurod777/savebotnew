@@ -511,3 +511,23 @@ def test_direct_delivery_hook_preserves_user_session_message(monkeypatch):
         observer.assert_called_once_with(client, sent, 123)
         client.copy_message.assert_not_awaited()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('text', [
+    '⬇️ Yuklanmoqda...', '⬆️ Yuborilmoqda...',
+    '⬆️ Yuklanmoqda: 1/3', '📥 Navbatdan: 3 ta post yuklanmoqda...',
+    '📥 From queue: Bot chat downloading...',
+])
+def test_localized_transfer_status_is_not_logged(setup, text):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(1, 'https://t.me/example/123'))
+        await manager.queue.join()
+        manager.submit(message(2, text, outgoing=True))
+        manager.submit(message(3, 'Natija tayyor', outgoing=True))
+        client.get_messages.return_value = message(3, 'Natija tayyor', outgoing=True)
+        await manager.queue.join()
+        assert [call.args[2] for call in client.forward_messages.await_args_list] == [1, 3]
+        await manager.stop()
+    asyncio.run(run())

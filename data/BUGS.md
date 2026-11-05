@@ -1661,3 +1661,9 @@ get_bot_real_message_id orqali bounded background resolution qiladi va bot-side
 message'ni existing ordinary-forward queuega beradi. Incoming update bilan
 dedup, max 32 resolution task, timeout, nonfatal errors, shutdown cancellation.
 User media delivery/routing o'zgarmaydi, user sessionga logger attach qilinmaydi.
+
+## BUG-086: O'zbekcha download/upload status logga tushadi
+
+Status: ✅ Tuzatildi (2026-11-05). Progress filtri faqat inglizcha asosiy
+statuslarni tanigan. Yuklanmoqda, Yuborilmoqda va navbatdan yuklash statuslari
+qo'shildi; user havolasi, oddiy chat va yakuniy bot javobi saqlanadi.

@@ -1321,3 +1321,23 @@ parserga faqat chetdagi ko'rinmas copy/paste belgilarini tozalash va offline
 regression testlar qo'shildi. Upload/session routing o'zgarmadi.
 UMUMIY YO'NALISH: Telegramdan nusxalangan havolalar ko'rinmas edge belgilar
 sabab rad etilmasin; live xabar yuborish yoki bot restart bajarilmasin.
+
+## Sessiya (2026-11-05) — Owner command sozlamalarini portable qilish
+
+So'rov: boshqa joyda ishlaganda qaytib qoladigan owner commandlarni aniqlash
+va tuzatish. RAM-only rate/parallel/maintenance; lokal-only global role,
+autoarchive, channel monitor va owner session configuration aniqlandi.
+Bot-scoped Mongo backup/restore, atomik pending local journal, deletion/off,
+legacy migration va retry qo'shildi. Owner commandlar checkpoint bilan ulandi;
+limit/maintenance uchun sync holati ko'rsatiladi. Session credentials faqat
+mavjud private DB/local storageda; Git/log/statusga chiqarilmaydi.
+UMUMIY YO'NALISH: bir BOT_TOKEN va DB_URI ishlatilganda owner sozlamalari
+yangi serverda tiklansin; runtime upload/flood/task holati saqlanmasin.
+Live bot restart yoki Telegram send bajarilmadi; startup migration Restartdan
+keyin ishlaydi. Ilgari RAMdan yo'qolgan limitlarni user qayta belgilashi kerak.
+
+Tekshiruv: 11 yangi owner-settings regression, full pytest 318 passed,
+22 subtests passed; verify_migration 637 symbols/0 failures, pip check va
+git diff --check o'tdi. /stats owner settings sync holatini ko'rsatadi.
+Qo'shimcha /enable_global_sessions disabled globallarni topmayotgan xato
+ham tuzatildi. Mavjud /ban va individual /setrole user DB saqlashi saqlandi.

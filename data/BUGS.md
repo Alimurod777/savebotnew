@@ -1627,3 +1627,23 @@ Yechim: asosiy parser faqat URL chetlaridagi whitespace, U+200B, U+200E,
 U+200F, U+2060 va BOM belgilarini tozalaydi; ichki path/query saqlanadi.
 Regression: bot route, chat va post ID, ko'rinmas edge belgilar hamda ichki
 query belgilarini o'zgartirmaslik tekshirildi.
+
+## BUG-084: Owner sozlamalari restart/boshqa serverda eski holatga qaytadi
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: rate/parallel limitlar va maintenance faqat RAMda. Global rol policy,
+autoarchive, monitored channels, owner session registry/premium/download
+sozlamalari esa lokal JSONda; yangi serverda yo'q yoki eski nusxa ishlatilgan.
+Yechim: core/owner_settings.py — bot ID bilan private MongoDB bot_settings
+owner_settings:<bot_id>, atomik lokal pending journal, startup restore va 60s
+retry. Runtime counter/task/flood holatlari ko'chirilmaydi. Limit/maintenance
+commandlari durable write qiladi; owner config command/callbacklaridan keyin
+faqat o'zgargan fayllar checkpoint qilinadi. Empty list, deletion va off ham
+saqlanadi. Local pending stale remote'dan ustun; Mongo yo'q bo'lsa xabar beriladi.
+Startup restore session/pool initializationdan oldin bajariladi. Log policy
+avvalgi alohida chat_log:<bot_id> saqlashini davom ettiradi.
+
+Qo'shimcha shu auditda: /enable_global_sessions get_global()dan foydalangan,
+lekin u faqat enabled sessiyalarni qaytaradi. O'chirilgan globallar hech qachon
+yoqilmagan. Endi get_all()dan GLOBAL turini tanlab enable qiladi; dedicated
+sessiyalar tegilmaydi. Offline regression qo'shildi.

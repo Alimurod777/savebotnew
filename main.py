@@ -247,6 +247,8 @@ class Bot(Client):
                 
                 await super().start()
                 self._is_connected = True
+                from core.owner_settings import owner_settings
+                await owner_settings.start((await self.get_me()).id)
                 from core.chat_log import chat_logger
                 await chat_logger.start(self)
                 logger.info('Bot Started Modified By WOODcraft')
@@ -404,6 +406,8 @@ class Bot(Client):
             
     async def stop(self, *args):
         """Stop the bot with improved error handling"""
+        from core.owner_settings import owner_settings
+        await owner_settings.stop()
         try:
             # Stop only the isolated owner broadcast before disconnecting the bot.
             try:

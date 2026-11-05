@@ -22,6 +22,7 @@ User commands (any user):
   /split_media [on|off]         — Toggle caption splitting per-user
 """
 
+from core.owner_settings import persist_owner_change
 import asyncio
 import logging
 
@@ -63,6 +64,7 @@ async def _user_has_own_premium_session(client: Client, user_id: int) -> bool:
 # ==================== OWNER COMMANDS ====================
 
 @Client.on_message(filters.command("setpremium") & filters.private)
+@persist_owner_change
 async def set_premium_command(client: Client, message: Message):
     """Set system Premium session. Owner only."""
     if not message.from_user or message.from_user.id != OWNER_ID:
@@ -90,6 +92,7 @@ async def set_premium_command(client: Client, message: Message):
 
 
 @Client.on_message(filters.command("removepremium") & filters.private)
+@persist_owner_change
 async def remove_premium_command(client: Client, message: Message):
     """Remove system Premium session. Owner only."""
     if not message.from_user or message.from_user.id != OWNER_ID:
@@ -175,6 +178,7 @@ async def check_premium_command(client: Client, message: Message):
 # ==================== HOT-LOAD PREMIUM SESSION (NO RESTART) ====================
 
 @Client.on_message(filters.command("add_premium_session") & filters.private)
+@persist_owner_change
 async def add_premium_session_command(client: Client, message: Message):
     """
     Hot-load a Premium relay session at runtime. Owner only.
@@ -223,6 +227,7 @@ async def add_premium_session_command(client: Client, message: Message):
 
 
 @Client.on_message(filters.command("remove_premium_session") & filters.private)
+@persist_owner_change
 async def remove_premium_session_command(client: Client, message: Message):
     """Remove premium relay session at runtime. Owner only."""
     if not message.from_user or message.from_user.id != OWNER_ID:
@@ -395,6 +400,7 @@ _PREMIUM_USAGE = (
 
 
 @Client.on_message(filters.command("premium") & filters.private)
+@persist_owner_change
 async def premium_command(client: Client, message: Message):
     """Unified premium relay management. Owner only."""
     if not message.from_user or message.from_user.id != OWNER_ID:

@@ -28,6 +28,8 @@ Commands:
 """
 from __future__ import annotations
 
+from core.owner_settings import persist_owner_change
+
 import asyncio
 import logging
 from types import SimpleNamespace
@@ -39,6 +41,7 @@ from wzgram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKey
 
 from config import OWNER_ID
 from database.async_db import async_db
+from core.owner_settings import owner_settings
 
 # Governance modullarni guarded import qilish
 # Agar import muvaffaqiyatsiz bo'lsa, handlerlar registratsiya qilinadi
@@ -306,6 +309,7 @@ def _format_user_state(state: dict, title: Optional[str] = None) -> str:
 # ── /ban ─────────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("ban") & filters.private)
+@persist_owner_change
 async def cmd_ban(client: Client, message: Message):
     if not _owner(message):
         return
@@ -333,6 +337,7 @@ async def cmd_ban(client: Client, message: Message):
 # ── /unban ────────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("unban") & filters.private)
+@persist_owner_change
 async def cmd_unban(client: Client, message: Message):
     if not _owner(message):
         return
@@ -360,6 +365,7 @@ async def cmd_unban(client: Client, message: Message):
 # ── /setrole ──────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("setrole") & filters.private)
+@persist_owner_change
 async def cmd_setrole(client: Client, message: Message):
     if not _owner(message):
         return
@@ -460,8 +466,10 @@ async def cmd_set_parallel(client: Client, message: Message):
     except ValueError:
         await message.reply("n must be a positive integer.")
         return
+    limits = dict(owner_settings.values.get('parallel_limits', {}), **{role.value: n})
+    await owner_settings.change('parallel_limits', limits)
     priority_queue.set_limit(role, n)
-    await message.reply(f"✅ {role.value} parallel limit → {n}")
+    await message.reply(f"✅ {role.value} parallel limit → {n}" + owner_settings.notice())
 
 
 # ── /set_rate_limit ───────────────────────────────────────────────────────────
@@ -488,8 +496,10 @@ async def cmd_set_rate(client: Client, message: Message):
     except ValueError:
         await message.reply("n must be a positive integer.")
         return
+    limits = dict(owner_settings.values.get('rate_limits', {}), **{role.value: n})
+    await owner_settings.change('rate_limits', limits)
     rate_limiter.set_limit(role, n)
-    await message.reply(f"✅ {role.value} rate limit → {n} req/10s")
+    await message.reply(f"✅ {role.value} rate limit → {n} req/10s" + owner_settings.notice())
 
 
 # ── /queue_status ─────────────────────────────────────────────────────────────
@@ -517,12 +527,15 @@ async def cmd_queue_status(client: Client, message: Message):
 # ── /enable_global_sessions / /disable_global_sessions ───────────────────────
 
 @Client.on_message(filters.command("enable_global_sessions") & filters.private)
+@persist_owner_change
 async def cmd_enable_global(client: Client, message: Message):
     if not _owner(message):
         return
     try:
         from core.session_manager import session_manager
-        recs = session_manager.registry.get_global()
+        from core.session_manager.models import SessionType
+        recs = [rec for rec in session_manager.registry.get_all()
+                if rec.type == SessionType.GLOBAL]
         count = 0
         for rec in recs:
             if not rec.enabled:
@@ -535,6 +548,7 @@ async def cmd_enable_global(client: Client, message: Message):
 
 
 @Client.on_message(filters.command("disable_global_sessions") & filters.private)
+@persist_owner_change
 async def cmd_disable_global(client: Client, message: Message):
     if not _owner(message):
         return
@@ -563,6 +577,7 @@ async def cmd_stats(client: Client, message: Message):
         f"📈 Bot Statistics\n"
         f"Active queue jobs: {total}\n"
         f"  VIP: {vip_q} | Normal: {norm_q} | New: {new_q}\n"
+        f"Owner settings sync: {owner_settings.status}\n"
     )
     try:
         from core.session_manager import session_manager
@@ -584,14 +599,15 @@ async def cmd_maintenance(client: Client, message: Message):
     if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
         await message.reply("Usage: /maintenance <on|off>")
         return
+    await owner_settings.change('maintenance', parts[1].lower() == "on")
     _maintenance_mode = parts[1].lower() == "on"
     status = "🔧 Texnik xizmat rejimi YOQILDI." if _maintenance_mode else "✅ Bot normal rejimda ishlayapti."
-    await message.reply(status)
+    await message.reply(status + owner_settings.notice())
 
 
 def is_maintenance() -> bool:
     """Called by save.py shim to gate all requests during maintenance."""
-    return _maintenance_mode
+    return owner_settings.values.get('maintenance', _maintenance_mode)
 
 
 # ── /broadcast ────────────────────────────────────────────────────────────────
@@ -671,6 +687,7 @@ async def _change_bot_archive(client: Client, message: Message, enabled: bool):
 
 
 @Client.on_message(filters.command("autoarchive") & filters.private)
+@persist_owner_change
 async def cmd_autoarchive(client: Client, message: Message):
     if not _owner(message):
         return
@@ -688,6 +705,7 @@ async def cmd_autoarchive(client: Client, message: Message):
 
 
 @Client.on_callback_query(filters.regex(r"^bot_archive:(on|off)$"))
+@persist_owner_change
 async def cb_bot_archive(client: Client, query: CallbackQuery):
     if not query.from_user or query.from_user.id != OWNER_ID:
         await query.answer("Faqat owner.", show_alert=True)
@@ -1199,6 +1217,7 @@ async def cb_retry_failed_download(client: Client, callback_query: CallbackQuery
 # ── /sessionupdate ────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("sessionupdate") & filters.private)
+@persist_owner_change
 async def cmd_sessionupdate(client: Client, message: Message):
     """Owner: /sessionupdate <user_id> <session_string> — replace a user's DB session."""
     if not _owner(message):
@@ -1228,6 +1247,7 @@ async def cmd_sessionupdate(client: Client, message: Message):
 # ── /sessionremove ────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("sessionremove") & filters.private)
+@persist_owner_change
 async def cmd_sessionremove(client: Client, message: Message):
     """Owner: /sessionremove <user_id> — clear a user's DB session."""
     if not _owner(message):
@@ -1280,6 +1300,7 @@ def _fmt_account(acc_id, username) -> str:
 
 
 @Client.on_message(filters.command("dlsession") & filters.private)
+@persist_owner_change
 async def cmd_dlsession(client: Client, message: Message):
     """Owner: /dlsession <set|user|clear|status> — download-only session override."""
     if not _owner(message):
@@ -1421,6 +1442,7 @@ def _parse_channel_id(raw: str) -> Optional[int]:
 # ── /addchannel ──────────────────────────────────────────────────
 
 @Client.on_message(filters.command("addchannel") & filters.private)
+@persist_owner_change
 async def cmd_addchannel(client: Client, message: Message):
     """
     Owner: /addchannel <channel_id> <target_chat_id> [label]
@@ -1468,6 +1490,7 @@ async def cmd_addchannel(client: Client, message: Message):
 # ── /removechannel ──────────────────────────────────────────────
 
 @Client.on_message(filters.command("removechannel") & filters.private)
+@persist_owner_change
 async def cmd_removechannel(client: Client, message: Message):
     """Owner: /removechannel <channel_id>"""
     if not _owner(message):
@@ -1525,6 +1548,7 @@ async def cmd_channels(client: Client, message: Message):
 # ── /togglechannel ───────────────────────────────────────────────
 
 @Client.on_message(filters.command("togglechannel") & filters.private)
+@persist_owner_change
 async def cmd_togglechannel(client: Client, message: Message):
     """Owner: /togglechannel <channel_id> <on|off>"""
     if not _owner(message):

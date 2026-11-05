@@ -1,3 +1,4 @@
+from core.owner_settings import persist_owner_change
 """
 TechVJ/session_manager_commands.py - /session owner command.
 
@@ -208,6 +209,7 @@ def _format_pool_session_state(runtime_rec, persisted_rec: Optional[dict], prefi
 
 
 @Client.on_message(filters.command("session") & filters.private)
+@persist_owner_change
 async def session_command(client: Client, message: Message):
     """Dispatcher for all /session sub-commands."""
     if not _owner_only(message):

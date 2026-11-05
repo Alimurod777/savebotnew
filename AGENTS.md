@@ -821,3 +821,16 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Wzgram send_video_note parse_mode qabul qilmaydi; make_send_fn VideoNote yo'lida caption/caption_entities/parse_mode ni olib tashlang.
 - TypeError/AttributeError/NameError/AssertionError user URL PARSE xatosi sifatida tasniflanmasin.
 - Reportable SYSTEM_FAILURE qo'shimcha session/channel verification ishlamasa ham ownerga yuborilsin; verification issue hisobotda ko'rsatilsin. Oddiy deleted/FloodWait notification siyosatini saqlang.
+
+### Portable owner settings (2026-11-05)
+- core/owner_settings.py: private bot_settings owner_settings:<bot_id>, atomic
+  data/owner_settings.json pending journal, startup restore before pool/session
+  init, 60s retry. Same bot token and DB_URI required across hosts.
+- Rate/parallel limits and maintenance use durable owner settings. Config
+  mutations for role policy/archive/channels/session/premium/download settings
+  use persist_owner_change; snapshot only changed files, keep deletion/off.
+- Session credentials in private Mongo/local storage must never enter Git,
+  logs, status responses or public artifacts. Runtime tasks/flood counters excluded.
+- Local pending wins over stale Mongo; existing Mongo wins over legacy defaults.
+  Failed restore must not overwrite unrelated remote settings. Preserve the
+  separate chat_log:<bot_id> policy. No automatic bot restart/live test sends.

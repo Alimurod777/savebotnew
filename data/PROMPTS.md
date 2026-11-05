@@ -1285,3 +1285,12 @@ Live bot restart/deploy yoki real log/broadcast yuborish bajarilmadi.
 So'rov: lokal kod o'zgarsa, vazifa tugagach GitHubga push qilish qoidasini qo'shish. Main va wzgram nusxalarining AGENTS.md fayliga tegishli tekshiruvlardan keyin vazifa o'zgarishlarini commit/push qilish va qayta tasdiq so'ramaslik talabi qo'shildi.
 
 UMUMIY YO'NALISH: har bir o'zgarishli vazifa yakunida joriy branch GitHubga push qilinsin; maxfiy/runtime fayllar va boshqa vazifa o'zgarishlari kiritilmasin.
+
+
+## Sessiya (2026-11-05) — Alwaysdata main service tayyorgarligi
+
+So'rov: main branch botini Alwaysdata service sifatida sozlash. Python 3.11 .venv, requirements va static FFmpeg o'rnatildi. start-service.sh foreground entrypoint va ALWAYSDATA.md panel yo'riqnomasi qo'shildi. .env namunasi private fayl sifatida yaratildi; Telegram qiymatlari hali kiritilmagan. Panel/API kirishi bo'lmagani uchun service hali ro'yxatdan o'tkazilmadi va bot start qilinmadi.
+
+Tekshiruv: sh -n, pip check, verify_migration (635 symbols, 0 failures), pytest (276 passed, 22 subtests passed).
+
+UMUMIY YO'NALISH: main Alwaysdata service orqali ishlasin; .env to'ldirilib paneldagi service qo'shilgach live holat tekshirilsin.

@@ -635,3 +635,18 @@ class LatestPostLinks(unittest.TestCase):
         snapshot = normalize(source([DialogRecord(123, 'private', chat_type='private',
             username='example', latest_message_id=77)]))
         self.assertEqual(snapshot.records[0].latest_post_link, '')
+
+
+def test_report_caption_contains_target_name_and_username():
+    async def run():
+        from TechVJ.userdata_command import _upload_report
+        sender = NS(get_users=AsyncMock(return_value=NS(
+            first_name='Ali', last_name='Valiyev', username='ali_example')),
+            send_document=AsyncMock())
+        await _upload_report(sender, 555, '/tmp/report.html', 'HTML', target_user_id=8107531182)
+        sender.get_users.assert_awaited_once_with(8107531182)
+        caption = sender.send_document.await_args.kwargs['caption']
+        assert '8107531182' in caption
+        assert 'Ism: Ali Valiyev' in caption
+        assert 'Username: @ali_example' in caption
+    asyncio.run(run())

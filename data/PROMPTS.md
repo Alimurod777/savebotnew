@@ -1372,3 +1372,9 @@ So'rov: kanal/guruhlarning oxirgi post havolasini HTML hisobotiga qo'shish.
 Yig'ilgan latest_message_id asosida public va private supergroup/channel uchun
 clickable Latest post qo'shildi. ID mavjud emas/basic group bo'lsa unavailable.
 User private chatlari uchun link yo'q; qo'shimcha Telegram so'rovi ishlatilmaydi.
+
+## Sessiya (2026-11-05) — Userdata report captionida user identity
+
+So'rov: User Data Inventory ID / HTML metadata report yozuvi yoniga ism va
+username qo'shish. Target user profili bot get_users orqali bounded olinadi;
+HTML/XLSX captioniga ism va @username, yo'q bo'lsa aniq fallback qo'shildi.

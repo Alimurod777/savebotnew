@@ -718,6 +718,7 @@ async def cmd_logchannel(client: Client, message: Message):
                 f"Log: {'ON' if policy.enabled else 'OFF'}\n"
                 f"Manzil: {policy.chat_id or 'belgilanmagan'}\n"
                 f"Manba: {policy.source} (owner sozlamasi ENVdan ustun)\n"
+                f"MongoDB: {settings.sync_status}\n"
                 f"Navbat: {chat_logger.queue.qsize()} | Yuborildi: {chat_logger.sent}\n"
                 f"Xato: {chat_logger.failed} | Tushirib qoldirildi: {chat_logger.dropped}\n"
                 f"Oxirgi xato: {chat_logger.last_error}\n\n"
@@ -764,7 +765,11 @@ async def cmd_logchannel(client: Client, message: Message):
             await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
         policy = settings.policy
         await reply(f"✅ Log sozlamasi saqlandi: {'ON' if policy.enabled else 'OFF'}\n"
-                    f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}")
+                    f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}\n"
+                    f"MongoDB: {settings.sync_status}"
+                    + ("\n⚠️ Hozir faqat lokal saqlandi; boshqa serverga ko‘chirishdan oldin "
+                       "MongoDB holati synced bo‘lishini tekshiring."
+                       if settings.sync_status != 'synced' else ""))
     except ValueError as error:
         await reply(str(error))
     except Exception as error:

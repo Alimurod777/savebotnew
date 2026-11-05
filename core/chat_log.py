@@ -9,6 +9,7 @@ from functools import wraps
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -23,11 +24,31 @@ logger = logging.getLogger(__name__)
 _inside_send = ContextVar('chat_log_inside_send', default=False)
 
 
+# Match the bot's transfer UI, never media captions or user-authored text.
+_PROGRESS_TEXT = re.compile(
+    r'(?im)^\s*[📥📤⬇️⬆️\s*`]*(?:Downloading|Uploading)\b'
+    r'|^\s*Qism\s+\d+/\d+\s*-\s*[\d.]+/[\d.]+'
+    r'|^\s*⏳\s*\d+/\d+\s*\|\s*ID:'
+    r'|^\s*⏳\s*\d+\s+ta post yuklanmoqda'
+)
+
+
+def _is_progress_text(msg):
+    text = getattr(msg, 'text', None)
+    return bool(text and _PROGRESS_TEXT.search(str(text)))
+
+
 @dataclass(frozen=True)
 class LogPolicy:
     chat_id: int = 0
     enabled: bool = False
     source: str = 'env'
+
+
+def _settings_collection():
+    from database.async_db import get_db
+    db = get_db()
+    return db.get_collection('bot_settings') if db is not None else None
 
 
 class ChatLogSettings:
@@ -37,6 +58,22 @@ class ChatLogSettings:
         self.lock = asyncio.Lock()
         self.revision = 0
         self._policy = None
+        self._pending = False
+        self._bot_id = None
+        self._restored = False
+        self.sync_status = 'not_started'
+
+    def _decode(self, data):
+        if type(data.get('override')) is not bool:
+            raise ValueError('Invalid chat log override')
+        if not data['override']:
+            return LogPolicy(self.env_chat_id, bool(self.env_chat_id))
+        chat_id, enabled = data['chat_id'], data['enabled']
+        if type(chat_id) is not int or chat_id > 0 or type(enabled) is not bool:
+            raise ValueError('Invalid chat log policy')
+        if enabled and not chat_id:
+            raise ValueError('Missing destination')
+        return LogPolicy(chat_id, enabled, 'owner')
 
     @property
     def policy(self) -> LogPolicy:
@@ -44,37 +81,83 @@ class ChatLogSettings:
             self._policy = LogPolicy(self.env_chat_id, bool(self.env_chat_id))
             try:
                 data = json.loads(self.path.read_text(encoding='utf-8'))
-                if data.get('override') is True:
-                    chat_id, enabled = data['chat_id'], data['enabled']
-                    if type(chat_id) is not int or chat_id > 0 or type(enabled) is not bool:
-                        raise ValueError('Invalid chat log policy')
-                    if enabled and not chat_id:
-                        raise ValueError('Missing destination')
-                    self._policy = LogPolicy(chat_id, enabled, 'owner')
+                self._policy = self._decode(data)
+                self._pending = data.get('pending_sync') is True
             except FileNotFoundError:
                 pass
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                # A damaged override must not silently reactivate an old ENV target.
                 self._policy = LogPolicy(source='invalid')
                 logger.warning('Cannot read chat log policy; logging disabled')
         return self._policy
 
+    def _document(self, policy):
+        # Reset is a portable tombstone: use the new server's ENV, not old values.
+        owner = policy.source == 'owner'
+        return {'override': owner, 'chat_id': policy.chat_id if owner else 0,
+                'enabled': policy.enabled if owner else False}
+
+    def _write(self, policy, pending):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix='.chat_log-', dir=str(self.path.parent))
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as output:
+                json.dump(dict(self._document(policy), pending_sync=pending), output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(name, self.path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
     async def save(self, policy: LogPolicy) -> None:
         async with self.lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd, name = tempfile.mkstemp(prefix='.chat_log-', dir=str(self.path.parent))
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as output:
-                    json.dump({'override': policy.source == 'owner',
-                               'chat_id': policy.chat_id, 'enabled': policy.enabled}, output)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(name, self.path)
-            finally:
-                if os.path.exists(name):
-                    os.unlink(name)
+            self._write(policy, True)
             self._policy = policy
+            self._pending = True
             self.revision += 1
+        await self.sync()
+
+    async def startup_sync(self, bot_id):
+        self._bot_id = int(bot_id)
+        await self.sync()
+
+    async def sync(self):
+        if self._bot_id is None:
+            return
+        async with self.lock:
+            policy = self.policy
+            if policy.source == 'invalid':
+                self.sync_status = 'invalid_local'
+                return
+            try:
+                coll = _settings_collection()
+                if coll is None:
+                    self.sync_status = 'local_only'
+                    return
+                key = {'_id': f'chat_log:{self._bot_id}'}
+                if not self._restored and not self._pending:
+                    data = await asyncio.wait_for(coll.find_one(key), timeout=5)
+                    if data is not None:
+                        restored = self._decode(data)
+                        self._write(restored, False)
+                        self._policy = restored
+                        self.revision += 1
+                        policy = restored
+                    elif self.path.exists():
+                        # Migrate an existing JSON owner override/reset on first upgrade.
+                        self._write(policy, True)
+                        self._pending = True
+                    self._restored = True
+                if self._pending:
+                    await asyncio.wait_for(coll.update_one(
+                        key, {'$set': self._document(policy)}, upsert=True), timeout=5)
+                    self._write(policy, False)
+                    self._pending = False
+                    self._restored = True
+                self.sync_status = 'synced'
+            except Exception as error:
+                self.sync_status = 'pending' if self._pending else 'restore_failed'
+                logger.warning('Chat log settings MongoDB sync failed: %s', type(error).__name__)
 
     async def reset(self) -> None:
         await self.save(LogPolicy(self.env_chat_id, bool(self.env_chat_id)))
@@ -106,6 +189,7 @@ class LogEvent:
     album: bool = False
     user_name: str = ""
     username: str = ""
+    bot_text: bool = False
 
 
 class ChatLogger:
@@ -128,6 +212,8 @@ class ChatLogger:
         self._last_header_key = None
         self._last_activity = 0.0
         self.task = None
+        self._sync_task = None
+        self._sync_stop = asyncio.Event()
         self.bot = None
         self.sent = self.failed = self.dropped = 0
         self.last_error = '-'
@@ -158,7 +244,7 @@ class ChatLogger:
             # Logging must never change the result of a successful user send.
             try:
                 for message in result if isinstance(result, (list, tuple)) else [result]:
-                    self.submit(message)
+                    self.submit(message, outbound=True)
             except Exception:
                 logger.warning('Chat log observation failed')
             return result
@@ -166,14 +252,28 @@ class ChatLogger:
 
     async def start(self, bot):
         self.bot = bot
+        await self.settings.startup_sync(bot.me.id)
+        if self._sync_task is None or self._sync_task.done():
+            self._sync_stop.clear()
+            self._sync_task = asyncio.create_task(self._sync_settings(), name='chat-log-settings')
         if self.task is None or self.task.done():
             self.task = asyncio.create_task(self._run(), name='chat-log')
 
+    async def _sync_settings(self):
+        while not self._sync_stop.is_set():
+            try:
+                await asyncio.wait_for(self._sync_stop.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                await self.settings.sync()
+
     async def stop(self):
-        if self.task is not None:
-            self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
-            self.task = None
+        self._sync_stop.set()
+        tasks = [task for task in (self._sync_task, self.task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._sync_task = self.task = None
         while not self.queue.empty():
             self.queue.get_nowait()
             self.queue.task_done()
@@ -182,7 +282,7 @@ class ChatLogger:
         self._albums.clear()
         self._last_header_key = None
 
-    def submit(self, msg):
+    def submit(self, msg, outbound=False):
         if msg is None or self.task is None or self.task.done():
             return
         policy = self.settings.policy
@@ -193,6 +293,12 @@ class ChatLogger:
             return
         message_id = getattr(msg, 'id', None)
         if not message_id:
+            return
+        sender = getattr(msg, 'from_user', None)
+        bot_id = getattr(getattr(self.bot, 'me', None), 'id', None)
+        bot_authored = (outbound or getattr(msg, 'outgoing', False)
+                        or (bot_id is not None and getattr(sender, 'id', None) == bot_id))
+        if bot_authored and _is_progress_text(msg):
             return
         # Edits with new content may be logged, but update + send-return duplicates
         # and nested copy/send calls must not generate two log entries.
@@ -220,6 +326,7 @@ class ChatLogger:
             revision=self.settings.revision, target=policy.chat_id,
             chat_id=chat.id, message_id=message_id,
             album=bool(album_id), user_name=name, username=username,
+            bot_text=bool(bot_authored and text),
         )
         try:
             self.queue.put_nowait(event)
@@ -261,6 +368,14 @@ class ChatLogger:
                     return
                 token = _inside_send.set(True)
                 try:
+                    if event.bot_text:
+                        # Native forwards read current content: a queued initial
+                        # status may already have become a transfer progress edit.
+                        current = await asyncio.wait_for(self.bot.get_messages(
+                            event.chat_id, event.message_id,
+                        ), timeout=30)
+                        if _is_progress_text(current):
+                            return
                     header_key = (event.revision, event.chat_id)
                     if self._last_header_key != header_key or time.monotonic() - self._last_activity >= self.header_gap:
                         header = (f"👤 Foydalanuvchi: {event.user_name}\n"

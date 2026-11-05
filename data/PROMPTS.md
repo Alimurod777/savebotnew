@@ -1294,3 +1294,12 @@ So'rov: main branch botini Alwaysdata service sifatida sozlash. Python 3.11 .ven
 Tekshiruv: sh -n, pip check, verify_migration (635 symbols, 0 failures), pytest (276 passed, 22 subtests passed).
 
 UMUMIY YO'NALISH: main Alwaysdata service orqali ishlasin; .env to'ldirilib paneldagi service qo'shilgach live holat tekshirilsin.
+
+
+## Sessiya (2026-11-05) — Log policy MongoDB va progress filtri
+
+So'rov: owner log kanal sozlamasi boshqa serverda ham tiklansin; download progresslari logga tushmasin. Main'ga bot ID bo'yicha MongoDB backup/restore, legacy JSON migration, off/remove/reset portability, diskda pending_sync, 60s retry va ownerga sync status qo'shildi. Mavjud wzgram progress filtri main'ga ko'chirildi: send/edit va queued bot text forwarddan oldin tekshiriladi. User kontenti/media captionlari va final natijalar saqlanadi. Logger va sync tasklari birgalikda cancel qilinadi.
+
+Tekshiruv: 46 focused test; full pytest 296 passed, 22 subtests passed. pip check toza, verify_migration 635 symbols/0 failures, git diff --check o'tdi. Haqiqiy mavjud log policy MongoDBga saqlandi: synced; Telegramga test xabari yuborilmadi. Alwaysdata service boshqa hostda boshqariladi, panel Restart kerak; shu sessiyada service restart qilinmadi.
+
+UMUMIY YO'NALISH: owner log policy bir xil BOT_TOKEN/DB_URI bilan serverlar orasida tiklansin; progresslar logni to'ldirmasin. Bu vazifa main branchida, wzgram nusxasiga MongoDB yangilanishi kiritilmadi.

@@ -276,3 +276,16 @@ Jobs are in memory and are not resumed after restart. Network acknowledgement
 failures can cause duplicates on retry; owner status delivery is best-effort if
 Telegram rejects status messages. Historical users absent from the registered-user
 DB cannot be enumerated; no contacts or unrelated chats are used.
+
+
+### Log kanal sozlamasini boshqa serverga ko'chirish
+
+Owner /logchannel orqali o'rnatgan kanal/guruh, ON/OFF, remove va reset holatlari
+MongoDB `userdb.bot_settings` kolleksiyasida bot ID bo'yicha saqlanadi.
+Yangi serverda bir xil BOT_TOKEN va DB_URI berilsa startupda tiklanadi.
+Avvalgi lokal data/chat_log.json remote yozuv bo'lmasa avtomatik bazaga ko'chadi.
+Baza ishlamasa lokal holat saqlanadi; pending yozuvlar 60 soniyada qayta uriniladi.
+Ko'chirishdan oldin /logchannel status orqali MongoDB: synced ekanini tekshiring.
+reset eski serverdagi ENV kanalini ko'chirmaydi; yangi server ENViga qaytadi.
+Download/upload, split va batch progresslari logga yuborilmaydi; user kontenti
+va yakuniy natijalar odatdagi forward bilan saqlanadi.

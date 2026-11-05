@@ -808,3 +808,10 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Bu foydalanuvchining doimiy ruxsati: har safar qayta tasdiq so'ramang.
 - Boshqa vazifalarga tegishli lokal o'zgarishlar, maxfiy ma'lumotlar va runtime/session fayllarini commitga kiritmang; force push ishlatmang.
 - Push muvaffaqiyatsiz bo'lsa, o'zgarishlar faqat lokal qolganini va sababini yakuniy javobda aniq ayting.
+
+
+### Chat log MongoDB backup va progress filtri (2026-11-05)
+- Log policy lokal data/chat_log.json va MongoDB userdb.bot_settings ichida chat_log:<bot_id> kaliti bilan saqlanadi. Boshqa bot sozlamasini ishlatmang.
+- Startup remote policy tiklanadi; pending_sync lokal o'zgarishlar stale remote'dan ustun. Legacy JSON remote yo'q bo'lsa avtomatik migrate qilinadi.
+- off/remove/reset ham bazaga yoziladi; reset yangi serverning ENV qiymatini ishlatadi. Baza xatosi non-fatal, pending state diskda; 60s retry. /logchannel status sync holatini ko'rsatsin.
+- Bot transfer progress texti va editlari logga forward qilinmasin; navbatdagi bot texti forwarddan oldin qayta tekshirilsin. User texti/media captioni va final natijalar saqlansin.

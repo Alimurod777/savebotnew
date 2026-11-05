@@ -13,6 +13,11 @@ from core.chat_log import ChatLogger, ChatLogSettings, LogPolicy, validate_log_c
 from TechVJ import owner_commands, log_channel
 
 
+@pytest.fixture(autouse=True)
+def no_live_settings_db(monkeypatch):
+    monkeypatch.setattr(chat_log, '_settings_collection', lambda: None)
+
+
 def message(mid=1, text='Hello 😀', uid=123, **kwargs):
     values = dict(id=mid, text=text, caption=None, entities=[], caption_entities=[],
                   chat=SimpleNamespace(id=uid, type=ChatType.PRIVATE,
@@ -29,6 +34,7 @@ def bot():
         send_message=AsyncMock(return_value=message(uid=-10099)),
         forward_messages=AsyncMock(return_value=message(text=None, uid=-10099)),
         copy_message=AsyncMock(return_value=message(text=None)),
+        get_messages=AsyncMock(return_value=message()),
         get_media_group=AsyncMock(return_value=[message(2, None), message(1, None)]),
         get_chat=AsyncMock(return_value=SimpleNamespace(id=-10099, type=ChatType.CHANNEL)),
         get_chat_member=AsyncMock(return_value=SimpleNamespace(
@@ -349,5 +355,74 @@ def test_user_header_only_on_switch_or_after_long_idle_gap(setup, monkeypatch):
         await manager.queue.join()
         assert client.send_message.await_count == 3
         assert 'ID: 456' in client.send_message.await_args.args[1]
+        await manager.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('text', [
+    '📥 Downloading\n\n████░ 96.3%\n⏱ ETA: 25s',
+    '📤 **Uploading**\n\n`███░` **33.3%**',
+    '**Downloading**\n699.1 MB',
+    'Qism 2/3 - 713.0/1333.3 MB (53.5%)',
+    'Qism 2/3 - 1333.3/1333.3 MB (100.0%)',
+    '⏳ 164/601 | ID: `165`\n✅ 121  📁 3  ❌ 0',
+    '⏳ 601 ta post yuklanmoqda...',
+])
+def test_bot_progress_send_and_edit_are_not_logged(setup, text):
+    async def run():
+        manager, client = setup
+        progress = message(text=text, from_user=SimpleNamespace(id=777), outgoing=True)
+        client.send_message.return_value = progress
+        client.edit_message_text = AsyncMock(return_value=progress)
+        original_forward = client.forward_messages
+        manager.attach(client)
+        await manager.start(client)
+        assert await client.send_message(123, text) is progress
+        assert await client.edit_message_text(123, 1, text) is progress
+        await log_channel.log_private_edit(client, progress)
+        await manager.queue.join()
+        original_forward.assert_not_awaited()
+        assert manager.sent == manager.failed == manager.dropped == 0
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_user_progress_text_and_media_caption_still_forward(setup):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text='📥 Downloading\n96.3%'))
+        manager.submit(message(2, text=None, caption='📤 Uploading',
+                               document=SimpleNamespace(file_id='file'), outgoing=True))
+        await manager.queue.join()
+        assert client.forward_messages.await_count == 2
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_queued_status_edited_to_progress_is_not_forwarded(setup):
+    async def run():
+        manager, client = setup
+        client.get_messages.return_value = message(text='Qism 2/3 - 713.0/1333.3 MB (53.5%)')
+        await manager.start(client)
+        manager.submit(message(text='Preparing...', outgoing=True))
+        await manager.queue.join()
+        client.forward_messages.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_final_result_on_same_progress_message_is_logged(setup):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text='📥 Downloading', outgoing=True))
+        final = message(text="⚠️ Hech qanday xabar jo'natilmadi\nSo'ralgan: 1\n❌ Xato: 0",
+                        outgoing=True)
+        client.get_messages.return_value = final
+        manager.submit(final)
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 1)
         await manager.stop()
     asyncio.run(run())

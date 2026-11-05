@@ -1594,3 +1594,17 @@ nonfatal errors, policy switch, flood cancellation and queue overflow.
 
 Yakuniy tekshiruv (2026-11-03): full pytest — 276 passed, 22 subtests passed; AST va diff --check o‘tdi.
 Wzgram verify_migration: 635 import symbols, 0 failures; pip check o‘tdi.
+
+
+## BUG-080: Owner log kanal sozlamasi yangi serverga tiklanmaydi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Sabab: ChatLogSettings faqat lokal data/chat_log.json ishlatgan, MongoDB backup yo'q.
+Yechim: bot ID bilan scope qilingan userdb.bot_settings policy backup/restore, legacy JSON migration, persistent pending_sync va 60s retry qo'shildi. off/remove/reset ko'chirishda saqlanadi; reset yangi ENVni ishlatadi. /logchannel status va save javobi sync holatini ko'rsatadi.
+
+## BUG-081: Main branch bot progresslarini log kanalga forward qiladi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Sabab: wzgram branchidagi progress filtri mainda yo'q edi. Yechim: mavjud progress detector, send/edit filtri va forward oldidan queued bot textni qayta tekshirish main'ga qo'llandi. User texti/media captioni va final natijalar filtrlanmaydi.

@@ -318,6 +318,8 @@ class SessionManager:
                     await update_waiter.close()
 
             if not is_pool_upload:
+                from core.chat_log import observe_user_upload
+                observe_user_upload(bot_client, sent_msg, user_id)
                 return sent_msg
 
             # Copy from uploader-bot DM to user chat so reply context is applied.

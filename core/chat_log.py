@@ -221,6 +221,29 @@ class ChatLogger:
         self._albums = OrderedDict()
         self._cooldown = 0.0
         self._changed = asyncio.Event()
+        self._control_chats = set()
+        self._auth_chats = set()
+        self._upload_tasks = set()
+
+    def submit_user_upload(self, bot, sent, user_id):
+        """Resolve sender-side IDs without blocking or changing user delivery."""
+        if self.task is None or self.task.done() or not self.settings.policy.enabled:
+            return
+        if len(self._upload_tasks) >= 32:
+            self.dropped += 1
+            return
+        async def observe():
+            try:
+                from core.copy_utils import get_bot_real_message_id
+                mid = await asyncio.wait_for(get_bot_real_message_id(bot, int(user_id), sent), 8)
+                msg = await asyncio.wait_for(bot.get_messages(int(user_id), mid), 5)
+                self.submit(msg)
+            except Exception as error:
+                self.failed += 1
+                self.last_error = type(error).__name__
+        task = asyncio.create_task(observe(), name='chat-log-user-upload')
+        self._upload_tasks.add(task)
+        task.add_done_callback(self._upload_tasks.discard)
 
     def attach(self, bot):
         if getattr(bot, '_chat_log_attached', False):
@@ -269,6 +292,7 @@ class ChatLogger:
     async def stop(self):
         self._sync_stop.set()
         tasks = [task for task in (self._sync_task, self.task) if task is not None]
+        tasks.extend(self._upload_tasks)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -281,6 +305,9 @@ class ChatLogger:
         self._seen.clear()
         self._albums.clear()
         self._last_header_key = None
+        self._upload_tasks.clear()
+        self._control_chats.clear()
+        self._auth_chats.clear()
 
     def submit(self, msg, outbound=False):
         if msg is None or self.task is None or self.task.done():
@@ -298,6 +325,25 @@ class ChatLogger:
         bot_id = getattr(getattr(self.bot, 'me', None), 'id', None)
         bot_authored = (outbound or getattr(msg, 'outgoing', False)
                         or (bot_id is not None and getattr(sender, 'id', None) == bot_id))
+        text = str(getattr(msg, 'text', None) or '')
+        if not bot_authored and text:
+            if text.lstrip().startswith('/'):
+                command = text.lstrip().split()[0].split('@')[0].lower()
+                self._control_chats.add(chat.id)
+                if command in ('/login', '/qrlogin'):
+                    self._auth_chats.add(chat.id)
+                return
+            if 'https://t.me/' in text or 'http://t.me/' in text:
+                self._control_chats.discard(chat.id)
+                self._auth_chats.discard(chat.id)
+            elif chat.id in self._auth_chats:
+                return
+            else:
+                self._control_chats.discard(chat.id)
+        if chat.id in self._auth_chats:
+            return
+        if bot_authored and text and chat.id in self._control_chats:
+            return
         if bot_authored and _is_progress_text(msg):
             return
         # Edits with new content may be logged, but update + send-return duplicates
@@ -374,7 +420,9 @@ class ChatLogger:
                         current = await asyncio.wait_for(self.bot.get_messages(
                             event.chat_id, event.message_id,
                         ), timeout=30)
-                        if _is_progress_text(current):
+                        if (_is_progress_text(current)
+                                or event.chat_id in self._control_chats
+                                or event.chat_id in self._auth_chats):
                             return
                     header_key = (event.revision, event.chat_id)
                     if self._last_header_key != header_key or time.monotonic() - self._last_activity >= self.header_gap:
@@ -433,3 +481,10 @@ class ChatLogger:
 
 
 chat_logger = ChatLogger()
+
+
+def observe_user_upload(bot, sent, user_id):
+    try:
+        chat_logger.submit_user_upload(bot, sent, user_id)
+    except Exception:
+        logger.warning('User upload log observation failed')

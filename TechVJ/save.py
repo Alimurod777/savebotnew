@@ -817,6 +817,8 @@ async def _enqueue_media_delivery(
             return sent
 
         if not is_pool_session:
+            from core.chat_log import observe_user_upload
+            observe_user_upload(bot_client, sent, target_user_id)
             return sent
 
         # ── Pool: copy from pool↔bot DM to user chat ─────────────────────
@@ -919,6 +921,8 @@ async def _copy_user_session_upload_to_user(
     if sent_message is None:
         return None
     if _is_direct_user_session_upload(source_user_id, target_user_id):
+        from core.chat_log import observe_user_upload
+        observe_user_upload(bot_client, sent_message, target_user_id)
         logger.debug(
             "direct user-session media delivery: source=%s target=%s sent_id=%s; bot copy skipped",
             source_user_id,

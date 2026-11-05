@@ -426,3 +426,88 @@ def test_final_result_on_same_progress_message_is_logged(setup):
         client.forward_messages.assert_awaited_once_with(-10099, 123, 1)
         await manager.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('command', ['/ownerhelp', '/autoarchive off', '/start',
+    '/session add global PRIVATE_SESSION', '/setpremium PRIVATE_SESSION'])
+def test_control_commands_and_bot_responses_are_not_logged(setup, command):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text=command))
+        manager.submit(message(2, 'Control response', outgoing=True))
+        manager.submit(message(2, 'Updated control response', outgoing=True, edit_date='edited'))
+        await manager.queue.join()
+        client.forward_messages.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_login_phone_otp_password_qr_and_responses_are_not_logged(setup):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text='/login'))
+        for index, text in enumerate(['+998900000000', '1 2 3 4 5', 'test-password'], 2):
+            manager.submit(message(index, text))
+            manager.submit(message(index + 10, 'Login response', outgoing=True))
+        manager.submit(message(20, None, outgoing=True, photo=object()))
+        await manager.queue.join()
+        client.forward_messages.assert_not_awaited()
+        manager.submit(message(21, 'https://t.me/example/100'))
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 21)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_user_upload_resolves_bot_side_id_and_deduplicates(setup, monkeypatch):
+    async def run():
+        from core import copy_utils
+        manager, client = setup
+        resolved = message(88, None, photo=object())
+        client.get_messages.return_value = resolved
+        resolver = AsyncMock(return_value=88)
+        monkeypatch.setattr(copy_utils, 'get_bot_real_message_id', resolver)
+        await manager.start(client)
+        sent = message(999, None, uid=777, photo=object())
+        manager.submit_user_upload(client, sent, 123)
+        await asyncio.gather(*manager._upload_tasks)
+        manager.submit(resolved)  # ordinary incoming update can arrive as well
+        await manager.queue.join()
+        resolver.assert_awaited_once_with(client, 123, sent)
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 88)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_upload_resolution_failure_is_nonfatal(setup, monkeypatch):
+    async def run():
+        from core import copy_utils
+        manager, client = setup
+        monkeypatch.setattr(copy_utils, 'get_bot_real_message_id', AsyncMock(side_effect=ValueError('unresolved')))
+        await manager.start(client)
+        manager.submit_user_upload(client, message(999, None), 123)
+        await asyncio.gather(*manager._upload_tasks)
+        assert manager.failed == 1
+        client.forward_messages.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_delivery_hook_preserves_user_session_message(monkeypatch):
+    async def run():
+        from TechVJ.save import _copy_user_session_upload_to_user
+        from unittest.mock import Mock
+        observer = Mock()
+        monkeypatch.setattr(chat_log, 'observe_user_upload', observer)
+        client = bot()
+        sent = message(999, None, uid=777)
+        result = await _copy_user_session_upload_to_user(
+            bot_client=client, sent_message=sent, source_user_id=123,
+            target_user_id=123, request_message=None, pre_upload_latest_id=None)
+        assert result is sent
+        observer.assert_called_once_with(client, sent, 123)
+        client.copy_message.assert_not_awaited()
+    asyncio.run(run())

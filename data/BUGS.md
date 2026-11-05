@@ -1647,3 +1647,17 @@ Qo'shimcha shu auditda: /enable_global_sessions get_global()dan foydalangan,
 lekin u faqat enabled sessiyalarni qaytaradi. O'chirilgan globallar hech qachon
 yoqilmagan. Endi get_all()dan GLOBAL turini tanlab enable qiladi; dedicated
 sessiyalar tegilmaydi. Offline regression qo'shildi.
+
+## BUG-085: Login/owner boshqaruv log shovqini va direct upload logi yo'q
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: private observer barcha command va auth dialogini kontent deb olgan.
+Direct user-session upload bot send wrapperidan o'tmaydi; sender-side message
+IDni bot-side ID o'rnida ishlatib bo'lmaydi.
+Yechim: command/control chat holati va login/qrlogin auth filtri; phone/OTP/
+password/QR/control response va editlar chiqariladi, keyingi Telegram linkda
+kontent logi tiklanadi. Direct legacy/SM/split/album delivery hooklari mavjud
+get_bot_real_message_id orqali bounded background resolution qiladi va bot-side
+message'ni existing ordinary-forward queuega beradi. Incoming update bilan
+dedup, max 32 resolution task, timeout, nonfatal errors, shutdown cancellation.
+User media delivery/routing o'zgarmaydi, user sessionga logger attach qilinmaydi.

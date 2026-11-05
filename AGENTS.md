@@ -834,3 +834,11 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Local pending wins over stale Mongo; existing Mongo wins over legacy defaults.
   Failed restore must not overwrite unrelated remote settings. Preserve the
   separate chat_log:<bot_id> policy. No automatic bot restart/live test sends.
+
+### Chat log content/auth filter (2026-11-05)
+- Command messages, command UI responses/edits and login/QR auth exchanges
+  (phone/OTP/password/QR) must not be logged. A new Telegram URL resumes content.
+- Direct user-session delivery explicitly calls observe_user_upload after success.
+  Resolve the bot-side ID with existing strict resolver; never forward sender ID.
+  Resolution is bounded/nonfatal/background, dedup with incoming updates, cancel
+  on shutdown. No user-session/global Client monkey-patch or routing changes.

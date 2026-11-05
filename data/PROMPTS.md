@@ -1341,3 +1341,20 @@ Tekshiruv: 11 yangi owner-settings regression, full pytest 318 passed,
 git diff --check o'tdi. /stats owner settings sync holatini ko'rsatadi.
 Qo'shimcha /enable_global_sessions disabled globallarni topmayotgan xato
 ham tuzatildi. Mavjud /ban va individual /setrole user DB saqlashi saqlandi.
+
+## Sessiya (2026-11-05) — Auth/control log filtri va direct media log
+
+So'rov: /ownerhelp, autoarchive, /login telefon/OTP va /start javoblari logda
+kerak emas; user session uploadlari esa ko'rinsin. Command/control/auth dialog
+filtri, queued bot-text recheck va direct delivery uchun bot-side ID resolver
+ulandi. Media asl chatdan bot identity bilan ordinary forward qilinadi;
+copy/reupload yoki user session logger monkey-patch yo'q. Upload natijasi log
+xatosidan buzilmaydi; resolution bounded background task, stopda cancel.
+UMUMIY YO'NALISH: logda so'rov havolasi va kontent bo'lsin; login maxfiylari
+va boshqaruv/progress shovqini bo'lmasin. Avval logga ketgan xabarlar avtomatik
+o'chirilmadi; live Telegram send/restart bajarilmadi.
+
+Tekshiruv: 9 yangi log regression case; full pytest 327 passed,
+22 subtests passed; migration 637 symbols/0 failures, pip check va whitespace
+tekshiruvi o'tdi. Direct send hook user session natijasini aynan qaytarishi va
+bot.copy_message qo'shmasligi ham tekshirildi.

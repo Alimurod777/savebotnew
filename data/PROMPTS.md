@@ -1278,3 +1278,10 @@ mosligi tekshirildi. Oddiy git push HTTPS credential yo‘qligi sabab ishlamadi;
 API orqali expected-head lease bilan, force’siz nashr qilindi. Lokal tarixlar
 backup branchlarda saqlandi, working tree o‘zgarmasdan published refga moslandi.
 Live bot restart/deploy yoki real log/broadcast yuborish bajarilmadi.
+
+
+## Sessiya (2026-11-05) — Vazifa yakunida avtomatik commit/push
+
+So'rov: lokal kod o'zgarsa, vazifa tugagach GitHubga push qilish qoidasini qo'shish. Main va wzgram nusxalarining AGENTS.md fayliga tegishli tekshiruvlardan keyin vazifa o'zgarishlarini commit/push qilish va qayta tasdiq so'ramaslik talabi qo'shildi.
+
+UMUMIY YO'NALISH: har bir o'zgarishli vazifa yakunida joriy branch GitHubga push qilinsin; maxfiy/runtime fayllar va boshqa vazifa o'zgarishlari kiritilmasin.

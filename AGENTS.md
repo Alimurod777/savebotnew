@@ -800,3 +800,11 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   discard stale queued events. Status exposes failed/dropped counts. No log loops.
 - Log destination and runtime state must remain ignored; `.env.example` is tracked.
 - Tests use synthetic bot/user IDs and mocks; no live user messages sent by tests.
+
+
+## Vazifa yakunida GitHubga push qilish
+
+- Lokal kod yoki loyiha hujjatlari o'zgartirilgan har bir vazifa tugagach, tegishli tekshiruvlarni bajaring, shu vazifaga tegishli o'zgarishlarni commit qiling va ishlayotgan branchning GitHub origin remote'iga push qiling.
+- Bu foydalanuvchining doimiy ruxsati: har safar qayta tasdiq so'ramang.
+- Boshqa vazifalarga tegishli lokal o'zgarishlar, maxfiy ma'lumotlar va runtime/session fayllarini commitga kiritmang; force push ishlatmang.
+- Push muvaffaqiyatsiz bo'lsa, o'zgarishlar faqat lokal qolganini va sababini yakuniy javobda aniq ayting.

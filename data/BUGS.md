@@ -1667,3 +1667,10 @@ User media delivery/routing o'zgarmaydi, user sessionga logger attach qilinmaydi
 Status: ✅ Tuzatildi (2026-11-05). Progress filtri faqat inglizcha asosiy
 statuslarni tanigan. Yuklanmoqda, Yuborilmoqda va navbatdan yuklash statuslari
 qo'shildi; user havolasi, oddiy chat va yakuniy bot javobi saqlanadi.
+
+## BUG-087: Userdata HTMLda oxirgi kanal/guruh postiga clickable link yo'q
+
+Status: ✅ Tuzatildi (2026-11-05). Latest message ID yig'ilgan, lekin HTMLda
+post anchor yo'q edi. Normalize public username/post va private -100 peer uchun
+t.me/c/chat/post hosil qiladi; HTML Latest post linkini ko'rsatadi. Basic group,
+bo'sh chat va private user chat uchun soxta link yaratilmaydi. Qo'shimcha RPC yo'q.

@@ -138,6 +138,22 @@ class Record:
     topics: str
     metadata: str
     category: str
+    latest_post_link: str = ''
+
+
+def latest_post_link(chat, kind):
+    """Build a post link from collected IDs, without extra Telegram requests."""
+    message_id = getattr(chat, 'latest_message_id', None)
+    if kind not in ('channel', 'group') or type(message_id) is not int or message_id <= 0:
+        return ''
+    username = clean(getattr(chat, 'username', None))
+    if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{3,63}', username):
+        return f'https://t.me/{username}/{message_id}'
+    # Basic groups have no t.me/c message links; only channel-style peers do.
+    chat_id = str(chat.chat_id)
+    if re.fullmatch(r'-100[1-9][0-9]*', chat_id):
+        return f'https://t.me/c/{chat_id[4:]}/{message_id}'
+    return ''
 
 
 @dataclass(frozen=True)
@@ -205,7 +221,8 @@ def normalize(job) -> Snapshot:
         records.append(Record(clean(rec.title) or '(name unavailable)', str(rec.chat_id), clean(rec.username),
                               type_name(rec.chat_type), privacy, source,
                               getattr(rec, 'forum_status', 'Unknown / unverified') if rec.is_forum is None else ('Yes' if rec.is_forum else 'No'),
-                              topics, metadata or 'Unavailable', category_id(kind, privacy)))
+                              topics, metadata or 'Unavailable', category_id(kind, privacy),
+                              latest_post_link(rec, kind)))
     records.sort(key=lambda r: CATEGORY_IDS.index(r.category))
     partial = sum(r.inspection_status != 'COMPLETE' for r in job.records)
     limitations = f' Collected {len(records)} of {job.dialogs_discovered} discovered chats. Operation failures: {len(job.failures)}. Partial inspections: {partial}.'
@@ -223,9 +240,12 @@ def render_html(snapshot: Snapshot, path: Union[str, Path]) -> None:
         if re.fullmatch(r'[A-Za-z0-9_]{1,64}', r.username):
             link = f'<a href="https://t.me/{esc(r.username)}" rel="noreferrer noopener" target="_blank">@{esc(r.username)}</a>'
         layout = 'detailed' if r.category in PRIVATE_CATEGORIES else 'compact'
+        post_link = (f'<a href="{esc(r.latest_post_link)}" rel="noreferrer noopener" target="_blank">Latest post</a>'
+                     if re.fullmatch(r'https://t\.me/(?:[A-Za-z][A-Za-z0-9_]{3,63}|c/[1-9][0-9]*)/[1-9][0-9]*', r.latest_post_link)
+                     else 'Latest post: unavailable') if r.latest_post_link or r.category in ('public_channels', 'private_channels', 'public_groups', 'private_groups') or chat_kind(r.chat_type) in ('channel', 'group') else ''
         cards.append(f'''<article class="{layout}" data-chat-id="{esc(r.chat_id)}" data-chat-type="{esc(r.chat_type)}" data-category="{esc(r.category)}" data-privacy="{esc(r.privacy)}" data-search="{esc(r.name+' '+r.chat_id+' '+r.username)}">
 <details><summary><small>#{n} · {esc(CATEGORY_LABELS[r.category])} · {esc(r.privacy)}</small><h2>{esc(r.name)}</h2><code>{esc(r.chat_id)}</code></summary>
-<p>{link}</p><dl><dt>Full name</dt><dd>{esc(r.name)}</dd><dt>Type</dt><dd>{esc(r.chat_type)}</dd><dt>Privacy evidence</dt><dd>{esc(r.source)}</dd><dt>Forum enabled</dt><dd>{esc(r.forum)}</dd></dl>
+<p>{link}</p><p>{post_link}</p><dl><dt>Full name</dt><dd>{esc(r.name)}</dd><dt>Type</dt><dd>{esc(r.chat_type)}</dd><dt>Privacy evidence</dt><dd>{esc(r.source)}</dd><dt>Forum enabled</dt><dd>{esc(r.forum)}</dd></dl>
 <details><summary>Topic metadata</summary><pre>{esc(r.topics)}</pre></details><pre>{esc(r.metadata)}</pre></details>
 <button class="copy" data-id="{esc(r.chat_id)}">Copy ID</button></article>''')
     options = ''.join(f'<option value="{cat}">{esc(label)}</option>' for cat, label in CATEGORY_LABELS.items())

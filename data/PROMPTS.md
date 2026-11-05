@@ -1365,3 +1365,10 @@ So'rov: user yuborgan havola va keyingi user/bot suhbati logda bo'lsin,
 download/upload statuslari bo'lmasin. O'zbekcha Yuklanmoqda/Yuborilmoqda va
 navbatdan yuklash statuslari filtrda yo'qligi aniqlandi va tuzatildi.
 Havola va yakuniy javob saqlanishi test qilindi; oldingi auth filtri saqlandi.
+
+## Sessiya (2026-11-05) — Userdata HTML oxirgi post havolasi
+
+So'rov: kanal/guruhlarning oxirgi post havolasini HTML hisobotiga qo'shish.
+Yig'ilgan latest_message_id asosida public va private supergroup/channel uchun
+clickable Latest post qo'shildi. ID mavjud emas/basic group bo'lsa unavailable.
+User private chatlari uchun link yo'q; qo'shimcha Telegram so'rovi ishlatilmaydi.

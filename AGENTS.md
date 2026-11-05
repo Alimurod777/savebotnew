@@ -842,3 +842,11 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   Resolve the bot-side ID with existing strict resolver; never forward sender ID.
   Resolution is bounded/nonfatal/background, dedup with incoming updates, cancel
   on shutdown. No user-session/global Client monkey-patch or routing changes.
+
+### Owner /usersdata (2026-11-05)
+- /usersdata: owner private only; HTML lists session-backed registered users
+  only after live get_me confirms matching user ID, non-bot/non-deleted account.
+- Use create_user_session, bounded sequential checks, guaranteed disconnect;
+  invalid/unverified/timeouts excluded. No session/phone/exception payload exports.
+- Like /userdata, generated owner report document uses the bot sender.
+  Reports are temporary; no stored session or role mutation, no startup job.

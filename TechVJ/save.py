@@ -4508,7 +4508,7 @@ async def _dispatch_with_priority(
     "add_premium_session", "remove_premium_session",
     "addchannel", "removechannel", "channels", "togglechannel", "grab", "failed_logs",
     "uploadsetting", "split_media", "dlsession",
-    "userdata", "userdata_status", "userdata_resume", "userdata_cancel",
+    "usersdata", "userdata", "userdata_status", "userdata_resume", "userdata_cancel",
 ]))
 
 @check_banned

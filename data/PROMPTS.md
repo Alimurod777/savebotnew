@@ -1378,3 +1378,17 @@ User private chatlari uchun link yo'q; qo'shimcha Telegram so'rovi ishlatilmaydi
 So'rov: User Data Inventory ID / HTML metadata report yozuvi yoniga ism va
 username qo'shish. Target user profili bot get_users orqali bounded olinadi;
 HTML/XLSX captioniga ism va @username, yo'q bo'lsa aniq fallback qo'shildi.
+
+## Sessiya (2026-11-05) — /usersdata owner hisoboti
+
+So'rov: sessiyasi mavjud userlar ism, ID, Telegram Premium HTML ro'yxati.
+Aniqlashtirish: faqat sessiyasi ishlaydiganlar yuborilsin. Owner-private command,
+registered user enumeration + session tekshirish, get_me ID mosligi, real Telegram
+Premium va username; ishlamagan/tasdiqlanmaganlar chiqariladi. Sequential bounded
+context-manager checks, duplicate job guard, temporary escaped HTML qo'shildi.
+Session/phone hisobotga chiqmaydi, DB/session holati o'zgartirilmaydi.
+
+Tekshiruv: 4 mocked regression, full pytest 340 passed/22 subtests,
+verify_migration 640 symbols/0 failures, pip check va whitespace o'tdi.
+Haqiqiy user sessiyalarini ommaviy tekshirish yoki bot restart bajarilmadi;
+owner /usersdata yuborganda live tekshiruv ishlaydi.

@@ -818,3 +818,11 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Private final summary must preserve surfaced FloodWait, count the unfinished
   post and explain possible partial split delivery. Never overwrite it with
   "nothing sent / errors 0" or promise automatic resume after termination.
+
+
+## Vazifa yakunida GitHubga push qilish
+
+- Lokal kod yoki loyiha hujjatlari o'zgartirilgan har bir vazifa tugagach, tegishli tekshiruvlarni bajaring, shu vazifaga tegishli o'zgarishlarni commit qiling va ishlayotgan branchning GitHub origin remote'iga push qiling.
+- Bu foydalanuvchining doimiy ruxsati: har safar qayta tasdiq so'ramang.
+- Boshqa vazifalarga tegishli lokal o'zgarishlar, maxfiy ma'lumotlar va runtime/session fayllarini commitga kiritmang; force push ishlatmang.
+- Push muvaffaqiyatsiz bo'lsa, o'zgarishlar faqat lokal qolganini va sababini yakuniy javobda aniq ayting.

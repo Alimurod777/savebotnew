@@ -1333,3 +1333,10 @@ WarpCrypto 2.1.0, 638 import symbols, 0 failures; pip check toza. git diff --che
 o‘tdi. Nashr scope: pyrofork va wzgram; main branchi yoki live bot o‘zgartirilmaydi.
 UMUMIY YO‘NALISH: ikkala variant bir xil upload/navbat va user status xatti-harakatini
 saqlasin, lekin har biri o‘z Telegram library import/APIlarida qolsin.
+
+
+## Sessiya (2026-11-05) — Vazifa yakunida avtomatik commit/push
+
+So'rov: lokal kod o'zgarsa, vazifa tugagach GitHubga push qilish qoidasini qo'shish. Main va wzgram nusxalarining AGENTS.md fayliga tegishli tekshiruvlardan keyin vazifa o'zgarishlarini commit/push qilish va qayta tasdiq so'ramaslik talabi qo'shildi.
+
+UMUMIY YO'NALISH: har bir o'zgarishli vazifa yakunida joriy branch GitHubga push qilinsin; maxfiy/runtime fayllar va boshqa vazifa o'zgarishlari kiritilmasin.

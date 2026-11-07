@@ -22,7 +22,7 @@ from wzgram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
 )
-from core.reply_compat import build_reply_kwargs_from_message, build_link_preview_kwargs
+from core.reply_compat import build_reply_kwargs, build_reply_kwargs_from_message, build_link_preview_kwargs, get_reply_message_id
 from core.copy_utils import (
     BotMessageResolutionError,
     get_bot_copy_source_chat_id,
@@ -7875,7 +7875,7 @@ async def download_and_send_media(
                 bot_username=getattr(_cached_client_me(client), "username", None),
             )
             _premium_upload_kwargs = dict(_send_kwargs)
-            _premium_reply_source_id = _premium_upload_kwargs.get("reply_to_message_id")
+            _premium_reply_source_id = get_reply_message_id(_premium_upload_kwargs)
             if _premium_reply_source_id is not None:
                 _premium_resolved_reply_id = None
                 try:
@@ -7888,8 +7888,9 @@ async def download_and_send_media(
                         _prem_reply_err,
                     )
                 if _premium_resolved_reply_id is not None:
-                    _premium_upload_kwargs["reply_to_message_id"] = _premium_resolved_reply_id
+                    _premium_upload_kwargs.pop("reply_to_message_id", None)
                     _premium_upload_kwargs.pop("reply_parameters", None)
+                    _premium_upload_kwargs.update(build_reply_kwargs(_premium_resolved_reply_id))
                     logger.info(
                         "Premium direct upload reply anchor resolved: user=%d bot_msg_id=%s session_msg_id=%s",
                         ctx_user_id,
@@ -8189,7 +8190,7 @@ async def download_and_send_media(
                         send_kwargs=_sm_send_kwargs,
                         bot_client=client,
                         bot_user_id=_target_chat_id,
-                        reply_message=message,
+                        reply_message=reply_base,
                         video_meta=_sm_video_meta,
                         thumb_path=_sm_thumb_path,
                         progress_cb=_sm_upload_cb,
@@ -8426,7 +8427,7 @@ async def download_and_send_media(
             _is_pool_session = (_used_pool_idx is not None)
             _effective_send_kwargs = dict(_send_kwargs)
             if not _is_pool_session and _worker is not None:
-                _reply_source_id = _effective_send_kwargs.get("reply_to_message_id")
+                _reply_source_id = get_reply_message_id(_effective_send_kwargs)
                 if _reply_source_id is not None:
                     _resolved_reply_id = None
                     try:
@@ -8440,8 +8441,9 @@ async def download_and_send_media(
                             _reply_resolve_err,
                         )
                     if _resolved_reply_id is not None:
-                        _effective_send_kwargs["reply_to_message_id"] = _resolved_reply_id
+                        _effective_send_kwargs.pop("reply_to_message_id", None)
                         _effective_send_kwargs.pop("reply_parameters", None)
+                        _effective_send_kwargs.update(build_reply_kwargs(_resolved_reply_id))
                         logger.info(
                             "User-session upload reply anchor resolved: user=%d route=%s bot_msg_id=%s session_msg_id=%s",
                             _acc_user_id,
@@ -8496,21 +8498,32 @@ async def download_and_send_media(
                         _safe_session_fp(_fallback_sess),
                         reason,
                     )
-                    _fallback_send_fn = _msf(
-                        target_chat_id=_target_chat_id,
-                        msg_type=msg_type,
-                        file_path=file_path,
-                        send_kwargs=_direct_send_kwargs,
-                        video_meta=_video_meta,
-                        thumb_path=_thumb_path,
-                        progress_cb=_upload_cb,
-                        doc_file_name=_doc_file_name,
-                    )
                     _fb_worker = await _wr.get_or_create(
                         _acc_user_id,
                         _fallback_sess,
                         bot_id=_target_chat_id,
                         bot_username=_bot_username,
+                    )
+                    # Re-resolve for the fallback session. A previous worker's
+                    # message IDs are private to that account's bot dialog.
+                    _fallback_kwargs = dict(_send_kwargs)
+                    _fallback_kwargs.pop("reply_to_message_id", None)
+                    _fallback_kwargs.pop("reply_parameters", None)
+                    if get_reply_message_id(_send_kwargs) is not None:
+                        try:
+                            _fb_reply_id = await _fb_worker.resolve_bot_reply_message_id(reply_base)
+                            _fallback_kwargs.update(build_reply_kwargs(_fb_reply_id))
+                        except Exception as _fb_reply_err:
+                            logger.debug("Fallback reply resolution skipped: %s", _fb_reply_err)
+                    _fallback_send_fn = _msf(
+                        target_chat_id=_target_chat_id,
+                        msg_type=msg_type,
+                        file_path=file_path,
+                        send_kwargs=_fallback_kwargs,
+                        video_meta=_video_meta,
+                        thumb_path=_thumb_path,
+                        progress_cb=_upload_cb,
+                        doc_file_name=_doc_file_name,
                     )
                     logger.info(
                         "Upload fallback worker ready: route=%s request_user=%d uploader_user_id=%s session_fp=%s",

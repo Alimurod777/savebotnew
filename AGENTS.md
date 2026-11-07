@@ -862,3 +862,13 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Failed cleanup of an already delivered media's progress message must not
   bubble up as a FloodWait that reuploads the delivered media.
 - In-memory continuation only; no automatic service restart or live test sends.
+
+### Native reply routing (2026-11-07)
+- Read IDs with core.reply_compat.get_reply_message_id for reply_parameters
+  and legacy reply_to_message_id. Direct/Premium/fallback worker uploads must
+  resolve the bot anchor to that worker's session ID, then build native kwargs.
+- SessionManager direct uploads use reply_base for resolution; pool uploads
+  strip replies until bot copy_message applies the user's bot-side reply ID.
+- Worker resolver requires anchor text/date and matching bot sender/date (1s
+  tolerance). Unresolved anchors send without reply; never use unchecked IDs.
+- Verified mapping cache is bounded and connection-scoped, cleared on disconnect.

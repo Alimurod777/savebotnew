@@ -1424,3 +1424,19 @@ Bot process restartidan keyin jobni diskdan tiklash bu o'zgarishga kirmaydi.
 
 Tekshiruv: 48 focused regression, full pytest 362 passed/22 subtests;
 git diff --check o'tdi. Live Telegram send/service restart bajarilmadi.
+
+## Sessiya davomi (2026-11-07) — Reply aloqasiz eski bot xabariga bog'lanishi
+
+So'rov: 255-post FloodWait statusi yonidagi media reply juda eski bot xabarini
+ko'rsatmoqda. User «umuman juda oldingi bot xabariga» deb aniqlashtirdi; reply
+maqsadini o'zgartirish so'ralmagan. Native reply_parameters IDsi direct upload
+remappingni chetlab o'tayotgani topildi (BUG-090). Legacy/Premium/SessionManager/
+pool fallback native reply bilan moslandi. Resolver bot sender/text/date bilan
+tekshiradi; eski bir xil source headerni qabul qilmaydi, verified mapping cache
+qilinadi. Topilmaganida replysiz yuboriladi. Media/text routing saqlandi.
+
+UMUMIY YO'NALISH: user sessiyaga bot message ID hech qachon tasdiqsiz ketmasin;
+reply boshqa eski xabarni ko'rsatmasin. Live send/restart bajarilmasin.
+
+Tekshiruv: 18 focused reply regression va native/legacy SessionManager case;
+full pytest 381 passed/22 subtests, git diff --check o'tdi.

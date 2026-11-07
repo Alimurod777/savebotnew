@@ -1702,3 +1702,20 @@ media batch qayta yuboriladi. Boshqa callerlar split retry defaultlarini saqlayd
 Muvaffaqiyatli mediadagi status-delete FloodWait qayta upload chaqirmaydi.
 BUG-088ning «avtomatik davom etmaydi» xabari shu talab bilan almashtirildi;
 consecutive-error stop finali saqlanadi. Live send/restart bajarilmadi.
+
+## BUG-090: Wzgram direct upload juda eski, aloqasiz bot xabariga reply qiladi
+
+Status: ✅ Tuzatildi (2026-11-07).
+Sabab: reply builder native reply_parameters qaytaradi, lekin legacy va Premium
+direct upload ID remapping faqat reply_to_message_idni o'qigan. Natijada botdagi
+ID user sessiyaga tekshirilmasdan ketgan. SessionManager native IDni yo'qotgan.
+Resolver bir xil matnli 15 daqiqagacha eski headerni ham mos deb qabul qilgan.
+Yechim: umumiy native/legacy ID extraction; direct va Premium yo'llarda sessiya
+IDsi resolve qilinadi, native reply kwargs qayta quriladi; pooldan userga fallback
+ham yangi workerda qayta resolve qiladi. SM native replyni ham saqlaydi va copy
+uchun bot IDni ishlatadi. SM resolverga haqiqiy reply_base beriladi.
+Anchor text/date va sender bot ID tekshiriladi (1s timestamp tolerance); noaniq
+moslikda reply olib tashlanadi. Tasdiqlangan mapping worker connectionda bounded
+cache qilinadi, disconnectda tozalanadi; boshqa request headeri bilan aralashmaydi.
+User 255-postdagi eski FloodWait-stop statusini ham ko'rsatdi: bu logdagi holat
+avtomatik resume commitidan oldin sodir bo'lgan. Live restart/send bajarilmadi.

@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -869,7 +870,8 @@ def test_session_manager_user_owned_upload_does_not_use_bot_history_or_copy():
     asyncio.run(run())
 
 
-def test_session_manager_user_owned_upload_resolves_reply_anchor_before_send():
+@pytest.mark.parametrize('native', [False, True])
+def test_session_manager_user_owned_upload_resolves_reply_anchor_before_send(native):
     async def run():
         sent = SimpleNamespace(
             id=12,
@@ -932,14 +934,16 @@ def test_session_manager_user_owned_upload_resolves_reply_anchor_before_send():
             target_chat_id=123,
             msg_type="Photo",
             file_path="photo.jpg",
-            send_kwargs={"reply_to_message_id": 55},
+            send_kwargs=({'reply_parameters': SimpleNamespace(message_id=55)}
+                         if native else {'reply_to_message_id': 55}),
             bot_client=FakeBot(),
             bot_user_id=777,
             reply_message=reply_anchor,
         )
 
         assert result is sent
-        assert bridge.send_kwargs["reply_to_message_id"] == 88
+        assert bridge.send_kwargs["reply_parameters"].message_id == 88
+        assert "reply_to_message_id" not in bridge.send_kwargs
         assert record.current_tasks == 0
 
     asyncio.run(run())

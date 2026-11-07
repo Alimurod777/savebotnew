@@ -25,6 +25,7 @@ from typing import Any, Callable, List, Optional, Set, Tuple
 from wzgram import Client
 
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
+from core.reply_compat import build_reply_kwargs, get_reply_message_id
 from core.copy_utils import (
     BotMessageResolutionError,
     get_bot_copy_source_chat_id,
@@ -221,7 +222,8 @@ class SessionManager:
             # does NOT contain the user's original message, so reply_to_message_id
             # would be silently ignored by Telegram if included in the upload call.
             _upload_kwargs = dict(send_kwargs)
-            _reply_to_id = _upload_kwargs.pop("reply_to_message_id", None)
+            _reply_to_id = get_reply_message_id(_upload_kwargs)
+            _upload_kwargs.pop("reply_to_message_id", None)
             _upload_kwargs.pop("reply_parameters", None)
             is_pool_upload = force_copy or self._is_pool_session(record, user_id)
 
@@ -244,7 +246,7 @@ class SessionManager:
                             reply_err,
                         )
                 if _resolved_reply_id is not None:
-                    _upload_kwargs["reply_to_message_id"] = _resolved_reply_id
+                    _upload_kwargs.update(build_reply_kwargs(_resolved_reply_id))
                     logger.info(
                         "SessionManager: direct reply anchor resolved user=%d session=%s bot_msg_id=%s session_msg_id=%s",
                         user_id,
@@ -368,9 +370,7 @@ class SessionManager:
                 _copy_ok = False
                 for _copy_try in range(3):
                     try:
-                        _copy_kwargs = {}
-                        if _reply_to_id is not None:
-                            _copy_kwargs["reply_to_message_id"] = _reply_to_id
+                        _copy_kwargs = build_reply_kwargs(_reply_to_id)
                         copied_msg = await bot_client.copy_message(
                             chat_id=target_chat_id,
                             from_chat_id=copy_source_chat_id,

@@ -850,3 +850,15 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   invalid/unverified/timeouts excluded. No session/phone/exception payload exports.
 - Like /userdata, generated owner report document uses the bot sender.
   Reports are temporary; no stored session or role mutation, no startup job.
+
+### Private range FloodWait resume (2026-11-07)
+- process_private_posts reports the current post ID and wait through the bot,
+  waits Telegram's full cooldown +1s, then retries that post before advancing.
+- Short/long/repeated FloodWait and FloodPremiumWait resume automatically;
+  poll /stop in <=5s sleep steps and preserve activity during the wait.
+- Private pipeline flood_wait_handler lets split/album senders retry only the
+  current unsent chunk/batch. Keep default split caps for other callers, and
+  keep UserUploadWorker session rotation/bounded flood handling unchanged.
+- Failed cleanup of an already delivered media's progress message must not
+  bubble up as a FloodWait that reuploads the delivered media.
+- In-memory continuation only; no automatic service restart or live test sends.

@@ -1154,8 +1154,9 @@ async def _send_split_part_with_peer_retry(
     check_cancelled=None,
     status_msg=None,
     status_chat_id: Optional[int] = None,
+    on_flood_wait=None,
 ) -> Message:
-    """Send the current chunk with bounded flood retries and one peer refresh."""
+    """Retry this chunk; private jobs may supply their cancellable flood wait."""
     async def _send(dest):
         if msg_type != "Document" and is_video_file(chunk_path):
             return await acc.send_video(dest, chunk_path, **send_kwargs)
@@ -1172,6 +1173,11 @@ async def _send_split_part_with_peer_retry(
             return await _send(target)
         except Exception as err:
             if is_floodwait_error(err):
+                if on_flood_wait is not None:
+                    # Private range jobs resume this chunk in place, so earlier
+                    # delivered chunks are not repeated by an outer post retry.
+                    await on_flood_wait(err)
+                    continue
                 # Retry only this unsent chunk. Never restart the split loop:
                 # earlier chunks may already have reached the recipient.
                 seconds = get_floodwait_seconds(err)
@@ -6360,6 +6366,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             deleted = 0
             albums_processed = 0
             stop_summary = None
+            retry_post_id = None
 
             # Throttle-aware status tracker + batch controller
             if _THROTTLE_AVAILABLE:
@@ -6369,6 +6376,42 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 _status = None
                 _batch = None
             
+            async def wait_for_flood(error):
+                wait_time = get_floodwait_seconds(error) + 1
+                logger.warning(
+                    "FloodWait at post %s; waiting %ss then retrying the same post",
+                    post_id, wait_time,
+                )
+                if _batch:
+                    _batch.record_flood(wait_time)
+                wait_text = (
+                    f"⏳ Telegram vaqtinchalik cheklov qo'ydi (FloodWait).\n"
+                    f"Yetib kelgan post ID: {post_id}\n"
+                    f"Yuborilgan post/album: {processed}\n"
+                    f"Kutish: {wait_time} soniya.\n"
+                    f"Kutish tugagach, aynan {post_id}-postdan avtomatik "
+                    f"davom etaman. Havolani qayta yuborishingiz shart emas.\n"
+                    f"Bekor qilish: /stop"
+                )
+                # Text stays bot-authored; notification errors must
+                # not turn a temporary upload limit into a failed post.
+                await core_safe_send(
+                    client, user_id, wait_text, parse_mode=ParseMode.DISABLED,
+                )
+                await _safe_status_edit_message(
+                    client, user_id, status_msg.id, wait_text,
+                )
+                remaining = wait_time
+                while remaining > 0:
+                    if await pipeline.check_cancelled():
+                        raise asyncio.CancelledError()
+                    await ping_activity(user_id)
+                    step = min(5, remaining)
+                    await asyncio.sleep(step)
+                    remaining -= step
+
+            pipeline.flood_wait_handler = wait_for_flood
+
             # Task-scoped session - guaranteed cleanup on exit
             try:
                 async with _open_download_session(
@@ -6420,8 +6463,12 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                 )
                             return
 
-                        # Get next message ID
-                        post_id = iterator.next()
+                        # A flooded post must succeed before advancing the iterator.
+                        if retry_post_id is not None:
+                            post_id = retry_post_id
+                            retry_post_id = None
+                        else:
+                            post_id = iterator.next()
                         if post_id is None:
                             break  # Done
                         await ping_activity(user_id)
@@ -6476,6 +6523,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                         check_cancelled=pipeline.check_cancelled,
                                         sent_albums=iterator.processed_albums,
                                         upload_session=_album_up,
+                                        on_flood_wait=wait_for_flood,
                                     )
 
                                 if success:
@@ -6485,7 +6533,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                     if _batch:
                                         _batch.record_success()
                                 elif status == "cancelled":
-                                    return
+                                    raise asyncio.CancelledError()
                                 elif status == "already_sent":
                                     processed += 1
                                     if _batch:
@@ -6544,41 +6592,11 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
 
                         except asyncio.CancelledError:
                             raise
-                        except FloodWait as fw:
-                            wait_time = getattr(fw, 'value', getattr(fw, 'x', 30))
-                            logger.warning(f"FloodWait {wait_time}s at post {post_id}")
-                            await _notify_realtime_post_failure(
-                                client,
-                                acc,
-                                user_id=user_id,
-                                chat_id=parsed.channel_id,
-                                post_id=post_id,
-                                stage="private_floodwait",
-                                reason=f"FloodWait {wait_time}s",
-                                error=fw,
-                                request_message=message,
-                                context=ctx,
-                                parsed=parsed,
-                                requested_total=total_posts,
-                            )
-                            if _batch:
-                                _batch.record_flood(wait_time)
-                            if wait_time > 120:
-                                stop_summary = (
-                                    f"⚠️ **Telegram cheklovi — jarayon to'xtatildi**\n"
-                                    f"FloodWait: {wait_time} soniya.\n"
-                                    f"Avtomatik davom etmaydi. Kutish tugagach, "
-                                    f"{post_id}-postdan boshlab qayta yuboring.\n"
-                                    f"Joriy va qolgan ID lar: {iterator.remaining + 1}"
-                                )
-                                break
-                            else:
-                                await asyncio.sleep(wait_time)
-                                failed += 1
-                                continue
                         except Exception as e:
                             if is_floodwait_error(e):
-                                raise
+                                await wait_for_flood(e)
+                                retry_post_id = post_id
+                                continue
                             logger.warning(f"Error processing post {post_id}: {e}")
                             failed += 1
                             failed_ids.append(post_id)
@@ -7661,6 +7679,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         else:
                             _pre_part_latest_id = (
@@ -7695,6 +7714,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -8003,6 +8023,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         else:
                             _pre_part_latest_id = (
@@ -8037,6 +8058,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -8715,7 +8737,12 @@ async def download_and_send_media(
                     pass
         
         if status_msg:
-            await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+            # Delivery already succeeded. A progress-message cleanup failure
+            # must not trigger a retry that sends the media twice.
+            try:
+                await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+            except Exception as cleanup_err:
+                logger.debug("Upload status cleanup failed: %s", cleanup_err)
         
         return True
 

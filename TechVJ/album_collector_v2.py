@@ -41,6 +41,7 @@ from wzgram.errors import (
 )
 
 from config import API_ID, API_HASH, get_client_params
+from core.retry_utils import is_floodwait_error
 
 logger = logging.getLogger(__name__)
 
@@ -603,7 +604,8 @@ async def send_album(
     album: CollectedAlbum,
     target_chat_id: int,
     reply_to_message_id: int,
-    check_cancelled: callable
+    check_cancelled: callable,
+    on_flood_wait=None,
 ) -> bool:
     """
     Send collected album as media group.
@@ -685,14 +687,21 @@ async def send_album(
             
             batch = media_list[i:i+10]
             async def _send_batch(destination) -> None:
-                try:
-                    await user_session.send_media_group(destination, batch)
-                except TypeError as te:
-                    # Pyrofork may raise while parsing a successful response.
-                    if 'topics' in str(te):
-                        logger.debug(f"Pyrofork topics warning (ignored): {te}")
+                while True:
+                    if await check_cancelled():
+                        raise asyncio.CancelledError()
+                    try:
+                        await user_session.send_media_group(destination, batch)
                         return
-                    raise
+                    except Exception as error:
+                        if on_flood_wait is not None and is_floodwait_error(error):
+                            await on_flood_wait(error)
+                            continue
+                        # Pyrofork may raise while parsing a successful response.
+                        if isinstance(error, TypeError) and 'topics' in str(error):
+                            logger.debug(f"Pyrofork topics warning (ignored): {error}")
+                            return
+                        raise
 
             # Do not pass bot-side reply ids to user-session media sends.
             try:
@@ -761,6 +770,7 @@ async def process_album_with_session(
     check_cancelled: callable,
     sent_albums: Optional[Set[str]] = None,
     upload_session: Optional[Client] = None,
+    on_flood_wait=None,
 ) -> Tuple[bool, str, Optional[AlbumBoundary]]:
     """
     Process album using an EXISTING session (no new session created).
@@ -827,7 +837,8 @@ async def process_album_with_session(
         
         # Step 5: Upload album via user session; bot sends only text overflow.
         send_success = await send_album(
-            bot_client, upload_session or acc, album, target_chat_id, reply_to_message_id, check_cancelled
+            bot_client, upload_session or acc, album, target_chat_id, reply_to_message_id,
+            check_cancelled, on_flood_wait=on_flood_wait,
         )
         
         if not send_success:

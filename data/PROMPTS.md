@@ -1407,3 +1407,20 @@ Live Telegram send/restart bajarilmadi.
 
 UMUMIY YO'NALISH: to'liq bajarilmagan range «Tugadi» deb ko'rsatilmasin;
 Telegram cheklovi va qolgan postlarni qayta boshlash nuqtasi tushunarli bo'lsin.
+
+## Sessiya davomi (2026-11-07) — FloodWaitdan avtomatik davom etish
+
+So'rov: userga qayerga yetganini aytish, qo'lda qayta boshlash talab qilmasdan
+kutib o'sha joydan avtomatik davom etish. Private range endi botdan post ID va
+kutish statusini yuboradi, Telegram muddati +1s kutib joriy postni retry qiladi.
+Qisqa/uzun/takroriy va premium flood holatlari qo'llanadi, /stop ishlaydi.
+Split va album uploadlar o'z joriy chunk/batchida davom etadi. Status cleanup
+floodi muvaffaqiyatli mediani takrorlatmaydi. Routing/session tanlash saqlandi.
+Avvalgi «avtomatik davom etmaydi» yo'nalishi shu talab bilan almashtirildi.
+
+UMUMIY YO'NALISH: private range uchun userga yetib kelgan post va kutish
+aytilsin, qo'lda restart talab qilmay FloodWaitdan keyin davom etsin.
+Bot process restartidan keyin jobni diskdan tiklash bu o'zgarishga kirmaydi.
+
+Tekshiruv: 48 focused regression, full pytest 362 passed/22 subtests;
+git diff --check o'tdi. Live Telegram send/service restart bajarilmadi.

@@ -1687,3 +1687,18 @@ joriy/qolgan ID soni, avtomatik resume yo'qligi ko'rsatiladi. Error-stop sababi
 ham saqlanadi; unpin va batch cleanup bajariladi. Upload retry/routing o'zgarmadi.
 Offline testlar throttle bor/yo'q holatlarda flood, error-stop va normal yakunni
 tekshiradi. Telegramga live xabar yuborilmadi; service restart qilinmadi.
+
+## BUG-089: Private range FloodWaitdan keyin joriy postni o'tkazadi yoki to'xtaydi
+
+Status: ✅ Tuzatildi (2026-11-07).
+User yangi talabi: qaysi postga yetganini aytsin, kutib avtomatik davom etsin.
+Avval <=120s waitdan keyin iterator keyingi postga o'tgan, >120s da to'xtagan.
+Endi FloodWait/FloodPremiumWait uchun bot post ID, yuborilgan post/album soni,
+kutish va avtomatik davom etishni bildiradi. Telegram muddati +1s kutiladi;
+5s bo'lakli sleep va activity ping, /stop yoki task cancellation saqlanadi.
+Joriy post muvaffaqiyatigacha iterator oldinga o'tmaydi; takroriy flood ham kutadi.
+Private job callback split helper va album uploaderga ulanadi: faqat joriy chunk/
+media batch qayta yuboriladi. Boshqa callerlar split retry defaultlarini saqlaydi.
+Muvaffaqiyatli mediadagi status-delete FloodWait qayta upload chaqirmaydi.
+BUG-088ning «avtomatik davom etmaydi» xabari shu talab bilan almashtirildi;
+consecutive-error stop finali saqlanadi. Live send/restart bajarilmadi.

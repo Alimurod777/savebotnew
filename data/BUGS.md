@@ -1674,3 +1674,16 @@ Status: ✅ Tuzatildi (2026-11-05). Latest message ID yig'ilgan, lekin HTMLda
 post anchor yo'q edi. Normalize public username/post va private -100 peer uchun
 t.me/c/chat/post hosil qiladi; HTML Latest post linkini ko'rsatadi. Basic group,
 bo'sh chat va private user chat uchun soxta link yaratilmaydi. Qo'shimcha RPC yo'q.
+
+## BUG-088: Private range FloodWait bilan to'xtasa ham yakunda «Tugadi» yoziladi
+
+Status: ✅ Tuzatildi (2026-11-07).
+Sabab: process_private_posts >120s FloodWait yoki consecutive error sabab loopdan
+break qiladi, so'ng umumiy final status avvalgi ogohlantirishni «Tugadi» bilan
+almashtiradi. Owner range diagnostikasida 161-post uploadida 290s FloodWait
+aniqlandi; 129 hisobida albumlar bittadan sanalgan (115 single + 14 album).
+Yechim: stop_summary final statusda ustun; FloodWait va qayta boshlash post IDsi,
+joriy/qolgan ID soni, avtomatik resume yo'qligi ko'rsatiladi. Error-stop sababi
+ham saqlanadi; unpin va batch cleanup bajariladi. Upload retry/routing o'zgarmadi.
+Offline testlar throttle bor/yo'q holatlarda flood, error-stop va normal yakunni
+tekshiradi. Telegramga live xabar yuborilmadi; service restart qilinmadi.

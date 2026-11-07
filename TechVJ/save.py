@@ -6359,6 +6359,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             failed_ids = []  # Only existing but unsent posts (not deleted)
             deleted = 0
             albums_processed = 0
+            stop_summary = None
 
             # Throttle-aware status tracker + batch controller
             if _THROTTLE_AVAILABLE:
@@ -6535,11 +6536,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             # Consecutive error check
                             if _batch and _batch.should_stop():
                                 logger.warning("BatchController: stopping batch for user %s (consecutive errors)", user_id)
-                                if _status:
-                                    await _status.finish(
-                                        f"⚠️ **Ko'p xato — batch to'xtatildi**\n"
-                                        f"✅ {processed}/{total_posts} yuklandi\n❌ {failed} xato"
-                                    )
+                                stop_summary = "⚠️ **Ko'p xato — batch to'xtatildi**"
                                 break
 
                             # Rate limiting delay
@@ -6567,22 +6564,13 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             if _batch:
                                 _batch.record_flood(wait_time)
                             if wait_time > 120:
-                                if _status:
-                                    await _status.finish(
-                                        f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                        f"✅ {processed} processed, ❌ {failed} failed\n"
-                                        f"Retry in {wait_time // 60} min."
-                                    )
-                                else:
-                                    try:
-                                        await client.edit_message_text(
-                                            user_id, status_msg.id,
-                                            f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                            f"✅ {processed} processed, ❌ {failed} failed\n"
-                                            f"Retry in {wait_time // 60} min."
-                                        )
-                                    except Exception:
-                                        pass
+                                stop_summary = (
+                                    f"⚠️ **Telegram cheklovi — jarayon to'xtatildi**\n"
+                                    f"FloodWait: {wait_time} soniya.\n"
+                                    f"Avtomatik davom etmaydi. Kutish tugagach, "
+                                    f"{post_id}-postdan boshlab qayta yuboring.\n"
+                                    f"Joriy va qolgan ID lar: {iterator.remaining + 1}"
+                                )
                                 break
                             else:
                                 await asyncio.sleep(wait_time)
@@ -6650,7 +6638,16 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             
             deleted_info = f"\n🗑 O'chirilgan: {deleted}" if deleted > 0 else ""
             
-            if processed == 0 and failed == 0 and deleted > 0:
+            if stop_summary:
+                await client.edit_message_text(
+                    user_id, status_msg.id,
+                    f"{stop_summary}\n"
+                    f"Yuborilgan post/album: {processed}\n"
+                    f"So'ralgan ID lar: {total_posts}\n"
+                    f"📁 Albumlar: {albums_processed}\n"
+                    f"❌ Xato: {failed}{deleted_info}{failed_info}"
+                )
+            elif processed == 0 and failed == 0 and deleted > 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
                     f"⚠️ **Barcha xabarlar o'chirilgan**\n"

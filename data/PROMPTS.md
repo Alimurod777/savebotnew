@@ -1392,3 +1392,18 @@ Tekshiruv: 4 mocked regression, full pytest 340 passed/22 subtests,
 verify_migration 640 symbols/0 failures, pip check va whitespace o'tdi.
 Haqiqiy user sessiyalarini ommaviy tekshirish yoki bot restart bajarilmadi;
 owner /usersdata yuborganda live tekshiruv ishlaydi.
+
+## Sessiya (2026-11-07) — Owner range 129/478 bilan tugashi
+
+So'rov: owner sessiyasidagi private 7-484 range nega 129/478, 14 album va
+5 deleted bilan «Tugadi» qaytarganini aniqlash. Lokal log 161-postda upload
+FloodWait 290s berganini ko'rsatdi; >120s bo'lgani sabab batch to'xtagan.
+129 hisoblagich 115 alohida post va 14 albumdan iborat; jami media soni emas.
+BUG-088: final status oldingi stop ogohlantirishini o'chirib yuborgan.
+Stop sababi finalda saqlanadi, kutish muddati va qayta boshlash IDsi,
+avtomatik davom etmasligi aniq ko'rsatiladi. Retry/session/media routing saqlandi.
+Tekshiruv: 32 focused test, full pytest 346 passed/22 subtests; diff check o'tdi.
+Live Telegram send/restart bajarilmadi.
+
+UMUMIY YO'NALISH: to'liq bajarilmagan range «Tugadi» deb ko'rsatilmasin;
+Telegram cheklovi va qolgan postlarni qayta boshlash nuqtasi tushunarli bo'lsin.

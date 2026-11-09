@@ -531,3 +531,88 @@ def test_localized_transfer_status_is_not_logged(setup, text):
         assert [call.args[2] for call in client.forward_messages.await_args_list] == [1, 3]
         await manager.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('outbound', [False, True])
+def test_owner_and_excluded_user_never_enter_log_queue(setup, monkeypatch, outbound):
+    async def run():
+        from dataclasses import replace
+        manager, client = setup
+        monkeypatch.setattr(chat_log, 'OWNER_ID', 999)
+        await manager.configure(replace(manager.settings.policy, excluded_user_ids=(456,)))
+        await manager.start(client)
+        for uid in (999, 456):
+            manager.submit(message(uid=uid), outbound=outbound)
+            manager.submit(message(2, None, uid=uid, media_group_id='album'), outbound=outbound)
+            manager.submit(message(3, 'Edited', uid=uid, edit_date='edited'), outbound=outbound)
+            manager.submit_user_upload(client, object(), uid)
+        assert manager.queue.empty()
+        assert not manager._upload_tasks
+        assert not manager._seen
+        client.get_messages.assert_not_awaited()
+        client.forward_messages.assert_not_awaited()
+        manager.submit(message(uid=123))
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 1)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_excluding_user_discards_previously_queued_event(setup):
+    async def run():
+        from dataclasses import replace
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message())
+        event = manager.queue.get_nowait()
+        manager.queue.task_done()
+        await manager.configure(replace(manager.settings.policy, excluded_user_ids=(123,)))
+        # Even an event with the current revision must pass the privacy guard.
+        event.revision = manager.settings.revision
+        await manager._deliver(event)
+        client.send_message.assert_not_awaited()
+        client.forward_messages.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_exclusion_commands_authorization_persistence_and_destination_changes(setup, monkeypatch):
+    async def run():
+        manager, client = setup
+        monkeypatch.setattr(chat_log, 'OWNER_ID', 999)
+        async def command(text, uid=999):
+            await owner_commands.cmd_logchannel(client, message(text=text, uid=uid))
+        await command('/logchannel exclude 123', uid=123)
+        assert not manager.settings.policy.excluded_user_ids
+        client.send_message.assert_not_awaited()
+        for invalid in ('0', '-123', 'abc', 'true', '123 456'):
+            await command('/logchannel exclude ' + invalid)
+            assert not manager.settings.policy.excluded_user_ids
+        await command('/logchannel exclude 123')
+        await command('/logchannel exclude 123')
+        assert manager.settings.policy.excluded_user_ids == (123,)
+        for action in ('off', 'on', 'remove', 'set @logs', 'reset'):
+            await command('/logchannel ' + action)
+            assert manager.settings.policy.excluded_user_ids == (123,)
+        restored = ChatLogSettings(manager.settings.path, -1002)
+        assert restored.policy.excluded_user_ids == (123,)
+        await command('/logchannel excluded')
+        assert '123' in client.send_message.await_args.args[1]
+        assert '999' in client.send_message.await_args.args[1]
+        await command('/logchannel include 999')
+        assert manager.is_excluded(999)
+        await command('/logchannel include 123')
+        assert not manager.settings.policy.excluded_user_ids
+    asyncio.run(run())
+
+
+def test_failed_exclusion_save_does_not_change_live_policy(setup, monkeypatch):
+    async def run():
+        manager, client = setup
+        def fail(*args):
+            raise OSError('disk full')
+        monkeypatch.setattr(chat_log.os, 'replace', fail)
+        await owner_commands.cmd_logchannel(client, message(text='/logchannel exclude 123', uid=999))
+        assert not manager.settings.policy.excluded_user_ids
+        assert 'bajarilmadi' in client.send_message.await_args.args[1]
+    asyncio.run(run())

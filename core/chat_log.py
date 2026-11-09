@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 import json
 import logging
@@ -13,11 +13,11 @@ import re
 from pathlib import Path
 import tempfile
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from wzgram.enums import ChatType, ParseMode
 
-from config import LOG_CHANNEL_ID
+from config import LOG_CHANNEL_ID, OWNER_ID
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ class LogPolicy:
     chat_id: int = 0
     enabled: bool = False
     source: str = 'env'
+    excluded_user_ids: Tuple[int, ...] = ()
 
 
 def _settings_collection():
@@ -67,14 +68,18 @@ class ChatLogSettings:
     def _decode(self, data):
         if type(data.get('override')) is not bool:
             raise ValueError('Invalid chat log override')
+        excluded = data.get('excluded_user_ids', [])
+        if not isinstance(excluded, list) or any(type(uid) is not int or uid <= 0 for uid in excluded):
+            raise ValueError('Invalid chat log excluded users')
+        excluded = tuple(sorted(set(excluded)))
         if not data['override']:
-            return LogPolicy(self.env_chat_id, bool(self.env_chat_id))
+            return LogPolicy(self.env_chat_id, bool(self.env_chat_id), excluded_user_ids=excluded)
         chat_id, enabled = data['chat_id'], data['enabled']
         if type(chat_id) is not int or chat_id > 0 or type(enabled) is not bool:
             raise ValueError('Invalid chat log policy')
         if enabled and not chat_id:
             raise ValueError('Missing destination')
-        return LogPolicy(chat_id, enabled, 'owner')
+        return LogPolicy(chat_id, enabled, 'owner', excluded)
 
     @property
     def policy(self) -> LogPolicy:
@@ -94,8 +99,10 @@ class ChatLogSettings:
     def _document(self, policy):
         # Reset is a portable tombstone: use the new server's ENV, not old values.
         owner = policy.source == 'owner'
-        return {'override': owner, 'chat_id': policy.chat_id if owner else 0,
-                'enabled': policy.enabled if owner else False}
+        document = {'override': owner, 'chat_id': policy.chat_id if owner else 0,
+                    'enabled': policy.enabled if owner else False}
+        document['excluded_user_ids'] = list(policy.excluded_user_ids)
+        return document
 
     def _write(self, policy, pending):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +168,8 @@ class ChatLogSettings:
                 logger.warning('Chat log settings MongoDB sync failed: %s', type(error).__name__)
 
     async def reset(self) -> None:
-        await self.save(LogPolicy(self.env_chat_id, bool(self.env_chat_id)))
+        await self.save(replace(self.policy, chat_id=self.env_chat_id,
+                                enabled=bool(self.env_chat_id), source='env'))
 
 
 async def validate_log_chat(bot, target) -> int:
@@ -226,9 +234,14 @@ class ChatLogger:
         self._auth_chats = set()
         self._upload_tasks = set()
 
+    def is_excluded(self, user_id):
+        return user_id == OWNER_ID or user_id in self.settings.policy.excluded_user_ids
+
     def submit_user_upload(self, bot, sent, user_id):
         """Resolve sender-side IDs without blocking or changing user delivery."""
         if self.task is None or self.task.done() or not self.settings.policy.enabled:
+            return
+        if self.is_excluded(int(user_id)):
             return
         if len(self._upload_tasks) >= 32:
             self.dropped += 1
@@ -317,6 +330,8 @@ class ChatLogger:
         chat = getattr(msg, 'chat', None)
         if not policy.enabled or not chat or getattr(chat, 'type', None) != ChatType.PRIVATE:
             return
+        if self.is_excluded(chat.id):
+            return
         if chat.id == policy.chat_id or getattr(msg, 'empty', False) or getattr(msg, 'service', None):
             return
         message_id = getattr(msg, 'id', None)
@@ -400,7 +415,7 @@ class ChatLogger:
             await asyncio.sleep(0.8)  # Allow the remaining album updates to arrive.
         for attempt in range(3):
             while self._cooldown > time.monotonic():
-                if event.revision != self.settings.revision:
+                if event.revision != self.settings.revision or self.is_excluded(event.chat_id):
                     self.dropped += 1
                     return
                 try:
@@ -410,7 +425,8 @@ class ChatLogger:
                     break
             async with self.settings.lock:
                 policy = self.settings.policy
-                if event.revision != self.settings.revision or not policy.enabled or event.target != policy.chat_id:
+                if (event.revision != self.settings.revision or not policy.enabled
+                        or event.target != policy.chat_id or self.is_excluded(event.chat_id)):
                     self.dropped += 1
                     return
                 token = _inside_send.set(True)

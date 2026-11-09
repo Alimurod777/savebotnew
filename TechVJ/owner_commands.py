@@ -721,7 +721,8 @@ async def cb_bot_archive(client: Client, query: CallbackQuery):
 async def cmd_logchannel(client: Client, message: Message):
     if not _owner(message):
         return
-    from core.chat_log import chat_logger, LogPolicy, validate_log_chat
+    from dataclasses import replace
+    from core.chat_log import chat_logger, validate_log_chat
 
     async def reply(text):
         await client.send_message(message.chat.id, text, parse_mode=ParseMode.DISABLED)
@@ -737,28 +738,52 @@ async def cmd_logchannel(client: Client, message: Message):
                 f"Manzil: {policy.chat_id or 'belgilanmagan'}\n"
                 f"Manba: {policy.source} (owner sozlamasi ENVdan ustun)\n"
                 f"MongoDB: {settings.sync_status}\n"
+                f"Owner: log qilinmaydi | Istisnolar: {len(policy.excluded_user_ids)}\n"
                 f"Navbat: {chat_logger.queue.qsize()} | Yuborildi: {chat_logger.sent}\n"
                 f"Xato: {chat_logger.failed} | Tushirib qoldirildi: {chat_logger.dropped}\n"
                 f"Oxirgi xato: {chat_logger.last_error}\n\n"
                 "/logchannel set <kanal/guruh ID yoki @username>\n"
                 "/logchannel on|off|remove|reset|test|status\n"
+                "/logchannel exclude|include <user_id>\n"
+                "/logchannel excluded — istisnolar ro‘yxati\n"
                 "reset — ENVga qaytish; remove — ENV bo‘lsa ham o‘chirish."
             )
             return
-        if action == "off":
-            await chat_logger.configure(LogPolicy(settings.policy.chat_id, False, 'owner'))
+        if action == "excluded":
+            ids = sorted(set(settings.policy.excluded_user_ids) | {OWNER_ID})
+            from core.message_utils import split_message
+            for chunk in split_message("Log qilinmaydigan userlar (owner doim kiritilgan):\n" +
+                                       "\n".join(str(uid) for uid in ids)):
+                await reply(chunk)
+            return
+        if action in ("exclude", "include"):
+            if len(parts) != 3 or not parts[2].isascii() or not parts[2].isdigit() or int(parts[2]) <= 0:
+                raise ValueError('/logchannel exclude|include <musbat user_id>')
+            uid = int(parts[2])
+            if uid == OWNER_ID:
+                await reply("Owner chati doim logdan chiqarilgan; uni yoqib bo‘lmaydi.")
+                return
+            excluded = set(settings.policy.excluded_user_ids)
+            if action == "exclude":
+                excluded.add(uid)
+            else:
+                excluded.discard(uid)
+            await chat_logger.configure(replace(settings.policy, excluded_user_ids=tuple(sorted(excluded))))
+            await reply(f"✅ {uid}: " + ("logdan chiqarildi." if action == "exclude" else "logga qaytarildi."))
+        elif action == "off":
+            await chat_logger.configure(replace(settings.policy, enabled=False, source='owner'))
         elif action == "remove":
-            await chat_logger.configure(LogPolicy(source='owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=0, enabled=False, source='owner'))
         elif action == "reset":
             if settings.env_chat_id:
                 await validate_log_chat(client, settings.env_chat_id)
-            await chat_logger.configure(LogPolicy(settings.env_chat_id, bool(settings.env_chat_id)))
+            await chat_logger.configure(replace(settings.policy, chat_id=settings.env_chat_id, enabled=bool(settings.env_chat_id), source='env'))
         elif action == "on":
             if not settings.policy.chat_id:
                 await reply("Avval /logchannel set <kanal/guruh ID> bilan manzil kiriting.")
                 return
             chat_id = await validate_log_chat(client, settings.policy.chat_id)
-            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=chat_id, enabled=True, source='owner'))
         elif action == "test":
             policy = settings.policy
             if not policy.enabled or not policy.chat_id:
@@ -773,14 +798,15 @@ async def cmd_logchannel(client: Client, message: Message):
             target = parts[2] if action == 'set' and len(parts) == 3 else (parts[1] if len(parts) == 2 and action.startswith(('-', '@')) else None)
             if target is None:
                 await reply("/logchannel set <kanal/guruh ID yoki @username>\n"
-                            "/logchannel status|on|off|remove|reset|test")
+                            "/logchannel status|on|off|remove|reset|test\n"
+                            "/logchannel exclude|include <user_id>\n/logchannel excluded")
                 return
             if target.lstrip('-').isdigit():
                 target = int(target)
             elif not target.startswith('@'):
                 raise ValueError('Kanal/guruh ID yoki @username kiriting.')
             chat_id = await validate_log_chat(client, target)
-            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=chat_id, enabled=True, source='owner'))
         policy = settings.policy
         await reply(f"✅ Log sozlamasi saqlandi: {'ON' if policy.enabled else 'OFF'}\n"
                     f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}\n"
@@ -822,6 +848,8 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "**Log kanal/guruh:**\n"
         "/logchannel set <ID yoki @username> — log manzilini o‘rnatish/almashtirish\n"
         "/logchannel status|on|off|remove|reset|test — to‘liq boshqarish\n"
+        "/logchannel exclude|include <user_id> — user logini o‘chirish/qaytarish\n"
+        "/logchannel excluded — log qilinmaydigan userlar (owner doim)\n"
         "Owner sozlamasi ENVdan ustun; reset ENVga qaytaradi.\n\n"
         "**Bot chatini arxivlash:**\n"
         "/autoarchive on|off|status — sessiyalarda arxivlash/arxivdan chiqarish\n\n"

@@ -1828,3 +1828,20 @@ inline-switch tugmalar, caption fallback, no-delivery va FloodWait (9 test).
 Live Telegram send yoki bot restart bajarilmadi.
 Tekshiruv: 51 focused, full pytest 431 passed/22 subtests; Wzgram migration,
 pip check, py_compile va git diff --check o'tdi.
+
+## BUG-096: Owner chati log guruhiga tushadi, user istisnolari yo'q
+
+Status: ✅ Tuzatildi (2026-11-09).
+Sabab: private chat observer faqat command/auth/progress filtrlarini qo'llagan;
+ownerning oddiy matni, havolalari, media va bot javoblarini ham loglagan.
+Yechim: OWNER_ID doim chiqariladi; user istisnolari LogPolicy.excluded_user_ids
+orqali mavjud atomic JSON va bot-scoped MongoDB backupga qo'shildi.
+/logchannel exclude <user_id>, include <user_id>, excluded — faqat owner.
+Istisnolar set/on/off/remove/reset va server ko'chirishda saqlanadi; ownerni
+include qilib bo'lmaydi. Bo'sh ro'yxat ham MongoDB $setga yoziladi, shunda
+oxirgi istisno o'chirilganda eski remote qiymat qayta tiklanmaydi.
+Inbound/outbound/edit/album, direct upload resolution va queued deliveryda guard
+bor. User delivery/routing o'zgarmaydi; allaqachon yuborilgan eski loglar
+o'chirilmaydi. Live Telegram send va service restart bajarilmadi.
+Tekshiruv: full pytest 444 passed/22 subtests; verify_migration.py 0 failures;
+pip check, py_compile va git diff --check o'tdi.

@@ -23,7 +23,7 @@ def collection(monkeypatch):
             return self.docs.get(key['_id'])
 
         async def update(self, key, update, upsert):
-            self.docs[key['_id']] = dict(update['$set'])
+            self.docs.setdefault(key['_id'], {}).update(update['$set'])
 
     coll = Collection()
     monkeypatch.setattr(chat_log, '_settings_collection', lambda: coll)
@@ -57,7 +57,7 @@ def test_reset_overwrites_remote_with_portable_env_tombstone(tmp_path, collectio
         await settings.save(LogPolicy(-1009, True, 'owner'))
         await settings.reset()
         assert collection.docs['chat_log:777'] == {
-            'override': False, 'chat_id': 0, 'enabled': False}
+            'override': False, 'chat_id': 0, 'enabled': False, 'excluded_user_ids': []}
         new = ChatLogSettings(tmp_path / 'new.json', -1002)
         await new.startup_sync(777)
         assert new.policy == LogPolicy(-1002, True)
@@ -143,3 +143,30 @@ def test_invalid_remote_preserves_local_and_is_not_overwritten(tmp_path, collect
         assert settings.sync_status == 'restore_failed'
         collection.update_one.assert_not_awaited()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('source', ['owner', 'env'])
+def test_exclusions_restore_locally_and_on_new_server(tmp_path, collection, source):
+    async def run():
+        settings = ChatLogSettings(tmp_path / 'old.json', -1001)
+        await settings.startup_sync(777)
+        await settings.save(LogPolicy(-1009, True, source, (123, 456)))
+        if source == 'env':
+            await settings.reset()
+        new = ChatLogSettings(tmp_path / 'new.json', -1002)
+        await new.startup_sync(777)
+        assert new.policy.excluded_user_ids == (123, 456)
+        assert ChatLogSettings(new.path, -1003).policy.excluded_user_ids == (123, 456)
+        assert new.policy.chat_id == (-1009 if source == 'owner' else -1002)
+        await new.save(LogPolicy(new.policy.chat_id, True, source))
+        restored = ChatLogSettings(tmp_path / 'third.json', -1004)
+        await restored.startup_sync(777)
+        assert restored.policy.excluded_user_ids == ()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('excluded', [None, '123', [True], [0], [-1], ['123']])
+def test_invalid_exclusions_disable_logging(tmp_path, collection, excluded):
+    path = tmp_path / 'bad.json'
+    path.write_text(json.dumps({'override': False, 'excluded_user_ids': excluded}))
+    assert ChatLogSettings(path, -1001).policy.source == 'invalid'

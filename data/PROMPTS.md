@@ -1534,3 +1534,21 @@ bot yuborayotgan xabarga saqlansin. Live send/restart bajarilmasin.
 
 Tekshiruv: 51 focused regression; full pytest 431 passed va 22 subtests passed.
 verify_migration.py: 0 failures; pip check, py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Owner va tanlangan userlarni chat logdan chiqarish
+
+So'rov: owner chatini log guruhga yubormaslik; boshqa log qilinmaydigan userlar
+uchun ham komanda kerak.
+Natija: owner uchun doimiy log guard; /logchannel exclude <user_id>,
+/logchannel include <user_id>, /logchannel excluded owner komandalariga qo'shildi.
+Istisnolar mavjud JSON/MongoDB policy bilan saqlanadi va restart/server
+ko'chirishda tiklanadi; log manzili yoki holatini almashtirish ularni o'chirmaydi.
+Navbatdagi loglar ham filtrlanadi, excluded direct upload uchun ID resolution
+boshlanmaydi. /ownerhelp va status yangilandi. BUG-096 qayd qilindi.
+
+UMUMIY YO'NALISH: owner chati hech qachon log guruhiga chiqmasin; owner boshqa
+userlarning chat logini ham persistent istisnolar bilan boshqarsin. Avvalgi
+loglar o'chirilmasin; bot avtomatik restart yoki jonli test send qilinmasin.
+
+Tekshiruv: full pytest 444 passed va 22 subtests passed; Wzgram migration
+0 failures; pip check, py_compile va git diff --check o'tdi.

@@ -872,3 +872,12 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Worker resolver requires anchor text/date and matching bot sender/date (1s
   tolerance). Unresolved anchors send without reply; never use unchecked IDs.
 - Verified mapping cache is bounded and connection-scoped, cleared on disconnect.
+
+### Chat log user exclusions (2026-11-09)
+- OWNER_ID private conversation is always excluded, both inbound and outbound.
+- Owner-only /logchannel exclude <user_id>, include <user_id>, excluded manage
+  persistent exceptions; include cannot enable the owner's chat log.
+- Store excluded_user_ids in the existing atomic JSON and bot-scoped MongoDB
+  log policy. Persist the empty list too, to clear stale remote exclusions.
+- Destination set/on/off/remove/reset preserve user exceptions. Guard submit,
+  direct upload observation and queued delivery; leave user delivery unchanged.

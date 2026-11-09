@@ -1349,3 +1349,22 @@ User main'dagi oxirgi VideoNote/owner-report tuzatishini wzgram branchiga ham qo
 Tekshiruv: full pytest 313 passed, 22 subtests passed; pip check toza; verify_migration 640 symbols, 0 failures; git diff --check o'tdi. Testlar mavjud main .venv interpreterida wzgram repository CWD bilan bajarildi; real bot start/restart yoki Telegramga xabar yuborilmadi.
 
 UMUMIY YO'NALISH: VideoNote va owner diagnostics fix endi main va wzgramda bir xil. Bu task log-policy MongoDB funksiyasini wzgramga ko'chirishni o'z ichiga olmaydi.
+
+## Sessiya (2026-11-09) — 105–107 range yolg'on muvaffaqiyati
+
+So'rov: owner chatida ayrim post yuborilmasa ham «yuborildi» deyilishi;
+userdata oxirgi post 107 ko'rsatgan kanalning 105–107 oralig'ini tekshirish.
+Owner chat tarixi va download sessiyasidagi source xabarlar read-only ko'rildi.
+105 dumaloq video, 106 havola yetkazilgan; 107 kanal rasmi yangilangan service
+xabar bo'lib, bo'sh text True natijasi sabab noto'g'ri success sanalgan (BUG-091).
+Kanalning yangi rasmi existing photo download/upload yo'liga shallow-copy orqali
+ulandi. Bo'sh text/media fallback va bo'sh render/send natijasi endi False.
+Range regression muvaffaqiyatli va muvaffaqiyatsiz photo deliveryni tekshiradi.
+Media/text routing va session tanlash saqlandi; jonli send/restart bajarilmadi.
+
+UMUMIY YO'NALISH: «yuborildi» faqat haqiqiy kontent yetkazilganda hisoblansin;
+userdata latest ID xizmat xabarini ham ko'rsatishi mumkin. Kanal rasmi service
+xabari oddiy foto sifatida user session orqali yetkazilsin.
+
+Tekshiruv: 7 yangi offline regression; full pytest 388 passed/22 subtests;
+py_compile va git diff --check o'tdi.

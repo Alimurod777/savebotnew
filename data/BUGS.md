@@ -1671,3 +1671,27 @@ pytest — 304 passed, 22 subtests passed; verify_migration — 638 import symbo
 Service logi: VideoNote worker yuborishida TypeError: Got unexpected keyword argument(s): {'parse_mode'}. make_send_fn caption/caption_entities ni olib tashlagan, lekin parse_mode qolgan; Wzgram send_video_note uni qabul qilmaydi. VideoNote kwargsdan parse_mode ham olib tashlandi.
 
 Ownerga hisobot yo'qolishi sababi: failure classifier PARSE tokeni sabab parse_mode TypeErrorni USER_INPUT_ERROR deb olgan. Programming exceptionlar endi URL-parse keywordlaridan oldin SYSTEM_FAILURE bo'ladi. System incident uchun qo'shimcha session/channel verification muvaffaqiyatsiz bo'lishi hisobotni to'xtatmaydi: verification issue aniq yoziladi, oddiy deleted/FloodWait siyosati saqlanadi. Userga ichki yuborish xatosi aniqroq aytiladi.
+
+## BUG-091: Kanal rasmi almashtirilgan post yuborilmasa ham muvaffaqiyat sanaladi
+
+Status: ✅ Tuzatildi (2026-11-09).
+Owner bot chati va download sessiyasi bilan read-only tekshiruv: kanalning
+105-posti VideoNote, 106-posti matnli havola, 107-posti NEW_CHAT_PHOTO service
+xabari. Oxirgi range so'rovida dastlabki ikkisi yetkazilgan, ammo 107 uchun
+hech narsa yuborilmasdan «Yuklandi: 3/3» chiqqan. Alohida /107 so'rovida ham
+kontentsiz «1/1» qaytgan. Userdata latest ID xizmat xabarini ham hisoblaydi;
+107 mavjud, lekin oddiy matn/media posti emas.
+
+Sabab: classifier service xabarini Text deb oladi; send_text_message bo'sh
+text uchun True qaytargan. Media pipeline'ning no-media/no-text fallbacki ham
+hech qanday send bo'lmasa True qaytargan.
+Yechim: process_single_post new_chat_photo obyektini shallow-copy Message.photo
+sifatida mavjud downloader + user upload worker yo'liga uzatadi. Original
+service xabari o'zgarmaydi; media user session, text bot orqali qoladi.
+Bo'sh text, bo'sh render chunklari va send natijasi yo'q holat muvaffaqiyat
+hisoblanmaydi; media pipeline fallbacki ham no-content uchun False qaytaradi.
+
+Offline regression: 105–107 range photo success/failure hisoblari, original
+xabar saqlanishi, haqiqiy downloader file-info va worker send_photo dispatchi,
+bo'sh service/text/chunk hamda send natijasi tekshirildi. Telegramga jonli
+xabar yuborish yoki service restart bajarilmadi.

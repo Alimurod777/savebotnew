@@ -8,6 +8,8 @@ bilan ishlaydi. Moslik tafsilotlari: [WZGRAM_MIGRATION.md](WZGRAM_MIGRATION.md).
 
 ## Yangi serverda ishga tushirish
 
+Alwaysdata uchun tayyor launcher va panel sozlamalari: [ALWAYSData.md](ALWAYSData.md).
+
 Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
 
 ```bash

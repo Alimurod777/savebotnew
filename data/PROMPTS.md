@@ -1445,3 +1445,26 @@ o'tdi. Bot start/restart yoki jonli Telegram send bajarilmadi.
 
 UMUMIY YO'NALISH: shu suhbatdagi topic/header/report/delivery-count tuzatishlari
 main va wzgramda bir xil; wzgramning account-level upload coordinatori saqlansin.
+## Sessiya (2026-11-09) — Alwaysdata service va venv tayyorlash
+
+So'rov: Alwaysdata servis yaratishga tayyorlash va venv yaratish.
+Python 3.11 bilan yangi venv yaratildi, requirements va offline test vositalari
+o'rnatildi. Wzgram 3.1.6/WarpCrypto 2.1.0, 640 import tekshiruvi xatosiz o'tdi.
+Static FFmpeg/ffprobe yuklandi va ishlashi tekshirildi. Mavjud .env yo'qligi
+sabab .env.example dan private (0600) bo'sh .env yaratildi; haqiqiy credential
+kiritilmadi. start_alwaysdata.sh foreground exec, CWD/venv va required-config
+check bilan qo'shildi. Alwaysdata SIGHUP mavjud shutdown handlerga ulandi.
+ALWAYSData.md panel command, log, environment, install/update yo'riqnomasi;
+READMEga havola qo'shildi. Panelda service yaratilmadi, live bot boshlanmadi.
+
+UMUMIY YO'NALISH: Alwaysdata service foreground jarayonni boshqarsin; venv
+lokal qayta yaratiladi, secret/runtime fayllar Gitga kiritilmaydi.
+
+Yakuniy tekshiruv: 313 passed, 22 subtests passed; pip check, verify_migration,
+shell syntax, missing-config launcher va isolated SIGHUP check o'tdi.
+
+Pushdan oldin remote wzgramdagi 3 yangi commit saqlandi va lokal commit
+ular ustiga rebase qilindi; faqat BUGS/PROMPTS append konfliktlari ikkala
+matnni saqlagan holda yechildi. Alwaysdata yozuvi BUG-095 deb raqamlandi.
+Birlashtirilgan holat: 354 passed, 22 subtests passed; migration 654 symbols,
+0 failures. Secret va runtime fayllar commitga kirmaydi.

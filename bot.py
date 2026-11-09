@@ -235,6 +235,8 @@ async def main():
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, shutdown_handler)
     
     runner = BotRunner()
     try:

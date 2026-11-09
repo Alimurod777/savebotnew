@@ -1762,3 +1762,11 @@ Wzgram moslashtirish (2026-11-09): BUG-091–094 origin/wzgramga ham qo'llandi.
 Mavjud account-level upload coordinator/worker/split cooldown saqlandi. Full
 offline pytest: 354 passed/22 subtests; migration: 654 symbols/0 failures;
 pip check toza. Live send yoki restart bajarilmadi.
+## BUG-095: Alwaysdata service restart SIGHUP shutdown handleriga ulanmagan
+**Sana:** 2026-11-09
+**Holat:** ✅ Hal qilindi
+
+Alwaysdata servis restartida SIGHUP yuboradi; bot faqat SIGINT/SIGTERM ni
+ushlagan. POSIX SIGHUP mavjud bo'lsa, mavjud shutdown_handlerga ulash qo'shildi.
+Single-instance, sessiyalar va upload routing o'zgarmadi. Izolyatsiyalangan
+signal registration/handler tekshiruvi o'tdi; live bot ishga tushirilmadi.

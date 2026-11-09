@@ -1517,3 +1517,20 @@ xabarining o'zida aniq ko'rinsin.
 
 Tekshiruv: 78 focused source/governance/reply regression o'tdi; py_compile va
 git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Quiz boshlash havolasini matnda saqlash
+
+So'rov: UZTURK & IRODAHOCA A2 Istanbul quizida avvalgidek boshlash URLini
+matnga qo'shish, qolgan inline tugmalarni saqlash. User tasdiqladi va noquote
+forward qilganda inline tugmalar yo'qolishini sabab sifatida aniqlashtirdi.
+BUG-095: topic text yo'li mavjud quiz handleriga ulandi; queued va oddiy
+quizlar ham yagona entity-aware handlerdan o'tadi. «Testni boshlash» ostida URL,
+qolgan inline rowlar asl tartibda qoladi. Text bot orqali, manba o'zgarmaydi;
+UTF-16 splitting, native reply va FloodWait outer retry saqlanadi.
+
+UMUMIY YO'NALISH: quiz start URLi matnda qolsin, shunda keyingi forwardda
+tugmalar yo'qolsa ham testni ochish havolasi yo'qolmaydi. Qolgan inline tugmalar
+bot yuborayotgan xabarga saqlansin. Live send/restart bajarilmasin.
+
+Tekshiruv: 51 focused regression; full pytest 431 passed va 22 subtests passed.
+verify_migration.py: 0 failures; pip check, py_compile va git diff --check o'tdi.

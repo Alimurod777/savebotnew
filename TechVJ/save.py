@@ -6001,6 +6001,18 @@ async def process_single_topic_message(
                 await _notify_topic_failure("topic_send_media", err_str)
             return result
         if msg.text:
+            if extract_quizbot_links(getattr(msg, "reply_markup", None)):
+                result = await handle_quizbot_post(
+                    client,
+                    _make_reply_target_message(
+                        user_id, getattr(request_message, "id", None), request_message,
+                    ),
+                    msg,
+                )
+                if not result:
+                    await _notify_topic_failure("send_quizbot", "QuizBot post handler returned False")
+                return result
+
             from core.smart_renderer import from_message, SmartRenderer
 
             renderer = from_message(msg)
@@ -7341,50 +7353,9 @@ async def _send_quizbot_direct(client: Client, user_id: int, msg, quizbot_links:
     Send QuizBot post directly to user (for queued items).
     Preserves text, entities, inline buttons, and QuizBot links.
     """
-    try:
-        parts = []
-        if msg.text:
-            parts.append(msg.text)
-        elif msg.caption:
-            parts.append(msg.caption)
-
-        if quizbot_links:
-            parts.append("")
-            parts.append("🤖 **QuizBot Start:**")
-            for link in quizbot_links:
-                parts.append(link)
-
-        if not parts:
-            return False
-
-        combined_text = "\n".join(parts)
-
-        # Keep non-QuizBot buttons
-        reply_markup = None
-        if msg.reply_markup and hasattr(msg.reply_markup, 'inline_keyboard'):
-            filtered_rows = []
-            for row in msg.reply_markup.inline_keyboard:
-                filtered_buttons = []
-                for button in row:
-                    if hasattr(button, 'url') and button.url:
-                        if 'quizbot' in button.url.lower() and 'start=' in button.url.lower():
-                            continue
-                    filtered_buttons.append(button)
-                if filtered_buttons:
-                    filtered_rows.append(filtered_buttons)
-            if filtered_rows:
-                reply_markup = InlineKeyboardMarkup(filtered_rows)
-
-        await client.send_message(
-            user_id,
-            combined_text,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True
-        )
-        return True
-    except Exception as e:
-        logger.warning(f"_send_quizbot_direct error: {e}")
-        return False
+    return await handle_quizbot_post(
+        client, _make_reply_target_message(user_id), msg,
+    )
 
 
 async def send_text_message(client: Client, message: Message, msg) -> bool:
@@ -9070,7 +9041,7 @@ async def handle_poll(
 
 async def handle_quizbot_post(client: Client, message: Message, source_msg) -> bool:
     """
-    Handle QuizBot posts - sends ALL content as ONE single message.
+    Handle QuizBot posts with text start links and remaining inline buttons.
     
     Combines:
     - Quiz text/description
@@ -9078,63 +9049,57 @@ async def handle_quizbot_post(client: Client, message: Message, source_msg) -> b
     - QuizBot start links
     - Inline buttons (preserved)
     
-    All in ONE message, not split across multiple messages.
+    Uses one message when it fits, otherwise existing entity-aware splitting.
     """
     try:
-        # Build combined message content
-        parts = []
-        
-        # 1. Original message text (quiz description)
-        if source_msg.text:
-            parts.append(source_msg.text)
-        elif source_msg.caption:
-            parts.append(source_msg.caption)
-        
-        # 2. Extract and append QuizBot links
+        from core.text_renderer import extract_to_renderer
+
+        if getattr(source_msg, "text", None):
+            text, entities = get_text_with_entities(source_msg)
+        else:
+            text, entities = get_caption_with_entities(source_msg)
+
         quizbot_links = extract_quizbot_links(source_msg.reply_markup)
         if quizbot_links:
-            parts.append("")  # Empty line separator
-            parts.append("🤖 **QuizBot Start:**")
-            for link in quizbot_links:
-                parts.append(link)
-        
-        if not parts:
+            text = (text + "\n\n" if text else "") + "🤖 Testni boshlash:\n" + "\n".join(quizbot_links)
+        if not text:
             return False
-        
-        # Combine all parts into single message
-        combined_text = "\n".join(parts)
-        
-        # Preserve inline buttons (excluding QuizBot start buttons which we already extracted)
+
+        # Only the start buttons become text links; preserve every other row.
         reply_markup = None
-        if source_msg.reply_markup and hasattr(source_msg.reply_markup, 'inline_keyboard'):
-            # Keep non-QuizBot buttons
-            filtered_rows = []
-            for row in source_msg.reply_markup.inline_keyboard:
-                filtered_buttons = []
-                for button in row:
-                    if hasattr(button, 'url') and button.url:
-                        # Skip QuizBot start buttons (already in text)
-                        if 'quizbot' in button.url.lower() and 'start=' in button.url.lower():
-                            continue
-                    filtered_buttons.append(button)
-                if filtered_buttons:
-                    filtered_rows.append(filtered_buttons)
-            
-            if filtered_rows:
-                reply_markup = InlineKeyboardMarkup(filtered_rows)
-        
-        # Send as ONE single message
-        await client.send_message(
-            message.chat.id,
-            combined_text,
-            **build_reply_kwargs_from_message(message),
-            reply_markup=reply_markup,
-            **build_link_preview_kwargs(is_disabled=True)
-        )
-        
-        return True
-        
+        if source_msg.reply_markup and hasattr(source_msg.reply_markup, "inline_keyboard"):
+            rows = [
+                [button for button in row if getattr(button, "url", None) not in quizbot_links]
+                for row in source_msg.reply_markup.inline_keyboard
+            ]
+            rows = [row for row in rows if row]
+            if rows:
+                reply_markup = InlineKeyboardMarkup(rows)
+
+        # Appending links leaves the original UTF-16 entity offsets unchanged.
+        chunks = extract_to_renderer(text, entities or []).render_chunks(TELEGRAM_MESSAGE_LIMIT)
+        sent_any = False
+        for i, (chunk_text, chunk_entities) in enumerate(chunks):
+            if not chunk_text:
+                continue
+            sent = await client.send_message(
+                chat_id=message.chat.id,
+                text=chunk_text,
+                entities=chunk_entities or None,
+                parse_mode=ParseMode.DISABLED,
+                reply_markup=reply_markup if i == len(chunks) - 1 else None,
+                **build_reply_kwargs_from_message(message),
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+            if not sent:
+                return False
+            sent_any = True
+        return sent_any
+    except FloodWait:
+        raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"handle_quizbot_post error: {e}")
         return False
 

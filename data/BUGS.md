@@ -1805,3 +1805,26 @@ anchor mexanizmi saqlanadi; qo'shimcha RPC yoki live send/restart yo'q.
 Mavjud source header regressioni raw/root/General/missing/mismatched title va
 emoji/markup matnini qamrab olish uchun kengaytirildi. Source/governance/reply
 testlari 78 passed; py_compile va git diff --check o'tdi.
+
+## BUG-095: Topic quiz xabarida boshlash havolasi matnga qo'shilmaydi
+
+Status: ✅ Tuzatildi (2026-11-09).
+User UZTURK & IRODAHOCA quiz misolida avvalgidek boshlash URLi matnga
+qo'shilishini, qolgan inline tugmalar saqlanishini so'radi. noquote forwardda
+inline tugmalar yo'qolishi sabab start havolasining matnda qolishi kerak.
+Sabab: process_single_topic_message textni SmartRenderer orqali yuborib,
+oddiy postdagi handle_quizbot_post yo'lini chetlab o'tgan.
+Yechim: topik textida QuizBot start URLi bo'lsa mavjud handler ishlatiladi.
+Queued yo'l ham shu handlerga birlashtirildi; «Testni boshlash» va URL matnga
+qo'shiladi, faqat start tugmalari olib tashlanadi, qolgan button/rowlar qoladi.
+Original text/caption plain str va entitylari saqlanadi; uzun matn existing
+UTF-16 renderer bilan bo'linadi, markup oxirgi chunkda. Manba o'zgarmaydi.
+Text faqat bot orqali; reply anchor va FloodWait propagation saqlanadi.
+Bu Telegramning keyingi forwardida tugmalarni saqlashini o'zgartirmaydi;
+matnga qo'shilgan start URL tugmalarsiz ham mavjud bo'ladi.
+
+Offline regression: topic/post/queued, emoji entities, uzun matn, aralash URL va
+inline-switch tugmalar, caption fallback, no-delivery va FloodWait (9 test).
+Live Telegram send yoki bot restart bajarilmadi.
+Tekshiruv: 51 focused, full pytest 431 passed/22 subtests; Wzgram migration,
+pip check, py_compile va git diff --check o'tdi.

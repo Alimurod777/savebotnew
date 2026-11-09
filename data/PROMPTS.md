@@ -1501,3 +1501,19 @@ olsin; guruh/topik/post IDlarini qo'lda hisoblash talab qilinmasin.
 
 Tekshiruv: 74 focused test va 22 subtests; full pytest 416 passed va
 22 subtests passed. py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Manba xabariga topik nomini qo'shish
+
+So'rov: topic 13 range manbasida guruh nomi bor, lekin Darsliklar nomi yo'q.
+User aynan Manba xabarini nazarda tutishini takrorladi. Log topik nomi allaqachon
+olinganini ko'rsatdi; header funksiyasi qabul qilgan metadata'dan foydalanmagan.
+BUG-094: guruh nomi ostida shu bot-authored anchorning o'zida 📂 Topik qatori
+qo'shildi. Mos raw topic joriy nomi ustun, mos root creation nomi fallback,
+nom yo'q bo'lsa ID. Boshqa topik nomi ishlatilmaydi. Additional RPC/routing/session
+o'zgarishi yoki jonli send/restart yo'q; mavjud reply anchor saqlanadi.
+
+UMUMIY YO'NALISH: topic kontenti qaysi guruh va qaysi topikdan ekanligi Manba
+xabarining o'zida aniq ko'rinsin.
+
+Tekshiruv: 78 focused source/governance/reply regression o'tdi; py_compile va
+git diff --check o'tdi.

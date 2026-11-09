@@ -1788,3 +1788,20 @@ escaping hamda uzun Excel kataklarini continuation qilish o'zgarmadi.
 Offline regression: private/public/General/single topic linklarini haqiqiy bot
 parseri bilan round-trip, invalid/missing metadata, ikki guruhning mustaqil
 copy linklari, HTML escaping, XLSX/TXT parity. Live send/restart bajarilmadi.
+
+## BUG-094: Manba sarlavhasida topik nomi ko'rinmaydi
+
+Status: ✅ Tuzatildi (2026-11-09).
+User /13/13-708 topic range uchun manbada faqat guruh nomi borligini ko'rsatdi.
+Logda raw forum topic id=13, title=Darsliklar muvaffaqiyatli olingan; ammo
+_send_source_context_message raw_topic/topic_msg argumentlarini ishlatmagan.
+Yechim: mavjud bot-authored reply anchor xabarida guruh nomidan keyin
+«📂 Topik: Darsliklar» qatori qo'shiladi. Avval requested topic IDga mos
+raw_topic.title (joriy nom), fallback sifatida shu IDli root message'dagi
+forum_topic_created.title; nom olinmasa topic ID ko'rsatiladi. Boshqa topic
+metadata'sidan nom olinmaydi; non-topic source sarlavhasi saqlanadi.
+Plain text ParseMode.DISABLED, original requestga reply va mavjud media reply
+anchor mexanizmi saqlanadi; qo'shimcha RPC yoki live send/restart yo'q.
+Mavjud source header regressioni raw/root/General/missing/mismatched title va
+emoji/markup matnini qamrab olish uchun kengaytirildi. Source/governance/reply
+testlari 78 passed; py_compile va git diff --check o'tdi.

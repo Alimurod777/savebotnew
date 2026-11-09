@@ -2211,10 +2211,20 @@ async def _send_source_context_message(
             source_chat,
             getattr(parsed, "channel_id", None) if parsed else None,
         )
+        header = f"📡 Manba: {title}"
+        topic_id = getattr(parsed, "topic_id", None) if parsed else None
+        if topic_id is not None:
+            topic_title = ""
+            if getattr(raw_topic, "id", None) == topic_id:
+                topic_title = str(getattr(raw_topic, "title", None) or "").strip()
+            if not topic_title and getattr(topic_msg, "id", None) == topic_id:
+                created = getattr(topic_msg, "forum_topic_created", None)
+                topic_title = str(getattr(created, "title", None) or "").strip()
+            header += f"\n📂 Topik: {topic_title or topic_id}"
         reply_target = request_message or _make_reply_target_message(user_id, None)
         return await client.send_message(
             user_id,
-            f"📡 Manba: {title}",
+            header,
             parse_mode=ParseMode.DISABLED,
             **build_reply_kwargs_from_message(reply_target),
             **build_link_preview_kwargs(is_disabled=True),

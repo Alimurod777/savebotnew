@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from wzgram import raw, utils
+from wzgram.errors import ChannelInvalid, ChannelPrivate, PeerIdInvalid
 from wzgram.types import Message
 
 from core.retry_utils import get_floodwait_seconds, is_floodwait_error
@@ -134,6 +135,13 @@ class TopicExtractor:
             except TopicExtractionError:
                 raise
             except Exception as e:
+                if is_floodwait_error(e):
+                    raise
+                if isinstance(e, (ChannelInvalid, ChannelPrivate, PeerIdInvalid)):
+                    raise TopicExtractionError(
+                        f"Cannot access source chat {self._cfg.chat_id} with the download "
+                        f"session ({type(e).__name__}); check group ID and membership"
+                    ) from e
                 self._raw_search_supported = False
                 logger.warning(
                     "TopicExtractor: raw Search(top_msg_id) unavailable for topic=%d: %s",
@@ -147,6 +155,13 @@ class TopicExtractor:
             except TopicExtractionError:
                 raise
             except Exception as e:
+                if is_floodwait_error(e):
+                    raise
+                if isinstance(e, (ChannelInvalid, ChannelPrivate, PeerIdInvalid)):
+                    raise TopicExtractionError(
+                        f"Cannot access source chat {self._cfg.chat_id} with the download "
+                        f"session ({type(e).__name__}); check group ID and membership"
+                    ) from e
                 self._raw_replies_supported = False
                 logger.warning(
                     "TopicExtractor: raw GetReplies unavailable for topic=%d: %s",

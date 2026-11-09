@@ -1743,3 +1743,31 @@ Offline regression: 105–107 range photo success/failure hisoblari, original
 xabar saqlanishi, haqiqiy downloader file-info va worker send_photo dispatchi,
 bo'sh service/text/chunk hamda send natijasi tekshirildi. Telegramga jonli
 xabar yuborish yoki service restart bajarilmadi.
+
+## BUG-092: Noto'g'ri topic source ID kirish xatosini topic API xatosi deb ko'rsatadi
+
+Status: ✅ Tuzatildi (2026-11-09).
+Owner topic 21 range so'rovida CHANNEL_INVALID chiqqan, lekin process_topic_posts
+resolve xatosidan keyin raw_peer=None bilan davom etgan. Extractor Search va
+GetReplies ham shu kirish xatosini API unsupported deb olib, «server-side topic
+fetch unavailable and chat-history scan disabled» qaytargan.
+
+Read-only inventory/live tekshiruv: berilgan topiklar -1004345381943 guruhida;
+so'rovdagi -1003487926168 esa boshqa «Log group». Download akkauntining 801
+dialogi ichida noto'g'ri guruh yo'q, owner akkauntida esa u log guruh sifatida
+ko'rinadi. Oldingi assistant javobida berilgan noto'g'ri ID asosida havolalar
+tuzilgan edi; tuzatish userga aytildi, guruh o'z-o'zidan almashtirilmadi.
+
+Yechim: topic source resolve uchun 15s timeout; ChannelInvalid/ChannelPrivate/
+PeerIdInvalid bo'lsa bot guruh IDsi, download akkaunti va userdata/membership
+tekshirish ko'rsatmasi bilan extractiondan oldin qaytadi. Extractor ham access
+xatolarini unsupported API sifatida yutmaydi. Search/GetReplies FloodWait yoki
+FloodPremiumWait holatida supported flag o'zgarmaydi, tashqi retry shu API va
+shu offsetni Telegram vaqti + existing backoff bilan qayta chaqiradi.
+Haqiqiy unsupported API uchun GetReplies fallbacki saqlanadi; full-history
+scan yoqilmadi. Session/routing va topic membership filtri o'zgarmadi.
+
+To'g'ri guruhda read-only live extract_between(21,832): Dinlemelar, 51 xabar,
+raw Search ishladi; xabarlarni yuborish, download/upload yoki restart yo'q.
+17 yangi mocked regression: source access, own/override account, ikki API
+access xatolari, oddiy/premium FloodWait retry va unsupported API fallback.

@@ -1459,3 +1459,26 @@ xabari oddiy foto sifatida user session orqali yetkazilsin.
 
 Tekshiruv: 7 yangi offline regression; full pytest 388 passed/22 subtests;
 py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Topic range xatosining asl sababi va to'g'ri havolalar
+
+So'rov: «Could not resolve topic range anchors» muammosini davom ettirib hal
+qilish. Log CHANNEL_INVALID ko'rsatdi; userdata SQLite records_json bilan
+solishtirganda user yozgan Dinlemelar va boshqa 10 topik boshqa guruhga
+(-1004345381943) tegishli ekani aniqlandi. Oldingi javobdagi -1003487926168
+asosidagi havolalar noto'g'ri; u ownerning Log group guruhi va download akkaunti
+a'zo emas. Userga aniq tuzatish berildi; avtomatik source/session almashtirish yo'q.
+
+To'g'ri sessiya/guruhda live read-only tekshiruv: Dinlemelar topic 21, latest
+832, extract_between 51 ta topic xabarini qaytardi. API ishlaydi, history scan
+yoqish talab qilinmaydi. BUG-092: no-access source uchun extractiondan oldin
+aniq bot javobi; extractorda access/FloodWaitni unsupported deb yutish tuzatildi.
+FloodWait shu API/offsetda existing backoff bilan retry qilinadi. Live send,
+download/upload yoki service restart bajarilmadi.
+
+UMUMIY YO'NALISH: topic havolasidagi chat ID aynan userdata record.chat_id bilan
+mos bo'lsin; access va API compatibility xatolari aralashtirilmasin. Noto'g'ri
+guruhni yashirin almashtirish yoki full-history scan yoqish orqali chetlab o'tilmasin.
+
+Tekshiruv: 17 yangi regression; 71 focused test; full pytest 405 passed va
+22 subtests passed. py_compile va git diff --check o'tdi.

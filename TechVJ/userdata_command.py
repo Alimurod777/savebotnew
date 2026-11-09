@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from core.userdata_reports import (
     ReportLimitError, ReportValidationError, active_username, chat_kind, normalize,
-    privacy_evidence, render_html, render_xlsx, type_name,
+    privacy_evidence, render_html, render_xlsx, topic_download_link, type_name,
 )
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1285,6 +1285,8 @@ async def _generate_report(job: InventoryJob) -> Optional[str]:
                         f.write(f"        First accessible message ID: {_safe_str(t.first_message_id, 'UNKNOWN')}\n")
                         f.write(f"        Latest accessible message ID: {_safe_str(t.latest_message_id, 'UNKNOWN')}\n")
                         f.write(f"        Topic creation/root message ID: {t.topic_id}\n")
+                        link = topic_download_link(gr, t)
+                        f.write(f"        Bot download link: {link or 'Unavailable / missing topic bounds'}\n")
                         f.write(f"        Inspection status: {t.inspection_status}\n")
                 f.write("\n")
 

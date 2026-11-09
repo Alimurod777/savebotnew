@@ -1482,3 +1482,22 @@ guruhni yashirin almashtirish yoki full-history scan yoqish orqali chetlab o'til
 
 Tekshiruv: 17 yangi regression; 71 focused test; full pytest 405 passed va
 22 subtests passed. py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Userdata ichida topik uchun tayyor bot havolasi
+
+So'rov: userdata olayotganda faqat tegishli topik xabarlarini olish uchun botga
+yuboriladigan tayyor havola ham bo'lsin; IDlarni qo'lda birlashtirish qiyin.
+HTMLga topic nomi/ID bilan ko'rinadigan range URL va Havolani nusxalash tugmasi
+qo'shildi. XLSX Topic Information va legacy TXT ham aynan shu URLni ko'rsatadi.
+URL har bir topicning o'z guruh recordidan yaratiladi, first/root va latest/top
+metadata'dan foydalanadi; noma'lum endpoint/unsupported peer uchun fake URL yo'q.
+SQL/persistence schema, session/routing va collector RPC soni o'zgarmadi.
+11 offline regression: bot parseriga round-trip, General/public/private/single,
+missing/invalid IDlar, bir xil topic IDli ikki guruh, HTML copy/escaping, Excel
+va TXTdagi havolalar. Live Telegram send yoki restart bajarilmadi.
+
+UMUMIY YO'NALISH: user hisobotdan kerakli topik havolasini nusxalab botga yubora
+olsin; guruh/topik/post IDlarini qo'lda hisoblash talab qilinmasin.
+
+Tekshiruv: 74 focused test va 22 subtests; full pytest 416 passed va
+22 subtests passed. py_compile va git diff --check o'tdi.

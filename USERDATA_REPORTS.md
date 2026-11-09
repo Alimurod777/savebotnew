@@ -91,6 +91,19 @@ use existing dialog metadata and skip supplementary full-chat RPCs. Public group
 never enumerate topics, including when an active alias is discovered in a full
 response already needed to resolve unknown privacy.
 
+Collected forum topics include a ready-to-send bot request link, for example
+`https://t.me/c/123456/21/21-832`. The chat ID comes from that topic's own
+group record; the topic ID keeps the request scoped to that topic. Bounds use
+the collected first/root and latest/top message IDs. Unknown endpoints and
+unsupported peers do not produce invented links. Links describe the collected
+range at report time, rather than future messages.
+
+HTML provides a separate **Botga yuborish uchun topik havolalari** section with
+topic names, visible links and **Havolani nusxalash** copy buttons. Paste the
+copied link into the bot to request that topic's range. XLSX Topic Information
+and the legacy TXT report include the same **Bot download link** text. Link
+generation uses existing metadata and makes no additional Telegram requests.
+
 ## Reliability and resource limits
 
 Normalization and both synchronous renderers run off the event loop. A cancelled

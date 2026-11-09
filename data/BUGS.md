@@ -1771,3 +1771,20 @@ To'g'ri guruhda read-only live extract_between(21,832): Dinlemelar, 51 xabar,
 raw Search ishladi; xabarlarni yuborish, download/upload yoki restart yo'q.
 17 yangi mocked regression: source access, own/override account, ikki API
 access xatolari, oddiy/premium FloodWait retry va unsupported API fallback.
+
+## BUG-093: Userdata topic metadata'da botga tayyor yuklash havolasi yo'q
+
+Status: ✅ Tuzatildi (2026-11-09, foydalanish qulayligi).
+User topic ID, guruh ID va first/latest postni qo'lda birlashtirish qiyinligini
+aytdi; oldingi holatda boshqa guruh ID bilan adashilgan edi.
+Yechim: core/userdata_reports.topic_download_link har bir topicning o'z
+DialogRecord.chat_id/username va first/root–latest/top IDlaridan topic-scoped
+bot havolasi yasaydi. HTMLda topic nomi/ID, ko'rinadigan URL va nusxalash
+tugmasi; XLSX Topic Information va legacy TXTda Bot download link qo'shildi.
+Endpoint noma'lum yoki peer qo'llanmaydigan bo'lsa soxta havola yaratilmaydi.
+Bir xil topic IDsi turli guruhlarda aralashmaydi; extra RPC va SQL migration yo'q.
+Existing clipboard fallback va CSP hash hisoblash saqlandi; metadata/text
+escaping hamda uzun Excel kataklarini continuation qilish o'zgarmadi.
+Offline regression: private/public/General/single topic linklarini haqiqiy bot
+parseri bilan round-trip, invalid/missing metadata, ikki guruhning mustaqil
+copy linklari, HTML escaping, XLSX/TXT parity. Live send/restart bajarilmadi.

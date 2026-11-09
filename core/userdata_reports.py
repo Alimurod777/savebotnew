@@ -112,7 +112,32 @@ TOPIC_FIELDS = (
 )
 
 
-def _topic_text(topics):
+def topic_download_link(chat, topic):
+    """Build a bot topic-range request using only this chat's collected metadata."""
+    kind = chat_kind(chat.chat_type, fallback=chat.category)
+    if kind != 'group' or type_name(chat.chat_type) == 'group':
+        return ''
+    topic_id = getattr(topic, 'topic_id', None)
+    if type(topic_id) is not int or topic_id <= 0:
+        return ''
+    first = getattr(topic, 'first_message_id', None)
+    if type(first) is not int or first <= 0:
+        first = topic_id
+    latest = getattr(topic, 'latest_message_id', None)
+    if type(latest) is not int or latest <= 0:
+        latest = getattr(topic, 'top_message', None)
+    if type(latest) is not int or latest <= 0:
+        return ''
+    post = latest_post_link(SimpleNamespace(
+        chat_id=chat.chat_id, username=chat.username, latest_message_id=latest), kind)
+    if not post:
+        return ''
+    base = post.rsplit('/', 1)[0]
+    bounds = str(first) if first == latest else f'{first}-{latest}'
+    return f'{base}/{topic_id}/{bounds}'
+
+
+def _topic_text(topics, chat=None):
     grouped = {}
     for topic in topics:
         values = grouped.setdefault(str(topic.topic_id), {})
@@ -122,8 +147,18 @@ def _topic_text(topics):
                 values.setdefault(label, {})
                 text = clean(value)
                 values[label][text] = None
+        if chat is not None:
+            link = topic_download_link(chat, topic)
+            values.setdefault('Bot download link', {})[link or 'Unavailable / missing topic bounds'] = None
     return '\n'.join(f"Topic {topic_id}\n" + '\n'.join(f"  {label}: {' | '.join(values)}" for label, values in fields.items())
                      for topic_id, fields in grouped.items())
+
+
+@dataclass(frozen=True)
+class TopicDownloadLink:
+    topic_id: int
+    title: str
+    url: str
 
 
 @dataclass(frozen=True)
@@ -139,6 +174,7 @@ class Record:
     metadata: str
     category: str
     latest_post_link: str = ''
+    topic_download_links: Tuple[TopicDownloadLink, ...] = ()
 
 
 def latest_post_link(chat, kind):
@@ -211,18 +247,23 @@ def normalize(job) -> Snapshot:
         topic_status = getattr(rec, 'topics_status', 'Unavailable / not enumerated')
         topic_count = getattr(rec, 'topic_count', None)
         topics = clean(topic_status) + ('; total unknown' if topic_count is None else f'; API reported count: {topic_count}')
-        topic_text = _topic_text(rec.topics)
+        topic_text = _topic_text(rec.topics, rec)
         if topic_text:
             topics += '\n' + topic_text
         metadata = '\n'.join(f'{label}: {clean(value)}' for label, value in (
             (label, getattr(rec, attr, None)) for attr, label in DETAIL_FIELDS) if value is not None)
         if observations[key]:
             metadata += '\n' + '\n'.join(observations[key])
+        topic_links = {}
+        for topic in rec.topics:
+            url = topic_download_link(rec, topic)
+            if url:
+                topic_links[(topic.topic_id, url)] = TopicDownloadLink(topic.topic_id, clean(topic.title), url)
         records.append(Record(clean(rec.title) or '(name unavailable)', str(rec.chat_id), clean(rec.username),
                               type_name(rec.chat_type), privacy, source,
                               getattr(rec, 'forum_status', 'Unknown / unverified') if rec.is_forum is None else ('Yes' if rec.is_forum else 'No'),
                               topics, metadata or 'Unavailable', category_id(kind, privacy),
-                              latest_post_link(rec, kind)))
+                              latest_post_link(rec, kind), tuple(topic_links.values())))
     records.sort(key=lambda r: CATEGORY_IDS.index(r.category))
     partial = sum(r.inspection_status != 'COMPLETE' for r in job.records)
     limitations = f' Collected {len(records)} of {job.dialogs_discovered} discovered chats. Operation failures: {len(job.failures)}. Partial inspections: {partial}.'
@@ -240,13 +281,25 @@ def render_html(snapshot: Snapshot, path: Union[str, Path]) -> None:
         if re.fullmatch(r'[A-Za-z0-9_]{1,64}', r.username):
             link = f'<a href="https://t.me/{esc(r.username)}" rel="noreferrer noopener" target="_blank">@{esc(r.username)}</a>'
         layout = 'detailed' if r.category in PRIVATE_CATEGORIES else 'compact'
+        topic_links = ''
+        if r.topic_download_links:
+            rows = ''.join(
+                f'<li><strong>{esc(t.title)}</strong> · Topic {t.topic_id}'
+                f'<p><a href="{esc(t.url)}" rel="noreferrer noopener" target="_blank"><code>{esc(t.url)}</code></a><br>'
+                f'<button class="copy" data-value="{esc(t.url)}">Havolani nusxalash</button></p></li>'
+                for t in r.topic_download_links)
+            topic_links = (
+                '<details><summary>Botga yuborish uchun topik havolalari</summary>'
+                '<p>Kerakli havolani nusxalab botga yuboring. '
+                "Faqat shu topikning ko'rsatilgan oralig'i olinadi.</p>"
+                f'<ul>{rows}</ul></details>')
         post_link = (f'<a href="{esc(r.latest_post_link)}" rel="noreferrer noopener" target="_blank">Latest post</a>'
                      if re.fullmatch(r'https://t\.me/(?:[A-Za-z][A-Za-z0-9_]{3,63}|c/[1-9][0-9]*)/[1-9][0-9]*', r.latest_post_link)
                      else 'Latest post: unavailable') if r.latest_post_link or r.category in ('public_channels', 'private_channels', 'public_groups', 'private_groups') or chat_kind(r.chat_type) in ('channel', 'group') else ''
         cards.append(f'''<article class="{layout}" data-chat-id="{esc(r.chat_id)}" data-chat-type="{esc(r.chat_type)}" data-category="{esc(r.category)}" data-privacy="{esc(r.privacy)}" data-search="{esc(r.name+' '+r.chat_id+' '+r.username)}">
 <details><summary><small>#{n} · {esc(CATEGORY_LABELS[r.category])} · {esc(r.privacy)}</small><h2>{esc(r.name)}</h2><code>{esc(r.chat_id)}</code></summary>
 <p>{link}</p><p>{post_link}</p><dl><dt>Full name</dt><dd>{esc(r.name)}</dd><dt>Type</dt><dd>{esc(r.chat_type)}</dd><dt>Privacy evidence</dt><dd>{esc(r.source)}</dd><dt>Forum enabled</dt><dd>{esc(r.forum)}</dd></dl>
-<details><summary>Topic metadata</summary><pre>{esc(r.topics)}</pre></details><pre>{esc(r.metadata)}</pre></details>
+{topic_links}<details><summary>Topic metadata</summary><pre>{esc(r.topics)}</pre></details><pre>{esc(r.metadata)}</pre></details>
 <button class="copy" data-id="{esc(r.chat_id)}">Copy ID</button></article>''')
     options = ''.join(f'<option value="{cat}">{esc(label)}</option>' for cat, label in CATEGORY_LABELS.items())
     stats = ''.join(f'<button class="stat" data-filter="{cat}"><strong>{count}</strong>{esc(CATEGORY_LABELS[cat])}</button>' for cat, count in snapshot.counts.items())
@@ -266,7 +319,7 @@ const index=cards.map(c=>fold(c.dataset.search));
 function filter(){const q=fold(search.value.trim());let n=0;cards.forEach((c,i)=>{const show=index[i].includes(q)&&(!category.value||c.dataset.category===category.value)&&(!privacy.value||c.dataset.privacy===privacy.value);if(c.hidden!==!show)c.hidden=!show;if(show)n++;});document.getElementById('count').textContent=n+' of '+cards.length+' chats';document.getElementById('empty').hidden=n!==0;}
 search.addEventListener('input',filter);category.addEventListener('change',filter);privacy.addEventListener('change',filter);document.getElementById('clear').onclick=()=>{search.value='';filter();};
 document.querySelectorAll('.stat').forEach(b=>b.onclick=()=>{category.value=b.dataset.filter;filter();});
-document.querySelectorAll('.copy').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.id);b.textContent='Copied';}catch(e){const t=document.createElement('textarea');t.value=b.dataset.id;document.body.appendChild(t);t.select();b.textContent=document.execCommand('copy')?'Copied':'Select ID above to copy';t.remove();}});filter();</script></html>'''
+document.querySelectorAll('.copy').forEach(b=>b.onclick=async()=>{const value=b.dataset.value||b.dataset.id;try{await navigator.clipboard.writeText(value);b.textContent='Copied';}catch(e){const t=document.createElement('textarea');t.value=value;document.body.appendChild(t);t.select();b.textContent=document.execCommand('copy')?'Copied':b.dataset.value?'Select link above to copy':'Select ID above to copy';t.remove();}});filter();</script></html>'''
     script = content.rsplit('<script>', 1)[1].split('</script>', 1)[0]
     digest = base64.b64encode(hashlib.sha256(script.encode('utf-8')).digest()).decode('ascii')
     content = content.replace('script-src SCRIPT_POLICY', f"script-src 'sha256-{digest}'", 1)

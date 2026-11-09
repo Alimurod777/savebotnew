@@ -1391,3 +1391,57 @@ guruhni yashirin almashtirish yoki full-history scan yoqish orqali chetlab o'til
 
 Tekshiruv: 17 yangi regression; 71 focused test; full pytest 405 passed va
 22 subtests passed. py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Userdata ichida topik uchun tayyor bot havolasi
+
+So'rov: userdata olayotganda faqat tegishli topik xabarlarini olish uchun botga
+yuboriladigan tayyor havola ham bo'lsin; IDlarni qo'lda birlashtirish qiyin.
+HTMLga topic nomi/ID bilan ko'rinadigan range URL va Havolani nusxalash tugmasi
+qo'shildi. XLSX Topic Information va legacy TXT ham aynan shu URLni ko'rsatadi.
+URL har bir topicning o'z guruh recordidan yaratiladi, first/root va latest/top
+metadata'dan foydalanadi; noma'lum endpoint/unsupported peer uchun fake URL yo'q.
+SQL/persistence schema, session/routing va collector RPC soni o'zgarmadi.
+11 offline regression: bot parseriga round-trip, General/public/private/single,
+missing/invalid IDlar, bir xil topic IDli ikki guruh, HTML copy/escaping, Excel
+va TXTdagi havolalar. Live Telegram send yoki restart bajarilmadi.
+
+UMUMIY YO'NALISH: user hisobotdan kerakli topik havolasini nusxalab botga yubora
+olsin; guruh/topik/post IDlarini qo'lda hisoblash talab qilinmasin.
+
+Tekshiruv: 74 focused test va 22 subtests; full pytest 416 passed va
+22 subtests passed. py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Manba xabariga topik nomini qo'shish
+
+So'rov: topic 13 range manbasida guruh nomi bor, lekin Darsliklar nomi yo'q.
+User aynan Manba xabarini nazarda tutishini takrorladi. Log topik nomi allaqachon
+olinganini ko'rsatdi; header funksiyasi qabul qilgan metadata'dan foydalanmagan.
+BUG-094: guruh nomi ostida shu bot-authored anchorning o'zida 📂 Topik qatori
+qo'shildi. Mos raw topic joriy nomi ustun, mos root creation nomi fallback,
+nom yo'q bo'lsa ID. Boshqa topik nomi ishlatilmaydi. Additional RPC/routing/session
+o'zgarishi yoki jonli send/restart yo'q; mavjud reply anchor saqlanadi.
+
+UMUMIY YO'NALISH: topic kontenti qaysi guruh va qaysi topikdan ekanligi Manba
+xabarining o'zida aniq ko'rinsin.
+
+Tekshiruv: 78 focused source/governance/reply regression o'tdi; py_compile va
+git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Oxirgi tuzatishlarni wzgram branchiga moslashtirish
+
+So'rov: main'dagi shu suhbat o'zgarishlari wzgramga ham qo'llanib, GitHubga
+push qilinsin. origin/wzgram 33d6bcb asosida alohida worktree ishlatildi.
+BUG-091–094: service photo/false success hisobi, topic access xatosi va flood
+retry, userdata topic range/copy linklari, Manba ichidagi topik nomi ko'chirildi.
+Userdata topic-link helperiga kerakli latest_post_link ham moslashtirildi.
+Wzgramning shared upload coordinator, worker/split cooldown va native reply/
+storage patchlariga tegilmadi. Test parametrizatsiyasi uchun pytest importi
+shu branchga qo'shildi. Main branch checkouti va live bot o'zgartirilmadi.
+
+Tekshiruv: wzgram full pytest 354 passed va 22 subtests passed;
+verify_migration — Wzgram 3.1.6/WarpCrypto 2.1.0, 654 import symbols,
+0 failures. pip check — no broken requirements. Whitespace/compile tekshiruvi
+o'tdi. Bot start/restart yoki jonli Telegram send bajarilmadi.
+
+UMUMIY YO'NALISH: shu suhbatdagi topic/header/report/delivery-count tuzatishlari
+main va wzgramda bir xil; wzgramning account-level upload coordinatori saqlansin.

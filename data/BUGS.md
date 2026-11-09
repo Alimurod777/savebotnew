@@ -1723,3 +1723,42 @@ To'g'ri guruhda read-only live extract_between(21,832): Dinlemelar, 51 xabar,
 raw Search ishladi; xabarlarni yuborish, download/upload yoki restart yo'q.
 17 yangi mocked regression: source access, own/override account, ikki API
 access xatolari, oddiy/premium FloodWait retry va unsupported API fallback.
+
+## BUG-093: Userdata topic metadata'da botga tayyor yuklash havolasi yo'q
+
+Status: ✅ Tuzatildi (2026-11-09, foydalanish qulayligi).
+User topic ID, guruh ID va first/latest postni qo'lda birlashtirish qiyinligini
+aytdi; oldingi holatda boshqa guruh ID bilan adashilgan edi.
+Yechim: core/userdata_reports.topic_download_link har bir topicning o'z
+DialogRecord.chat_id/username va first/root–latest/top IDlaridan topic-scoped
+bot havolasi yasaydi. HTMLda topic nomi/ID, ko'rinadigan URL va nusxalash
+tugmasi; XLSX Topic Information va legacy TXTda Bot download link qo'shildi.
+Endpoint noma'lum yoki peer qo'llanmaydigan bo'lsa soxta havola yaratilmaydi.
+Bir xil topic IDsi turli guruhlarda aralashmaydi; extra RPC va SQL migration yo'q.
+Existing clipboard fallback va CSP hash hisoblash saqlandi; metadata/text
+escaping hamda uzun Excel kataklarini continuation qilish o'zgarmadi.
+Offline regression: private/public/General/single topic linklarini haqiqiy bot
+parseri bilan round-trip, invalid/missing metadata, ikki guruhning mustaqil
+copy linklari, HTML escaping, XLSX/TXT parity. Live send/restart bajarilmadi.
+
+## BUG-094: Manba sarlavhasida topik nomi ko'rinmaydi
+
+Status: ✅ Tuzatildi (2026-11-09).
+User /13/13-708 topic range uchun manbada faqat guruh nomi borligini ko'rsatdi.
+Logda raw forum topic id=13, title=Darsliklar muvaffaqiyatli olingan; ammo
+_send_source_context_message raw_topic/topic_msg argumentlarini ishlatmagan.
+Yechim: mavjud bot-authored reply anchor xabarida guruh nomidan keyin
+«📂 Topik: Darsliklar» qatori qo'shiladi. Avval requested topic IDga mos
+raw_topic.title (joriy nom), fallback sifatida shu IDli root message'dagi
+forum_topic_created.title; nom olinmasa topic ID ko'rsatiladi. Boshqa topic
+metadata'sidan nom olinmaydi; non-topic source sarlavhasi saqlanadi.
+Plain text ParseMode.DISABLED, original requestga reply va mavjud media reply
+anchor mexanizmi saqlanadi; qo'shimcha RPC yoki live send/restart yo'q.
+Mavjud source header regressioni raw/root/General/missing/mismatched title va
+emoji/markup matnini qamrab olish uchun kengaytirildi. Source/governance/reply
+testlari 78 passed; py_compile va git diff --check o'tdi.
+
+Wzgram moslashtirish (2026-11-09): BUG-091–094 origin/wzgramga ham qo'llandi.
+Mavjud account-level upload coordinator/worker/split cooldown saqlandi. Full
+offline pytest: 354 passed/22 subtests; migration: 654 symbols/0 failures;
+pip check toza. Live send yoki restart bajarilmadi.

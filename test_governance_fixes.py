@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -196,7 +197,25 @@ def test_copy_source_prefers_explicit_fallback_over_bot_chat_id():
     assert get_bot_copy_source_chat_id(sent, fallback_chat_id=333) == 333
 
 
-def test_source_context_message_replies_to_original_link_with_source_name_only():
+@pytest.mark.parametrize('topic_id,raw_topic,topic_msg,suffix', [
+    (None, None, None, ''),
+    (13, SimpleNamespace(id=13, title='Darsliklar <&> 😀'),
+     SimpleNamespace(id=13, forum_topic_created=SimpleNamespace(title='Old title')),
+     '\n📂 Topik: Darsliklar <&> 😀'),
+    (13, None, SimpleNamespace(id=13, forum_topic_created=SimpleNamespace(title='Darsliklar')),
+     '\n📂 Topik: Darsliklar'),
+    (1, SimpleNamespace(id=1, title='General'), None, '\n📂 Topik: General'),
+    (13, None, None, '\n📂 Topik: 13'),
+    (13, SimpleNamespace(id=21, title='Other topic'),
+     SimpleNamespace(id=21, forum_topic_created=SimpleNamespace(title='Other topic')),
+     '\n📂 Topik: 13'),
+    (13, SimpleNamespace(id=13, title='  '),
+     SimpleNamespace(id=13, forum_topic_created=SimpleNamespace(title='Darsliklar')),
+     '\n📂 Topik: Darsliklar'),
+])
+def test_source_context_message_replies_to_original_link_with_source_and_topic_names(
+    topic_id, raw_topic, topic_msg, suffix,
+):
     async def run():
         import sys
 
@@ -222,7 +241,7 @@ def test_source_context_message_replies_to_original_link_with_source_name_only()
             chat=SimpleNamespace(id=123),
             reply_to_message_id=None,
         )
-        parsed = SimpleNamespace(channel_id=-1001, topic_id=None, thread_id=None)
+        parsed = SimpleNamespace(channel_id=-1001, topic_id=topic_id, thread_id=None)
         client = FakeClient()
 
         msg = await _send_source_context_message(
@@ -231,11 +250,13 @@ def test_source_context_message_replies_to_original_link_with_source_name_only()
             parsed=parsed,
             source_chat=SimpleNamespace(title="Maqsad Club"),
             source_msg=SimpleNamespace(text="Post preview"),
+            raw_topic=raw_topic,
+            topic_msg=topic_msg,
             request_message=request,
         )
 
         assert msg is not None
-        assert msg.text == "📡 Manba: Maqsad Club"
+        assert msg.text == "📡 Manba: Maqsad Club" + suffix
         assert client.kwargs["reply_parameters"].message_id == 55
         assert "reply_to_message_id" not in client.kwargs
 

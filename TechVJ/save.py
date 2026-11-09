@@ -11,7 +11,10 @@ import uuid
 import wzgram
 from wzgram import Client, filters
 from wzgram.errors import (
+    ChannelInvalid,
+    ChannelPrivate,
     FloodWait,
+    PeerIdInvalid,
     UserIsBlocked,
     InputUserDeactivated,
     UserAlreadyParticipant,
@@ -5388,7 +5391,37 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                 session_string, user_id,
                 peers_to_resolve=[channel_id],
             ) as acc:
-                raw_peer = await _resolve_peer_safe(acc, channel_id, ctx)
+                # Do not turn an inaccessible/wrong source into an apparent
+                # topic API failure by continuing with raw_peer=None.
+                try:
+                    raw_peer = await asyncio.wait_for(acc.resolve_peer(channel_id), timeout=15.0)
+                except (ChannelInvalid, ChannelPrivate, PeerIdInvalid) as access_error:
+                    download_account_id = _download_account_id_for(user_id) or user_id
+                    logger.warning(
+                        "Topic source inaccessible task=%s chat=%s download_account=%s error=%s",
+                        ctx.task_id, channel_id, download_account_id,
+                        type(access_error).__name__,
+                    )
+                    await client.edit_message_text(
+                        user_id, status_msg.id,
+                        f"⚠️ Manba guruhiga kirish imkoni yo'q.\n"
+                        f"Guruh ID: {channel_id}\n"
+                        f"Yuklab olish akkaunti: {download_account_id}\n"
+                        f"Havoladagi guruh ID sini /userdata hisobotidagi aynan "
+                        f"shu topiklar joylashgan guruh bilan solishtiring. "
+                        f"Yuklab olish akkaunti o'sha guruhga a'zo bo'lishi kerak.\n"
+                        f"Telegram xatosi: {type(access_error).__name__}",
+                        parse_mode=ParseMode.DISABLED,
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    await client.edit_message_text(
+                        user_id, status_msg.id,
+                        f"Manba guruhini tekshirish vaqti tugadi: {channel_id}. "
+                        f"Keyinroq qayta urinib ko'ring.",
+                        parse_mode=ParseMode.DISABLED,
+                    )
+                    return
                 logger.info(
                     "Topic source resolved task=%s chat=%s peer=%s",
                     ctx.task_id,

@@ -1762,6 +1762,14 @@ async def _deliver_reports(user_client, bot_client, job, snapshot, reporter, ses
 async def _upload_report(sender, chat_id, path, kind, *, target_user_id=None):
     caption = (f"User Data Inventory — {target_user_id}\n{kind} metadata report"
                if target_user_id is not None else f"{kind} metadata inventory")
+    if target_user_id is not None:
+        try:
+            user = await asyncio.wait_for(sender.get_users(target_user_id), timeout=10)
+            name = ' '.join(str(getattr(user, key, '') or '') for key in ('first_name', 'last_name')).strip()
+            username = getattr(user, 'username', None)
+            caption += f"\nIsm: {name[:200] or 'Noma’lum'}\nUsername: {'@' + username if username else 'yo‘q'}"
+        except Exception:
+            caption += "\nIsm: Noma’lum\nUsername: Noma’lum"
     for attempt in range(MAX_RETRY_ATTEMPTS):
         try:
             return await asyncio.wait_for(sender.send_document(chat_id, path, caption=caption, parse_mode=ParseMode.DISABLED),

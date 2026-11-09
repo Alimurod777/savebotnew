@@ -111,7 +111,7 @@ def test_unrelated_send_error_is_not_retried(monkeypatch):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('outcome', ['success', 'exhausted', 'cancelled'])
+@pytest.mark.parametrize('outcome', ['success', 'exhausted', 'cancelled', 'auto_resume'])
 @pytest.mark.parametrize('premium_fallback', [False, True])
 def test_split_pipeline_preserves_completed_parts_and_cleans_files(monkeypatch, tmp_path, outcome, premium_fallback):
     async def run():
@@ -132,7 +132,7 @@ def test_split_pipeline_preserves_completed_parts_and_cleans_files(monkeypatch, 
                     raise asyncio.CancelledError()
                 if outcome == 'exhausted' or not failed_once:
                     failed_once = True
-                    raise FloodWait(1)
+                    raise FloodWait(601 if outcome == 'auto_resume' else 1)
             return SimpleNamespace(id=80, chat=SimpleNamespace(id=777))
 
         acc.send_document.side_effect = send
@@ -140,6 +140,11 @@ def test_split_pipeline_preserves_completed_parts_and_cleans_files(monkeypatch, 
         msg = SimpleNamespace(id=62, document=SimpleNamespace(file_size=7, file_name='archive.zip'), caption='archive', caption_entities=[])
         request = SimpleNamespace(chat=SimpleNamespace(id=123), id=12)
         pipeline = SimpleNamespace(check_cancelled=AsyncMock(return_value=False))
+        async def wait_for_resume(error):
+            await save.asyncio.sleep(save.get_floodwait_seconds(error) + 1)
+        resume_wait = AsyncMock(side_effect=wait_for_resume)
+        if outcome == 'auto_resume':
+            pipeline.flood_wait_handler = resume_wait
         monkeypatch.setattr(save.asyncio, 'sleep', AsyncMock())
         monkeypatch.setattr(save, 'MAX_TELEGRAM_FILE_SIZE', 1)
         monkeypatch.setattr(save, '_ensure_media_route_clients', AsyncMock(return_value=(bot, acc, 777, 123)))
@@ -164,10 +169,13 @@ def test_split_pipeline_preserves_completed_parts_and_cleans_files(monkeypatch, 
             client=bot, acc=acc, message=request, msg=msg, msg_type='Document',
             pipeline=pipeline, temp_dir=str(tmp_path),
         )
-        if outcome == 'success':
+        if outcome in ('success', 'auto_resume'):
             assert await call is True
             assert sent_paths == [str(chunks[i]) for i in [0, 1, 1, 2]]
             assert copy.await_count == 3
+            if outcome == 'auto_resume':
+                resume_wait.assert_awaited_once()
+                assert resume_wait.await_args.args[0].value == 601
         else:
             with pytest.raises(asyncio.CancelledError if outcome == 'cancelled' else FloodWait):
                 await call

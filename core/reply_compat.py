@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 _use_reply_parameters: Optional[bool] = None
 
 
+def get_reply_message_id(send_kwargs: Dict[str, Any]) -> Optional[int]:
+    """Read the reply ID from native Wzgram or legacy send arguments."""
+    params = send_kwargs.get("reply_parameters")
+    if params is not None:
+        value = params.get("message_id") if isinstance(params, dict) else getattr(params, "message_id", None)
+    else:
+        value = send_kwargs.get("reply_to_message_id")
+    try:
+        value = int(value)
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _detect_reply_style() -> bool:
     """
     Detect which reply style to use.

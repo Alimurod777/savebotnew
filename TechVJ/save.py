@@ -26,7 +26,7 @@ from wzgram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio,
 )
-from core.reply_compat import build_reply_kwargs_from_message, build_link_preview_kwargs
+from core.reply_compat import build_reply_kwargs, build_reply_kwargs_from_message, build_link_preview_kwargs, get_reply_message_id
 from core.copy_utils import (
     BotMessageResolutionError,
     get_bot_copy_source_chat_id,
@@ -823,6 +823,8 @@ async def _enqueue_media_delivery(
             return sent
 
         if not is_pool_session:
+            from core.chat_log import observe_user_upload
+            observe_user_upload(bot_client, sent, target_user_id)
             return sent
 
         # ── Pool: copy from pool↔bot DM to user chat ─────────────────────
@@ -925,6 +927,8 @@ async def _copy_user_session_upload_to_user(
     if sent_message is None:
         return None
     if _is_direct_user_session_upload(source_user_id, target_user_id):
+        from core.chat_log import observe_user_upload
+        observe_user_upload(bot_client, sent_message, target_user_id)
         logger.debug(
             "direct user-session media delivery: source=%s target=%s sent_id=%s; bot copy skipped",
             source_user_id,
@@ -1156,8 +1160,9 @@ async def _send_split_part_with_peer_retry(
     check_cancelled=None,
     status_msg=None,
     status_chat_id: Optional[int] = None,
+    on_flood_wait=None,
 ) -> Message:
-    """Send the current chunk with bounded flood retries and one peer refresh."""
+    """Retry this chunk; private jobs may supply their cancellable flood wait."""
     async def _send(dest):
         # Split clients need the same part-level error propagation as workers.
         acc.sleep_threshold = 0
@@ -1186,6 +1191,11 @@ async def _send_split_part_with_peer_retry(
             return await _send(target)
         except Exception as err:
             if is_floodwait_error(err):
+                if on_flood_wait is not None:
+                    # Private range jobs resume this chunk in place, so earlier
+                    # delivered chunks are not repeated by an outer post retry.
+                    await on_flood_wait(err)
+                    continue
                 # Retry only this unsent chunk. Never restart the split loop:
                 # earlier chunks may already have reached the recipient.
                 seconds = get_floodwait_seconds(err)
@@ -1889,7 +1899,9 @@ def parse_telegram_url(url: str) -> Tuple[Optional[ParsedURL], Optional[str]]:
     Returns:
         Tuple of (ParsedURL or None, error_message or None)
     """
-    url = url.strip()
+    # Telegram copy/paste can append invisible format characters. Strip only
+    # the edges so meaningful characters inside paths/query values stay intact.
+    url = re.sub(r'^[\s\u200b\u200e\u200f\u2060\ufeff]+|[\s\u200b\u200e\u200f\u2060\ufeff]+$', '', str(url))
     
     if not url.startswith(('https://t.me/', 'http://t.me/')):
         return None, "Invalid URL: Must start with https://t.me/"
@@ -4530,7 +4542,7 @@ async def _dispatch_with_priority(
     "add_premium_session", "remove_premium_session",
     "addchannel", "removechannel", "channels", "togglechannel", "grab", "failed_logs",
     "uploadsetting", "split_media", "dlsession",
-    "userdata", "userdata_status", "userdata_resume", "userdata_cancel",
+    "usersdata", "userdata", "userdata_status", "userdata_resume", "userdata_cancel",
 ]))
 
 @check_banned
@@ -6003,6 +6015,18 @@ async def process_single_topic_message(
                 await _notify_topic_failure("topic_send_media", err_str)
             return result
         if msg.text:
+            if extract_quizbot_links(getattr(msg, "reply_markup", None)):
+                result = await handle_quizbot_post(
+                    client,
+                    _make_reply_target_message(
+                        user_id, getattr(request_message, "id", None), request_message,
+                    ),
+                    msg,
+                )
+                if not result:
+                    await _notify_topic_failure("send_quizbot", "QuizBot post handler returned False")
+                return result
+
             from core.smart_renderer import from_message, SmartRenderer
 
             renderer = from_message(msg)
@@ -6411,7 +6435,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             failed_ids = []  # Only existing but unsent posts (not deleted)
             deleted = 0
             albums_processed = 0
-            terminal_flood_wait = 0
+            stop_summary = None
+            retry_post_id = None
 
             # Throttle-aware status tracker + batch controller
             if _THROTTLE_AVAILABLE:
@@ -6420,6 +6445,42 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             else:
                 _status = None
                 _batch = None
+
+            async def wait_for_flood(error):
+                wait_time = get_floodwait_seconds(error) + 1
+                logger.warning(
+                    "FloodWait at post %s; waiting %ss then retrying the same post",
+                    post_id, wait_time,
+                )
+                if _batch:
+                    _batch.record_flood(wait_time)
+                wait_text = (
+                    f"⏳ Telegram vaqtinchalik cheklov qo'ydi (FloodWait).\n"
+                    f"Yetib kelgan post ID: {post_id}\n"
+                    f"Yuborilgan post/album: {processed}\n"
+                    f"Kutish: {wait_time} soniya.\n"
+                    f"Kutish tugagach, aynan {post_id}-postdan avtomatik "
+                    f"davom etaman. Havolani qayta yuborishingiz shart emas.\n"
+                    f"Bekor qilish: /stop"
+                )
+                # Text stays bot-authored; notification errors must
+                # not turn a temporary upload limit into a failed post.
+                await core_safe_send(
+                    client, user_id, wait_text, parse_mode=ParseMode.DISABLED,
+                )
+                await _safe_status_edit_message(
+                    client, user_id, status_msg.id, wait_text,
+                )
+                remaining = wait_time
+                while remaining > 0:
+                    if await pipeline.check_cancelled():
+                        raise asyncio.CancelledError()
+                    await ping_activity(user_id)
+                    step = min(5, remaining)
+                    await asyncio.sleep(step)
+                    remaining -= step
+
+            pipeline.flood_wait_handler = wait_for_flood
             
             # Task-scoped session - guaranteed cleanup on exit
             try:
@@ -6472,8 +6533,12 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                 )
                             return
 
-                        # Get next message ID
-                        post_id = iterator.next()
+                        # A flooded post must succeed before advancing the iterator.
+                        if retry_post_id is not None:
+                            post_id = retry_post_id
+                            retry_post_id = None
+                        else:
+                            post_id = iterator.next()
                         if post_id is None:
                             break  # Done
                         await ping_activity(user_id)
@@ -6528,6 +6593,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                         check_cancelled=pipeline.check_cancelled,
                                         sent_albums=iterator.processed_albums,
                                         upload_session=_album_up,
+                                        on_flood_wait=wait_for_flood,
                                     )
 
                                 if success:
@@ -6537,7 +6603,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                     if _batch:
                                         _batch.record_success()
                                 elif status == "cancelled":
-                                    return
+                                    raise asyncio.CancelledError()
                                 elif status == "already_sent":
                                     processed += 1
                                     if _batch:
@@ -6588,11 +6654,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             # Consecutive error check
                             if _batch and _batch.should_stop():
                                 logger.warning("BatchController: stopping batch for user %s (consecutive errors)", user_id)
-                                if _status:
-                                    await _status.finish(
-                                        f"⚠️ **Ko'p xato — batch to'xtatildi**\n"
-                                        f"✅ {processed}/{total_posts} yuklandi\n❌ {failed} xato"
-                                    )
+                                stop_summary = "⚠️ **Ko'p xato — batch to'xtatildi**"
                                 break
 
                             # Rate limiting delay
@@ -6600,54 +6662,31 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
 
                         except asyncio.CancelledError:
                             raise
-                        except Exception as fw:
-                            if not is_floodwait_error(fw):
-                                e = fw
-                                logger.warning(f"Error processing post {post_id}: {e}")
-                                failed += 1
-                                failed_ids.append(post_id)
-                                await _notify_realtime_post_failure(
-                                    client,
-                                    acc,
-                                    user_id=user_id,
-                                    chat_id=parsed.channel_id,
-                                    post_id=post_id,
-                                    stage="private_loop",
-                                    reason="private post loop raised exception",
-                                    error=e,
-                                    request_message=message,
-                                    context=ctx,
-                                    parsed=parsed,
-                                    requested_total=total_posts,
-                                )
-                                if _batch:
-                                    _batch.record_error()
+                        except Exception as e:
+                            if is_floodwait_error(e):
+                                await wait_for_flood(e)
+                                retry_post_id = post_id
                                 continue
-                            wait_time = get_floodwait_seconds(fw)
+                            logger.warning(f"Error processing post {post_id}: {e}")
                             failed += 1
                             failed_ids.append(post_id)
-                            logger.warning(f"FloodWait {wait_time}s at post {post_id}")
                             await _notify_realtime_post_failure(
                                 client,
                                 acc,
                                 user_id=user_id,
                                 chat_id=parsed.channel_id,
                                 post_id=post_id,
-                                stage="private_floodwait",
-                                reason=f"FloodWait {wait_time}s",
-                                error=fw,
+                                stage="private_loop",
+                                reason="private post loop raised exception",
+                                error=e,
                                 request_message=message,
                                 context=ctx,
                                 parsed=parsed,
                                 requested_total=total_posts,
                             )
                             if _batch:
-                                _batch.record_flood(wait_time)
-                            # Upload retries are already bounded inside the send
-                            # path. Preserve the failure instead of skipping to
-                            # another post or overwriting it with an empty summary.
-                            terminal_flood_wait = wait_time
-                            break
+                                _batch.record_error()
+                            continue
 
             except SessionInvalidError as e:
                 await _handle_session_invalid(client, user_id, e)
@@ -6687,16 +6726,14 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             
             deleted_info = f"\n🗑 O'chirilgan: {deleted}" if deleted > 0 else ""
             
-            if terminal_flood_wait:
+            if stop_summary:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"⚠️ Telegram upload cheklovi — urinish to‘xtatildi\n"
-                    f"Kutish: {terminal_flood_wait} soniya\n"
-                    f"To‘liq yuborilgan postlar: {processed}/{total_posts}\n"
-                    f"❌ Tugallanmagan: {failed}\n"
-                    "Ayrim bo‘laklar yuborilgan bo‘lishi mumkin. Ularni saqlang.\n"
-                    "Bu vazifa avtomatik davom etmaydi; qayta urinishda bo‘laklar takrorlanishi mumkin."
-                    f"{failed_info}"
+                    f"{stop_summary}\n"
+                    f"Yuborilgan post/album: {processed}\n"
+                    f"So'ralgan ID lar: {total_posts}\n"
+                    f"📁 Albumlar: {albums_processed}\n"
+                    f"❌ Xato: {failed}{deleted_info}{failed_info}"
                 )
             elif processed == 0 and failed == 0 and deleted > 0:
                 await client.edit_message_text(
@@ -7330,50 +7367,9 @@ async def _send_quizbot_direct(client: Client, user_id: int, msg, quizbot_links:
     Send QuizBot post directly to user (for queued items).
     Preserves text, entities, inline buttons, and QuizBot links.
     """
-    try:
-        parts = []
-        if msg.text:
-            parts.append(msg.text)
-        elif msg.caption:
-            parts.append(msg.caption)
-
-        if quizbot_links:
-            parts.append("")
-            parts.append("🤖 **QuizBot Start:**")
-            for link in quizbot_links:
-                parts.append(link)
-
-        if not parts:
-            return False
-
-        combined_text = "\n".join(parts)
-
-        # Keep non-QuizBot buttons
-        reply_markup = None
-        if msg.reply_markup and hasattr(msg.reply_markup, 'inline_keyboard'):
-            filtered_rows = []
-            for row in msg.reply_markup.inline_keyboard:
-                filtered_buttons = []
-                for button in row:
-                    if hasattr(button, 'url') and button.url:
-                        if 'quizbot' in button.url.lower() and 'start=' in button.url.lower():
-                            continue
-                    filtered_buttons.append(button)
-                if filtered_buttons:
-                    filtered_rows.append(filtered_buttons)
-            if filtered_rows:
-                reply_markup = InlineKeyboardMarkup(filtered_rows)
-
-        await client.send_message(
-            user_id,
-            combined_text,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True
-        )
-        return True
-    except Exception as e:
-        logger.warning(f"_send_quizbot_direct error: {e}")
-        return False
+    return await handle_quizbot_post(
+        client, _make_reply_target_message(user_id), msg,
+    )
 
 
 async def send_text_message(client: Client, message: Message, msg) -> bool:
@@ -7729,6 +7725,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         else:
                             _pre_part_latest_id = (
@@ -7763,6 +7760,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -7923,7 +7921,7 @@ async def download_and_send_media(
                 bot_username=getattr(_cached_client_me(client), "username", None),
             )
             _premium_upload_kwargs = dict(_send_kwargs)
-            _premium_reply_source_id = _premium_upload_kwargs.get("reply_to_message_id")
+            _premium_reply_source_id = get_reply_message_id(_premium_upload_kwargs)
             if _premium_reply_source_id is not None:
                 _premium_resolved_reply_id = None
                 try:
@@ -7936,8 +7934,9 @@ async def download_and_send_media(
                         _prem_reply_err,
                     )
                 if _premium_resolved_reply_id is not None:
-                    _premium_upload_kwargs["reply_to_message_id"] = _premium_resolved_reply_id
+                    _premium_upload_kwargs.pop("reply_to_message_id", None)
                     _premium_upload_kwargs.pop("reply_parameters", None)
+                    _premium_upload_kwargs.update(build_reply_kwargs(_premium_resolved_reply_id))
                     logger.info(
                         "Premium direct upload reply anchor resolved: user=%d bot_msg_id=%s session_msg_id=%s",
                         ctx_user_id,
@@ -8071,6 +8070,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         else:
                             _pre_part_latest_id = (
@@ -8105,6 +8105,7 @@ async def download_and_send_media(
                                 check_cancelled=pipeline.check_cancelled,
                                 status_msg=status_msg,
                                 status_chat_id=ctx_target_chat_id,
+                                on_flood_wait=getattr(pipeline, "flood_wait_handler", None),
                             )
                         _copied_part = await _copy_user_session_upload_to_user(
                             bot_client=client,
@@ -8235,7 +8236,7 @@ async def download_and_send_media(
                         send_kwargs=_sm_send_kwargs,
                         bot_client=client,
                         bot_user_id=_target_chat_id,
-                        reply_message=message,
+                        reply_message=reply_base,
                         video_meta=_sm_video_meta,
                         thumb_path=_sm_thumb_path,
                         progress_cb=_sm_upload_cb,
@@ -8472,7 +8473,7 @@ async def download_and_send_media(
             _is_pool_session = (_used_pool_idx is not None)
             _effective_send_kwargs = dict(_send_kwargs)
             if not _is_pool_session and _worker is not None:
-                _reply_source_id = _effective_send_kwargs.get("reply_to_message_id")
+                _reply_source_id = get_reply_message_id(_effective_send_kwargs)
                 if _reply_source_id is not None:
                     _resolved_reply_id = None
                     try:
@@ -8486,8 +8487,9 @@ async def download_and_send_media(
                             _reply_resolve_err,
                         )
                     if _resolved_reply_id is not None:
-                        _effective_send_kwargs["reply_to_message_id"] = _resolved_reply_id
+                        _effective_send_kwargs.pop("reply_to_message_id", None)
                         _effective_send_kwargs.pop("reply_parameters", None)
+                        _effective_send_kwargs.update(build_reply_kwargs(_resolved_reply_id))
                         logger.info(
                             "User-session upload reply anchor resolved: user=%d route=%s bot_msg_id=%s session_msg_id=%s",
                             _acc_user_id,
@@ -8542,21 +8544,32 @@ async def download_and_send_media(
                         _safe_session_fp(_fallback_sess),
                         reason,
                     )
-                    _fallback_send_fn = _msf(
-                        target_chat_id=_target_chat_id,
-                        msg_type=msg_type,
-                        file_path=file_path,
-                        send_kwargs=_direct_send_kwargs,
-                        video_meta=_video_meta,
-                        thumb_path=_thumb_path,
-                        progress_cb=_upload_cb,
-                        doc_file_name=_doc_file_name,
-                    )
                     _fb_worker = await _wr.get_or_create(
                         _acc_user_id,
                         _fallback_sess,
                         bot_id=_target_chat_id,
                         bot_username=_bot_username,
+                    )
+                    # Re-resolve for the fallback session. A previous worker's
+                    # message IDs are private to that account's bot dialog.
+                    _fallback_kwargs = dict(_send_kwargs)
+                    _fallback_kwargs.pop("reply_to_message_id", None)
+                    _fallback_kwargs.pop("reply_parameters", None)
+                    if get_reply_message_id(_send_kwargs) is not None:
+                        try:
+                            _fb_reply_id = await _fb_worker.resolve_bot_reply_message_id(reply_base)
+                            _fallback_kwargs.update(build_reply_kwargs(_fb_reply_id))
+                        except Exception as _fb_reply_err:
+                            logger.debug("Fallback reply resolution skipped: %s", _fb_reply_err)
+                    _fallback_send_fn = _msf(
+                        target_chat_id=_target_chat_id,
+                        msg_type=msg_type,
+                        file_path=file_path,
+                        send_kwargs=_fallback_kwargs,
+                        video_meta=_video_meta,
+                        thumb_path=_thumb_path,
+                        progress_cb=_upload_cb,
+                        doc_file_name=_doc_file_name,
                     )
                     logger.info(
                         "Upload fallback worker ready: route=%s request_user=%d uploader_user_id=%s session_fp=%s",
@@ -8783,7 +8796,12 @@ async def download_and_send_media(
                     pass
         
         if status_msg:
-            await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+            # Delivery already succeeded. A progress-message cleanup failure
+            # must not trigger a retry that sends the media twice.
+            try:
+                await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+            except Exception as cleanup_err:
+                logger.debug("Upload status cleanup failed: %s", cleanup_err)
         
         return True
 
@@ -9037,7 +9055,7 @@ async def handle_poll(
 
 async def handle_quizbot_post(client: Client, message: Message, source_msg) -> bool:
     """
-    Handle QuizBot posts - sends ALL content as ONE single message.
+    Handle QuizBot posts with text start links and remaining inline buttons.
     
     Combines:
     - Quiz text/description
@@ -9045,63 +9063,57 @@ async def handle_quizbot_post(client: Client, message: Message, source_msg) -> b
     - QuizBot start links
     - Inline buttons (preserved)
     
-    All in ONE message, not split across multiple messages.
+    Uses one message when it fits, otherwise existing entity-aware splitting.
     """
     try:
-        # Build combined message content
-        parts = []
+        from core.text_renderer import extract_to_renderer
         
-        # 1. Original message text (quiz description)
-        if source_msg.text:
-            parts.append(source_msg.text)
-        elif source_msg.caption:
-            parts.append(source_msg.caption)
+        if getattr(source_msg, "text", None):
+            text, entities = get_text_with_entities(source_msg)
+        else:
+            text, entities = get_caption_with_entities(source_msg)
         
-        # 2. Extract and append QuizBot links
         quizbot_links = extract_quizbot_links(source_msg.reply_markup)
         if quizbot_links:
-            parts.append("")  # Empty line separator
-            parts.append("🤖 **QuizBot Start:**")
-            for link in quizbot_links:
-                parts.append(link)
-        
-        if not parts:
+            text = (text + "\n\n" if text else "") + "🤖 Testni boshlash:\n" + "\n".join(quizbot_links)
+        if not text:
             return False
         
-        # Combine all parts into single message
-        combined_text = "\n".join(parts)
-        
-        # Preserve inline buttons (excluding QuizBot start buttons which we already extracted)
+        # Only the start buttons become text links; preserve every other row.
         reply_markup = None
-        if source_msg.reply_markup and hasattr(source_msg.reply_markup, 'inline_keyboard'):
-            # Keep non-QuizBot buttons
-            filtered_rows = []
-            for row in source_msg.reply_markup.inline_keyboard:
-                filtered_buttons = []
-                for button in row:
-                    if hasattr(button, 'url') and button.url:
-                        # Skip QuizBot start buttons (already in text)
-                        if 'quizbot' in button.url.lower() and 'start=' in button.url.lower():
-                            continue
-                    filtered_buttons.append(button)
-                if filtered_buttons:
-                    filtered_rows.append(filtered_buttons)
-            
-            if filtered_rows:
-                reply_markup = InlineKeyboardMarkup(filtered_rows)
+        if source_msg.reply_markup and hasattr(source_msg.reply_markup, "inline_keyboard"):
+            rows = [
+                [button for button in row if getattr(button, "url", None) not in quizbot_links]
+                for row in source_msg.reply_markup.inline_keyboard
+            ]
+            rows = [row for row in rows if row]
+            if rows:
+                reply_markup = InlineKeyboardMarkup(rows)
         
-        # Send as ONE single message
-        await client.send_message(
-            message.chat.id,
-            combined_text,
-            **build_reply_kwargs_from_message(message),
-            reply_markup=reply_markup,
-            **build_link_preview_kwargs(is_disabled=True)
-        )
-        
-        return True
-        
+        # Appending links leaves the original UTF-16 entity offsets unchanged.
+        chunks = extract_to_renderer(text, entities or []).render_chunks(TELEGRAM_MESSAGE_LIMIT)
+        sent_any = False
+        for i, (chunk_text, chunk_entities) in enumerate(chunks):
+            if not chunk_text:
+                continue
+            sent = await client.send_message(
+                chat_id=message.chat.id,
+                text=chunk_text,
+                entities=chunk_entities or None,
+                parse_mode=ParseMode.DISABLED,
+                reply_markup=reply_markup if i == len(chunks) - 1 else None,
+                **build_reply_kwargs_from_message(message),
+                **build_link_preview_kwargs(is_disabled=True),
+            )
+            if not sent:
+                return False
+            sent_any = True
+        return sent_any
+    except FloodWait:
+        raise
     except Exception as e:
+        if is_floodwait_error(e):
+            raise
         logger.warning(f"handle_quizbot_post error: {e}")
         return False
 

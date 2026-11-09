@@ -1663,6 +1663,19 @@ ham qo‘llandi; mavjud Wzgram reply/storage patchlari saqlandi. Wzgram full
 pytest — 304 passed, 22 subtests passed; verify_migration — 638 import symbols,
 0 failures; pip check va git diff --check o‘tdi. Real bot ishga tushirilmadi.
 
+## BUG-080: Owner log kanal sozlamasi yangi serverga tiklanmaydi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Sabab: ChatLogSettings faqat lokal data/chat_log.json ishlatgan, MongoDB backup yo'q.
+Yechim: bot ID bilan scope qilingan userdb.bot_settings policy backup/restore, legacy JSON migration, persistent pending_sync va 60s retry qo'shildi. off/remove/reset ko'chirishda saqlanadi; reset yangi ENVni ishlatadi. /logchannel status va save javobi sync holatini ko'rsatadi.
+
+## BUG-081: Main branch bot progresslarini log kanalga forward qiladi
+**Sana:** 2026-11-05
+**Holat:** ✅ Hal qilindi
+
+Sabab: wzgram branchidagi progress filtri mainda yo'q edi. Yechim: mavjud progress detector, send/edit filtri va forward oldidan queued bot textni qayta tekshirish main'ga qo'llandi. User texti/media captioni va final natijalar filtrlanmaydi.
+
 
 ## BUG-082: VideoNote upload parse_mode TypeError va owner hisobot yo'qolishi
 **Sana:** 2026-11-05
@@ -1671,6 +1684,108 @@ pytest — 304 passed, 22 subtests passed; verify_migration — 638 import symbo
 Service logi: VideoNote worker yuborishida TypeError: Got unexpected keyword argument(s): {'parse_mode'}. make_send_fn caption/caption_entities ni olib tashlagan, lekin parse_mode qolgan; Wzgram send_video_note uni qabul qilmaydi. VideoNote kwargsdan parse_mode ham olib tashlandi.
 
 Ownerga hisobot yo'qolishi sababi: failure classifier PARSE tokeni sabab parse_mode TypeErrorni USER_INPUT_ERROR deb olgan. Programming exceptionlar endi URL-parse keywordlaridan oldin SYSTEM_FAILURE bo'ladi. System incident uchun qo'shimcha session/channel verification muvaffaqiyatsiz bo'lishi hisobotni to'xtatmaydi: verification issue aniq yoziladi, oddiy deleted/FloodWait siyosati saqlanadi. Userga ichki yuborish xatosi aniqroq aytiladi.
+
+## BUG-083: Ko'rinmas belgi bilan nusxalangan bot havolasi rad etiladi
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: `https://t.me/b/filmlaruzbot/60131` oxiridagi U+2060 word joiner
+`str.strip()` bilan o'chmaydi va anchored URL regex mos kelmaydi.
+Yechim: asosiy parser faqat URL chetlaridagi whitespace, U+200B, U+200E,
+U+200F, U+2060 va BOM belgilarini tozalaydi; ichki path/query saqlanadi.
+Regression: bot route, chat va post ID, ko'rinmas edge belgilar hamda ichki
+query belgilarini o'zgartirmaslik tekshirildi.
+
+## BUG-084: Owner sozlamalari restart/boshqa serverda eski holatga qaytadi
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: rate/parallel limitlar va maintenance faqat RAMda. Global rol policy,
+autoarchive, monitored channels, owner session registry/premium/download
+sozlamalari esa lokal JSONda; yangi serverda yo'q yoki eski nusxa ishlatilgan.
+Yechim: core/owner_settings.py — bot ID bilan private MongoDB bot_settings
+owner_settings:<bot_id>, atomik lokal pending journal, startup restore va 60s
+retry. Runtime counter/task/flood holatlari ko'chirilmaydi. Limit/maintenance
+commandlari durable write qiladi; owner config command/callbacklaridan keyin
+faqat o'zgargan fayllar checkpoint qilinadi. Empty list, deletion va off ham
+saqlanadi. Local pending stale remote'dan ustun; Mongo yo'q bo'lsa xabar beriladi.
+Startup restore session/pool initializationdan oldin bajariladi. Log policy
+avvalgi alohida chat_log:<bot_id> saqlashini davom ettiradi.
+
+Qo'shimcha shu auditda: /enable_global_sessions get_global()dan foydalangan,
+lekin u faqat enabled sessiyalarni qaytaradi. O'chirilgan globallar hech qachon
+yoqilmagan. Endi get_all()dan GLOBAL turini tanlab enable qiladi; dedicated
+sessiyalar tegilmaydi. Offline regression qo'shildi.
+
+## BUG-085: Login/owner boshqaruv log shovqini va direct upload logi yo'q
+
+Status: ✅ Tuzatildi (2026-11-05).
+Sabab: private observer barcha command va auth dialogini kontent deb olgan.
+Direct user-session upload bot send wrapperidan o'tmaydi; sender-side message
+IDni bot-side ID o'rnida ishlatib bo'lmaydi.
+Yechim: command/control chat holati va login/qrlogin auth filtri; phone/OTP/
+password/QR/control response va editlar chiqariladi, keyingi Telegram linkda
+kontent logi tiklanadi. Direct legacy/SM/split/album delivery hooklari mavjud
+get_bot_real_message_id orqali bounded background resolution qiladi va bot-side
+message'ni existing ordinary-forward queuega beradi. Incoming update bilan
+dedup, max 32 resolution task, timeout, nonfatal errors, shutdown cancellation.
+User media delivery/routing o'zgarmaydi, user sessionga logger attach qilinmaydi.
+
+## BUG-086: O'zbekcha download/upload status logga tushadi
+
+Status: ✅ Tuzatildi (2026-11-05). Progress filtri faqat inglizcha asosiy
+statuslarni tanigan. Yuklanmoqda, Yuborilmoqda va navbatdan yuklash statuslari
+qo'shildi; user havolasi, oddiy chat va yakuniy bot javobi saqlanadi.
+
+## BUG-087: Userdata HTMLda oxirgi kanal/guruh postiga clickable link yo'q
+
+Status: ✅ Tuzatildi (2026-11-05). Latest message ID yig'ilgan, lekin HTMLda
+post anchor yo'q edi. Normalize public username/post va private -100 peer uchun
+t.me/c/chat/post hosil qiladi; HTML Latest post linkini ko'rsatadi. Basic group,
+bo'sh chat va private user chat uchun soxta link yaratilmaydi. Qo'shimcha RPC yo'q.
+
+## BUG-088: Private range FloodWait bilan to'xtasa ham yakunda «Tugadi» yoziladi
+
+Status: ✅ Tuzatildi (2026-11-07).
+Sabab: process_private_posts >120s FloodWait yoki consecutive error sabab loopdan
+break qiladi, so'ng umumiy final status avvalgi ogohlantirishni «Tugadi» bilan
+almashtiradi. Owner range diagnostikasida 161-post uploadida 290s FloodWait
+aniqlandi; 129 hisobida albumlar bittadan sanalgan (115 single + 14 album).
+Yechim: stop_summary final statusda ustun; FloodWait va qayta boshlash post IDsi,
+joriy/qolgan ID soni, avtomatik resume yo'qligi ko'rsatiladi. Error-stop sababi
+ham saqlanadi; unpin va batch cleanup bajariladi. Upload retry/routing o'zgarmadi.
+Offline testlar throttle bor/yo'q holatlarda flood, error-stop va normal yakunni
+tekshiradi. Telegramga live xabar yuborilmadi; service restart qilinmadi.
+
+## BUG-089: Private range FloodWaitdan keyin joriy postni o'tkazadi yoki to'xtaydi
+
+Status: ✅ Tuzatildi (2026-11-07).
+User yangi talabi: qaysi postga yetganini aytsin, kutib avtomatik davom etsin.
+Avval <=120s waitdan keyin iterator keyingi postga o'tgan, >120s da to'xtagan.
+Endi FloodWait/FloodPremiumWait uchun bot post ID, yuborilgan post/album soni,
+kutish va avtomatik davom etishni bildiradi. Telegram muddati +1s kutiladi;
+5s bo'lakli sleep va activity ping, /stop yoki task cancellation saqlanadi.
+Joriy post muvaffaqiyatigacha iterator oldinga o'tmaydi; takroriy flood ham kutadi.
+Private job callback split helper va album uploaderga ulanadi: faqat joriy chunk/
+media batch qayta yuboriladi. Boshqa callerlar split retry defaultlarini saqlaydi.
+Muvaffaqiyatli mediadagi status-delete FloodWait qayta upload chaqirmaydi.
+BUG-088ning «avtomatik davom etmaydi» xabari shu talab bilan almashtirildi;
+consecutive-error stop finali saqlanadi. Live send/restart bajarilmadi.
+
+## BUG-090: Wzgram direct upload juda eski, aloqasiz bot xabariga reply qiladi
+
+Status: ✅ Tuzatildi (2026-11-07).
+Sabab: reply builder native reply_parameters qaytaradi, lekin legacy va Premium
+direct upload ID remapping faqat reply_to_message_idni o'qigan. Natijada botdagi
+ID user sessiyaga tekshirilmasdan ketgan. SessionManager native IDni yo'qotgan.
+Resolver bir xil matnli 15 daqiqagacha eski headerni ham mos deb qabul qilgan.
+Yechim: umumiy native/legacy ID extraction; direct va Premium yo'llarda sessiya
+IDsi resolve qilinadi, native reply kwargs qayta quriladi; pooldan userga fallback
+ham yangi workerda qayta resolve qiladi. SM native replyni ham saqlaydi va copy
+uchun bot IDni ishlatadi. SM resolverga haqiqiy reply_base beriladi.
+Anchor text/date va sender bot ID tekshiriladi (1s timestamp tolerance); noaniq
+moslikda reply olib tashlanadi. Tasdiqlangan mapping worker connectionda bounded
+cache qilinadi, disconnectda tozalanadi; boshqa request headeri bilan aralashmaydi.
+User 255-postdagi eski FloodWait-stop statusini ham ko'rsatdi: bu logdagi holat
+avtomatik resume commitidan oldin sodir bo'lgan. Live restart/send bajarilmadi.
 
 ## BUG-091: Kanal rasmi almashtirilgan post yuborilmasa ham muvaffaqiyat sanaladi
 
@@ -1762,7 +1877,7 @@ Wzgram moslashtirish (2026-11-09): BUG-091–094 origin/wzgramga ham qo'llandi.
 Mavjud account-level upload coordinator/worker/split cooldown saqlandi. Full
 offline pytest: 354 passed/22 subtests; migration: 654 symbols/0 failures;
 pip check toza. Live send yoki restart bajarilmadi.
-## BUG-095: Alwaysdata service restart SIGHUP shutdown handleriga ulanmagan
+## BUG-097: Alwaysdata service restart SIGHUP shutdown handleriga ulanmagan
 **Sana:** 2026-11-09
 **Holat:** ✅ Hal qilindi
 
@@ -1770,3 +1885,53 @@ Alwaysdata servis restartida SIGHUP yuboradi; bot faqat SIGINT/SIGTERM ni
 ushlagan. POSIX SIGHUP mavjud bo'lsa, mavjud shutdown_handlerga ulash qo'shildi.
 Single-instance, sessiyalar va upload routing o'zgarmadi. Izolyatsiyalangan
 signal registration/handler tekshiruvi o'tdi; live bot ishga tushirilmadi.
+## BUG-095: Topic quiz xabarida boshlash havolasi matnga qo'shilmaydi
+
+Status: ✅ Tuzatildi (2026-11-09).
+User UZTURK & IRODAHOCA quiz misolida avvalgidek boshlash URLi matnga
+qo'shilishini, qolgan inline tugmalar saqlanishini so'radi. noquote forwardda
+inline tugmalar yo'qolishi sabab start havolasining matnda qolishi kerak.
+Sabab: process_single_topic_message textni SmartRenderer orqali yuborib,
+oddiy postdagi handle_quizbot_post yo'lini chetlab o'tgan.
+Yechim: topik textida QuizBot start URLi bo'lsa mavjud handler ishlatiladi.
+Queued yo'l ham shu handlerga birlashtirildi; «Testni boshlash» va URL matnga
+qo'shiladi, faqat start tugmalari olib tashlanadi, qolgan button/rowlar qoladi.
+Original text/caption plain str va entitylari saqlanadi; uzun matn existing
+UTF-16 renderer bilan bo'linadi, markup oxirgi chunkda. Manba o'zgarmaydi.
+Text faqat bot orqali; reply anchor va FloodWait propagation saqlanadi.
+Bu Telegramning keyingi forwardida tugmalarni saqlashini o'zgartirmaydi;
+matnga qo'shilgan start URL tugmalarsiz ham mavjud bo'ladi.
+
+Offline regression: topic/post/queued, emoji entities, uzun matn, aralash URL va
+inline-switch tugmalar, caption fallback, no-delivery va FloodWait (9 test).
+Live Telegram send yoki bot restart bajarilmadi.
+Tekshiruv: 51 focused, full pytest 431 passed/22 subtests; Wzgram migration,
+pip check, py_compile va git diff --check o'tdi.
+
+## BUG-096: Owner chati log guruhiga tushadi, user istisnolari yo'q
+
+Status: ✅ Tuzatildi (2026-11-09).
+Sabab: private chat observer faqat command/auth/progress filtrlarini qo'llagan;
+ownerning oddiy matni, havolalari, media va bot javoblarini ham loglagan.
+Yechim: OWNER_ID doim chiqariladi; user istisnolari LogPolicy.excluded_user_ids
+orqali mavjud atomic JSON va bot-scoped MongoDB backupga qo'shildi.
+/logchannel exclude <user_id>, include <user_id>, excluded — faqat owner.
+Istisnolar set/on/off/remove/reset va server ko'chirishda saqlanadi; ownerni
+include qilib bo'lmaydi. Bo'sh ro'yxat ham MongoDB $setga yoziladi, shunda
+oxirgi istisno o'chirilganda eski remote qiymat qayta tiklanmaydi.
+Inbound/outbound/edit/album, direct upload resolution va queued deliveryda guard
+bor. User delivery/routing o'zgarmaydi; allaqachon yuborilgan eski loglar
+o'chirilmaydi. Live Telegram send va service restart bajarilmadi.
+Tekshiruv: full pytest 444 passed/22 subtests; verify_migration.py 0 failures;
+pip check, py_compile va git diff --check o'tdi.
+
+## BUG-098: Wzgram branch va lokal papka main tuzatishlaridan ortda qolgan
+
+Status: ✅ Tuzatildi (2026-11-09).
+Sabab: ayrim main commitlari qo'lda port qilingan; qolgan owner-settings, log,
+FloodWait resume, reply va quiz tuzatishlari ko'chirilmagan. Alohida clone va
+sync worktree turli headlarda qolgan.
+Yechim: main tarixi Wzgramga merge qilindi; account upload coordinator,
+part-level cooldown, native Wzgram patchlari va Alwaysdata SIGHUP saqlandi.
+Takror progress detector olib tashlandi; BUG-095 raqam konflikti uchun
+Alwaysdata yozuvi BUG-097ga ko'chirildi. ENV/runtime credential o'zgarmadi.

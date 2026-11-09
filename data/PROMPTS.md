@@ -1349,6 +1349,159 @@ User main'dagi oxirgi VideoNote/owner-report tuzatishini wzgram branchiga ham qo
 Tekshiruv: full pytest 313 passed, 22 subtests passed; pip check toza; verify_migration 640 symbols, 0 failures; git diff --check o'tdi. Testlar mavjud main .venv interpreterida wzgram repository CWD bilan bajarildi; real bot start/restart yoki Telegramga xabar yuborilmadi.
 
 UMUMIY YO'NALISH: VideoNote va owner diagnostics fix endi main va wzgramda bir xil. Bu task log-policy MongoDB funksiyasini wzgramga ko'chirishni o'z ichiga olmaydi.
+## Sessiya (2026-11-05) — Alwaysdata main service tayyorgarligi
+
+So'rov: main branch botini Alwaysdata service sifatida sozlash. Python 3.11 .venv, requirements va static FFmpeg o'rnatildi. start-service.sh foreground entrypoint va ALWAYSDATA.md panel yo'riqnomasi qo'shildi. .env namunasi private fayl sifatida yaratildi; Telegram qiymatlari hali kiritilmagan. Panel/API kirishi bo'lmagani uchun service hali ro'yxatdan o'tkazilmadi va bot start qilinmadi.
+
+Tekshiruv: sh -n, pip check, verify_migration (635 symbols, 0 failures), pytest (276 passed, 22 subtests passed).
+
+UMUMIY YO'NALISH: main Alwaysdata service orqali ishlasin; .env to'ldirilib paneldagi service qo'shilgach live holat tekshirilsin.
+
+
+## Sessiya (2026-11-05) — Log policy MongoDB va progress filtri
+
+So'rov: owner log kanal sozlamasi boshqa serverda ham tiklansin; download progresslari logga tushmasin. Main'ga bot ID bo'yicha MongoDB backup/restore, legacy JSON migration, off/remove/reset portability, diskda pending_sync, 60s retry va ownerga sync status qo'shildi. Mavjud wzgram progress filtri main'ga ko'chirildi: send/edit va queued bot text forwarddan oldin tekshiriladi. User kontenti/media captionlari va final natijalar saqlanadi. Logger va sync tasklari birgalikda cancel qilinadi.
+
+Tekshiruv: 46 focused test; full pytest 296 passed, 22 subtests passed. pip check toza, verify_migration 635 symbols/0 failures, git diff --check o'tdi. Haqiqiy mavjud log policy MongoDBga saqlandi: synced; Telegramga test xabari yuborilmadi. Alwaysdata service boshqa hostda boshqariladi, panel Restart kerak; shu sessiyada service restart qilinmadi.
+
+UMUMIY YO'NALISH: owner log policy bir xil BOT_TOKEN/DB_URI bilan serverlar orasida tiklansin; progresslar logni to'ldirmasin. Bu vazifa main branchida, wzgram nusxasiga MongoDB yangilanishi kiritilmadi.
+
+
+## Sessiya (2026-11-05) — Post o'tkazib yuborilishi va owner diagnostikasi
+
+User Shukrona Standart 7-P post 3 generic skip xabarini ko'rsatib, nega ownerga sabab yuborilmaganini so'radi. Service logida VideoNote send_video_note parse_mode TypeError topildi; keyword olib tashlandi. failure_classifier PARSE substring orqali shu exceptionni USER_INPUT_ERRORga aylantirgan; programming exception precedence tuzatildi. Reportable system failure uchun verification failure endi reportni bekor qilmaydi, verification issue yoziladi. Userga ichki upload xatosi aniqroq aytiladi.
+
+Tekshiruv: 9 yangi offline regression; full pytest 305 passed, 22 subtests passed; pip check, verify_migration 637 symbols/0 failures, git diff --check o'tdi. Live Telegramga owner report yoki retry yuborilmadi, service restart qilinmadi.
+
+UMUMIY YO'NALISH: ichki upload xatolari aniq exception bilan ownerga borsin; deleted/FloodWait kabi oddiy Telegram holatlari avvalgi siyosatda qolsin. Main branch yangilanadi; Alwaysdata service Restartdan keyin yangi kodni yuklaydi.
+
+## Sessiya (2026-11-05) — Bot chat havolasidagi ko'rinmas belgi
+
+So'rov: /b/filmlaruzbot/60131 havolasi Invalid URL format qaytardi.
+User matnidagi oxirgi U+2060 parserni buzayotgani aniqlandi. Asosiy URL
+parserga faqat chetdagi ko'rinmas copy/paste belgilarini tozalash va offline
+regression testlar qo'shildi. Upload/session routing o'zgarmadi.
+UMUMIY YO'NALISH: Telegramdan nusxalangan havolalar ko'rinmas edge belgilar
+sabab rad etilmasin; live xabar yuborish yoki bot restart bajarilmasin.
+
+## Sessiya (2026-11-05) — Owner command sozlamalarini portable qilish
+
+So'rov: boshqa joyda ishlaganda qaytib qoladigan owner commandlarni aniqlash
+va tuzatish. RAM-only rate/parallel/maintenance; lokal-only global role,
+autoarchive, channel monitor va owner session configuration aniqlandi.
+Bot-scoped Mongo backup/restore, atomik pending local journal, deletion/off,
+legacy migration va retry qo'shildi. Owner commandlar checkpoint bilan ulandi;
+limit/maintenance uchun sync holati ko'rsatiladi. Session credentials faqat
+mavjud private DB/local storageda; Git/log/statusga chiqarilmaydi.
+UMUMIY YO'NALISH: bir BOT_TOKEN va DB_URI ishlatilganda owner sozlamalari
+yangi serverda tiklansin; runtime upload/flood/task holati saqlanmasin.
+Live bot restart yoki Telegram send bajarilmadi; startup migration Restartdan
+keyin ishlaydi. Ilgari RAMdan yo'qolgan limitlarni user qayta belgilashi kerak.
+
+Tekshiruv: 11 yangi owner-settings regression, full pytest 318 passed,
+22 subtests passed; verify_migration 637 symbols/0 failures, pip check va
+git diff --check o'tdi. /stats owner settings sync holatini ko'rsatadi.
+Qo'shimcha /enable_global_sessions disabled globallarni topmayotgan xato
+ham tuzatildi. Mavjud /ban va individual /setrole user DB saqlashi saqlandi.
+
+## Sessiya (2026-11-05) — Auth/control log filtri va direct media log
+
+So'rov: /ownerhelp, autoarchive, /login telefon/OTP va /start javoblari logda
+kerak emas; user session uploadlari esa ko'rinsin. Command/control/auth dialog
+filtri, queued bot-text recheck va direct delivery uchun bot-side ID resolver
+ulandi. Media asl chatdan bot identity bilan ordinary forward qilinadi;
+copy/reupload yoki user session logger monkey-patch yo'q. Upload natijasi log
+xatosidan buzilmaydi; resolution bounded background task, stopda cancel.
+UMUMIY YO'NALISH: logda so'rov havolasi va kontent bo'lsin; login maxfiylari
+va boshqaruv/progress shovqini bo'lmasin. Avval logga ketgan xabarlar avtomatik
+o'chirilmadi; live Telegram send/restart bajarilmadi.
+
+Tekshiruv: 9 yangi log regression case; full pytest 327 passed,
+22 subtests passed; migration 637 symbols/0 failures, pip check va whitespace
+tekshiruvi o'tdi. Direct send hook user session natijasini aynan qaytarishi va
+bot.copy_message qo'shmasligi ham tekshirildi.
+
+## Sessiya (2026-11-05) — Logdagi suhbat va statuslarni qayta tekshirish
+
+So'rov: user yuborgan havola va keyingi user/bot suhbati logda bo'lsin,
+download/upload statuslari bo'lmasin. O'zbekcha Yuklanmoqda/Yuborilmoqda va
+navbatdan yuklash statuslari filtrda yo'qligi aniqlandi va tuzatildi.
+Havola va yakuniy javob saqlanishi test qilindi; oldingi auth filtri saqlandi.
+
+## Sessiya (2026-11-05) — Userdata HTML oxirgi post havolasi
+
+So'rov: kanal/guruhlarning oxirgi post havolasini HTML hisobotiga qo'shish.
+Yig'ilgan latest_message_id asosida public va private supergroup/channel uchun
+clickable Latest post qo'shildi. ID mavjud emas/basic group bo'lsa unavailable.
+User private chatlari uchun link yo'q; qo'shimcha Telegram so'rovi ishlatilmaydi.
+
+## Sessiya (2026-11-05) — Userdata report captionida user identity
+
+So'rov: User Data Inventory ID / HTML metadata report yozuvi yoniga ism va
+username qo'shish. Target user profili bot get_users orqali bounded olinadi;
+HTML/XLSX captioniga ism va @username, yo'q bo'lsa aniq fallback qo'shildi.
+
+## Sessiya (2026-11-05) — /usersdata owner hisoboti
+
+So'rov: sessiyasi mavjud userlar ism, ID, Telegram Premium HTML ro'yxati.
+Aniqlashtirish: faqat sessiyasi ishlaydiganlar yuborilsin. Owner-private command,
+registered user enumeration + session tekshirish, get_me ID mosligi, real Telegram
+Premium va username; ishlamagan/tasdiqlanmaganlar chiqariladi. Sequential bounded
+context-manager checks, duplicate job guard, temporary escaped HTML qo'shildi.
+Session/phone hisobotga chiqmaydi, DB/session holati o'zgartirilmaydi.
+
+Tekshiruv: 4 mocked regression, full pytest 340 passed/22 subtests,
+verify_migration 640 symbols/0 failures, pip check va whitespace o'tdi.
+Haqiqiy user sessiyalarini ommaviy tekshirish yoki bot restart bajarilmadi;
+owner /usersdata yuborganda live tekshiruv ishlaydi.
+
+## Sessiya (2026-11-07) — Owner range 129/478 bilan tugashi
+
+So'rov: owner sessiyasidagi private 7-484 range nega 129/478, 14 album va
+5 deleted bilan «Tugadi» qaytarganini aniqlash. Lokal log 161-postda upload
+FloodWait 290s berganini ko'rsatdi; >120s bo'lgani sabab batch to'xtagan.
+129 hisoblagich 115 alohida post va 14 albumdan iborat; jami media soni emas.
+BUG-088: final status oldingi stop ogohlantirishini o'chirib yuborgan.
+Stop sababi finalda saqlanadi, kutish muddati va qayta boshlash IDsi,
+avtomatik davom etmasligi aniq ko'rsatiladi. Retry/session/media routing saqlandi.
+Tekshiruv: 32 focused test, full pytest 346 passed/22 subtests; diff check o'tdi.
+Live Telegram send/restart bajarilmadi.
+
+UMUMIY YO'NALISH: to'liq bajarilmagan range «Tugadi» deb ko'rsatilmasin;
+Telegram cheklovi va qolgan postlarni qayta boshlash nuqtasi tushunarli bo'lsin.
+
+## Sessiya davomi (2026-11-07) — FloodWaitdan avtomatik davom etish
+
+So'rov: userga qayerga yetganini aytish, qo'lda qayta boshlash talab qilmasdan
+kutib o'sha joydan avtomatik davom etish. Private range endi botdan post ID va
+kutish statusini yuboradi, Telegram muddati +1s kutib joriy postni retry qiladi.
+Qisqa/uzun/takroriy va premium flood holatlari qo'llanadi, /stop ishlaydi.
+Split va album uploadlar o'z joriy chunk/batchida davom etadi. Status cleanup
+floodi muvaffaqiyatli mediani takrorlatmaydi. Routing/session tanlash saqlandi.
+Avvalgi «avtomatik davom etmaydi» yo'nalishi shu talab bilan almashtirildi.
+
+UMUMIY YO'NALISH: private range uchun userga yetib kelgan post va kutish
+aytilsin, qo'lda restart talab qilmay FloodWaitdan keyin davom etsin.
+Bot process restartidan keyin jobni diskdan tiklash bu o'zgarishga kirmaydi.
+
+Tekshiruv: 48 focused regression, full pytest 362 passed/22 subtests;
+git diff --check o'tdi. Live Telegram send/service restart bajarilmadi.
+
+## Sessiya davomi (2026-11-07) — Reply aloqasiz eski bot xabariga bog'lanishi
+
+So'rov: 255-post FloodWait statusi yonidagi media reply juda eski bot xabarini
+ko'rsatmoqda. User «umuman juda oldingi bot xabariga» deb aniqlashtirdi; reply
+maqsadini o'zgartirish so'ralmagan. Native reply_parameters IDsi direct upload
+remappingni chetlab o'tayotgani topildi (BUG-090). Legacy/Premium/SessionManager/
+pool fallback native reply bilan moslandi. Resolver bot sender/text/date bilan
+tekshiradi; eski bir xil source headerni qabul qilmaydi, verified mapping cache
+qilinadi. Topilmaganida replysiz yuboriladi. Media/text routing saqlandi.
+
+UMUMIY YO'NALISH: user sessiyaga bot message ID hech qachon tasdiqsiz ketmasin;
+reply boshqa eski xabarni ko'rsatmasin. Live send/restart bajarilmasin.
+
+Tekshiruv: 18 focused reply regression va native/legacy SessionManager case;
+full pytest 381 passed/22 subtests, git diff --check o'tdi.
 
 ## Sessiya (2026-11-09) — 105–107 range yolg'on muvaffaqiyati
 
@@ -1465,6 +1618,57 @@ shell syntax, missing-config launcher va isolated SIGHUP check o'tdi.
 
 Pushdan oldin remote wzgramdagi 3 yangi commit saqlandi va lokal commit
 ular ustiga rebase qilindi; faqat BUGS/PROMPTS append konfliktlari ikkala
-matnni saqlagan holda yechildi. Alwaysdata yozuvi BUG-095 deb raqamlandi.
+matnni saqlagan holda yechildi. Alwaysdata yozuvi dastlab BUG-095, sinxronlashda BUG-097 deb raqamlandi.
 Birlashtirilgan holat: 354 passed, 22 subtests passed; migration 654 symbols,
 0 failures. Secret va runtime fayllar commitga kirmaydi.
+## Sessiya (2026-11-09) — Quiz boshlash havolasini matnda saqlash
+
+So'rov: UZTURK & IRODAHOCA A2 Istanbul quizida avvalgidek boshlash URLini
+matnga qo'shish, qolgan inline tugmalarni saqlash. User tasdiqladi va noquote
+forward qilganda inline tugmalar yo'qolishini sabab sifatida aniqlashtirdi.
+BUG-095: topic text yo'li mavjud quiz handleriga ulandi; queued va oddiy
+quizlar ham yagona entity-aware handlerdan o'tadi. «Testni boshlash» ostida URL,
+qolgan inline rowlar asl tartibda qoladi. Text bot orqali, manba o'zgarmaydi;
+UTF-16 splitting, native reply va FloodWait outer retry saqlanadi.
+
+UMUMIY YO'NALISH: quiz start URLi matnda qolsin, shunda keyingi forwardda
+tugmalar yo'qolsa ham testni ochish havolasi yo'qolmaydi. Qolgan inline tugmalar
+bot yuborayotgan xabarga saqlansin. Live send/restart bajarilmasin.
+
+Tekshiruv: 51 focused regression; full pytest 431 passed va 22 subtests passed.
+verify_migration.py: 0 failures; pip check, py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Owner va tanlangan userlarni chat logdan chiqarish
+
+So'rov: owner chatini log guruhga yubormaslik; boshqa log qilinmaydigan userlar
+uchun ham komanda kerak.
+Natija: owner uchun doimiy log guard; /logchannel exclude <user_id>,
+/logchannel include <user_id>, /logchannel excluded owner komandalariga qo'shildi.
+Istisnolar mavjud JSON/MongoDB policy bilan saqlanadi va restart/server
+ko'chirishda tiklanadi; log manzili yoki holatini almashtirish ularni o'chirmaydi.
+Navbatdagi loglar ham filtrlanadi, excluded direct upload uchun ID resolution
+boshlanmaydi. /ownerhelp va status yangilandi. BUG-096 qayd qilindi.
+
+UMUMIY YO'NALISH: owner chati hech qachon log guruhiga chiqmasin; owner boshqa
+userlarning chat logini ham persistent istisnolar bilan boshqarsin. Avvalgi
+loglar o'chirilmasin; bot avtomatik restart yoki jonli test send qilinmasin.
+
+Tekshiruv: full pytest 444 passed va 22 subtests passed; Wzgram migration
+0 failures; pip check, py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-09) — Wzgram branch va papkani to'liq sinxronlash
+
+So'rov: nega Wzgram branch/papka to'liq tuzatilmagan va sinxron emas; ENVga tegmaslik.
+Main commitlari Wzgramga tarixni saqlovchi merge bilan qo'shildi. Mongo owner/log
+policy, log exclusions/auth filter/direct media, usersdata, FloodWait resume,
+strict native reply va quiz linklar endi Wzgramda ham bor. Wzgramning account
+upload queue/cooldown va Alwaysdata entrypoint/SIGHUP saqlandi.
+
+UMUMIY YO'NALISH: wzgram remote branch, lokal clone va sync worktree bir xil
+commitda qolsin; .env fayllari o'zgarmasin. Live bot restart/send bajarilmasin.
+
+Tekshiruv: 462 passed, 22 subtests passed; Wzgram 3.1.6/WarpCrypto 2.1.0
+666 import symbols, 0 failures; pip check, AST, shell syntax, diff check o'tdi.
+Eski FloodWait-stop testlari yangi resume tartibiga moslandi; split callback
+testida mocked cooldown ham oldinga suriladi. Ikkala service entrypoint bir
+Wzgram venv launcherga yo'naltirildi. ENV hashlar o'zgarmagani tekshirildi.

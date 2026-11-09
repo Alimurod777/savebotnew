@@ -28,6 +28,8 @@ Commands:
 """
 from __future__ import annotations
 
+from core.owner_settings import persist_owner_change
+
 import asyncio
 import logging
 from types import SimpleNamespace
@@ -39,6 +41,7 @@ from wzgram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKey
 
 from config import OWNER_ID
 from database.async_db import async_db
+from core.owner_settings import owner_settings
 
 # Governance modullarni guarded import qilish
 # Agar import muvaffaqiyatsiz bo'lsa, handlerlar registratsiya qilinadi
@@ -306,6 +309,7 @@ def _format_user_state(state: dict, title: Optional[str] = None) -> str:
 # ── /ban ─────────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("ban") & filters.private)
+@persist_owner_change
 async def cmd_ban(client: Client, message: Message):
     if not _owner(message):
         return
@@ -333,6 +337,7 @@ async def cmd_ban(client: Client, message: Message):
 # ── /unban ────────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("unban") & filters.private)
+@persist_owner_change
 async def cmd_unban(client: Client, message: Message):
     if not _owner(message):
         return
@@ -360,6 +365,7 @@ async def cmd_unban(client: Client, message: Message):
 # ── /setrole ──────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("setrole") & filters.private)
+@persist_owner_change
 async def cmd_setrole(client: Client, message: Message):
     if not _owner(message):
         return
@@ -460,8 +466,10 @@ async def cmd_set_parallel(client: Client, message: Message):
     except ValueError:
         await message.reply("n must be a positive integer.")
         return
+    limits = dict(owner_settings.values.get('parallel_limits', {}), **{role.value: n})
+    await owner_settings.change('parallel_limits', limits)
     priority_queue.set_limit(role, n)
-    await message.reply(f"✅ {role.value} parallel limit → {n}")
+    await message.reply(f"✅ {role.value} parallel limit → {n}" + owner_settings.notice())
 
 
 # ── /set_rate_limit ───────────────────────────────────────────────────────────
@@ -488,8 +496,10 @@ async def cmd_set_rate(client: Client, message: Message):
     except ValueError:
         await message.reply("n must be a positive integer.")
         return
+    limits = dict(owner_settings.values.get('rate_limits', {}), **{role.value: n})
+    await owner_settings.change('rate_limits', limits)
     rate_limiter.set_limit(role, n)
-    await message.reply(f"✅ {role.value} rate limit → {n} req/10s")
+    await message.reply(f"✅ {role.value} rate limit → {n} req/10s" + owner_settings.notice())
 
 
 # ── /queue_status ─────────────────────────────────────────────────────────────
@@ -517,12 +527,15 @@ async def cmd_queue_status(client: Client, message: Message):
 # ── /enable_global_sessions / /disable_global_sessions ───────────────────────
 
 @Client.on_message(filters.command("enable_global_sessions") & filters.private)
+@persist_owner_change
 async def cmd_enable_global(client: Client, message: Message):
     if not _owner(message):
         return
     try:
         from core.session_manager import session_manager
-        recs = session_manager.registry.get_global()
+        from core.session_manager.models import SessionType
+        recs = [rec for rec in session_manager.registry.get_all()
+                if rec.type == SessionType.GLOBAL]
         count = 0
         for rec in recs:
             if not rec.enabled:
@@ -535,6 +548,7 @@ async def cmd_enable_global(client: Client, message: Message):
 
 
 @Client.on_message(filters.command("disable_global_sessions") & filters.private)
+@persist_owner_change
 async def cmd_disable_global(client: Client, message: Message):
     if not _owner(message):
         return
@@ -563,6 +577,7 @@ async def cmd_stats(client: Client, message: Message):
         f"📈 Bot Statistics\n"
         f"Active queue jobs: {total}\n"
         f"  VIP: {vip_q} | Normal: {norm_q} | New: {new_q}\n"
+        f"Owner settings sync: {owner_settings.status}\n"
     )
     try:
         from core.session_manager import session_manager
@@ -584,14 +599,15 @@ async def cmd_maintenance(client: Client, message: Message):
     if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
         await message.reply("Usage: /maintenance <on|off>")
         return
+    await owner_settings.change('maintenance', parts[1].lower() == "on")
     _maintenance_mode = parts[1].lower() == "on"
     status = "🔧 Texnik xizmat rejimi YOQILDI." if _maintenance_mode else "✅ Bot normal rejimda ishlayapti."
-    await message.reply(status)
+    await message.reply(status + owner_settings.notice())
 
 
 def is_maintenance() -> bool:
     """Called by save.py shim to gate all requests during maintenance."""
-    return _maintenance_mode
+    return owner_settings.values.get('maintenance', _maintenance_mode)
 
 
 # ── /broadcast ────────────────────────────────────────────────────────────────
@@ -671,6 +687,7 @@ async def _change_bot_archive(client: Client, message: Message, enabled: bool):
 
 
 @Client.on_message(filters.command("autoarchive") & filters.private)
+@persist_owner_change
 async def cmd_autoarchive(client: Client, message: Message):
     if not _owner(message):
         return
@@ -688,6 +705,7 @@ async def cmd_autoarchive(client: Client, message: Message):
 
 
 @Client.on_callback_query(filters.regex(r"^bot_archive:(on|off)$"))
+@persist_owner_change
 async def cb_bot_archive(client: Client, query: CallbackQuery):
     if not query.from_user or query.from_user.id != OWNER_ID:
         await query.answer("Faqat owner.", show_alert=True)
@@ -703,7 +721,8 @@ async def cb_bot_archive(client: Client, query: CallbackQuery):
 async def cmd_logchannel(client: Client, message: Message):
     if not _owner(message):
         return
-    from core.chat_log import chat_logger, LogPolicy, validate_log_chat
+    from dataclasses import replace
+    from core.chat_log import chat_logger, validate_log_chat
 
     async def reply(text):
         await client.send_message(message.chat.id, text, parse_mode=ParseMode.DISABLED)
@@ -718,28 +737,53 @@ async def cmd_logchannel(client: Client, message: Message):
                 f"Log: {'ON' if policy.enabled else 'OFF'}\n"
                 f"Manzil: {policy.chat_id or 'belgilanmagan'}\n"
                 f"Manba: {policy.source} (owner sozlamasi ENVdan ustun)\n"
+                f"MongoDB: {settings.sync_status}\n"
+                f"Owner: log qilinmaydi | Istisnolar: {len(policy.excluded_user_ids)}\n"
                 f"Navbat: {chat_logger.queue.qsize()} | Yuborildi: {chat_logger.sent}\n"
                 f"Xato: {chat_logger.failed} | Tushirib qoldirildi: {chat_logger.dropped}\n"
                 f"Oxirgi xato: {chat_logger.last_error}\n\n"
                 "/logchannel set <kanal/guruh ID yoki @username>\n"
                 "/logchannel on|off|remove|reset|test|status\n"
+                "/logchannel exclude|include <user_id>\n"
+                "/logchannel excluded — istisnolar ro‘yxati\n"
                 "reset — ENVga qaytish; remove — ENV bo‘lsa ham o‘chirish."
             )
             return
-        if action == "off":
-            await chat_logger.configure(LogPolicy(settings.policy.chat_id, False, 'owner'))
+        if action == "excluded":
+            ids = sorted(set(settings.policy.excluded_user_ids) | {OWNER_ID})
+            from core.message_utils import split_message
+            for chunk in split_message("Log qilinmaydigan userlar (owner doim kiritilgan):\n" +
+                                       "\n".join(str(uid) for uid in ids)):
+                await reply(chunk)
+            return
+        if action in ("exclude", "include"):
+            if len(parts) != 3 or not parts[2].isascii() or not parts[2].isdigit() or int(parts[2]) <= 0:
+                raise ValueError('/logchannel exclude|include <musbat user_id>')
+            uid = int(parts[2])
+            if uid == OWNER_ID:
+                await reply("Owner chati doim logdan chiqarilgan; uni yoqib bo‘lmaydi.")
+                return
+            excluded = set(settings.policy.excluded_user_ids)
+            if action == "exclude":
+                excluded.add(uid)
+            else:
+                excluded.discard(uid)
+            await chat_logger.configure(replace(settings.policy, excluded_user_ids=tuple(sorted(excluded))))
+            await reply(f"✅ {uid}: " + ("logdan chiqarildi." if action == "exclude" else "logga qaytarildi."))
+        elif action == "off":
+            await chat_logger.configure(replace(settings.policy, enabled=False, source='owner'))
         elif action == "remove":
-            await chat_logger.configure(LogPolicy(source='owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=0, enabled=False, source='owner'))
         elif action == "reset":
             if settings.env_chat_id:
                 await validate_log_chat(client, settings.env_chat_id)
-            await chat_logger.configure(LogPolicy(settings.env_chat_id, bool(settings.env_chat_id)))
+            await chat_logger.configure(replace(settings.policy, chat_id=settings.env_chat_id, enabled=bool(settings.env_chat_id), source='env'))
         elif action == "on":
             if not settings.policy.chat_id:
                 await reply("Avval /logchannel set <kanal/guruh ID> bilan manzil kiriting.")
                 return
             chat_id = await validate_log_chat(client, settings.policy.chat_id)
-            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=chat_id, enabled=True, source='owner'))
         elif action == "test":
             policy = settings.policy
             if not policy.enabled or not policy.chat_id:
@@ -754,17 +798,22 @@ async def cmd_logchannel(client: Client, message: Message):
             target = parts[2] if action == 'set' and len(parts) == 3 else (parts[1] if len(parts) == 2 and action.startswith(('-', '@')) else None)
             if target is None:
                 await reply("/logchannel set <kanal/guruh ID yoki @username>\n"
-                            "/logchannel status|on|off|remove|reset|test")
+                            "/logchannel status|on|off|remove|reset|test\n"
+                            "/logchannel exclude|include <user_id>\n/logchannel excluded")
                 return
             if target.lstrip('-').isdigit():
                 target = int(target)
             elif not target.startswith('@'):
                 raise ValueError('Kanal/guruh ID yoki @username kiriting.')
             chat_id = await validate_log_chat(client, target)
-            await chat_logger.configure(LogPolicy(chat_id, True, 'owner'))
+            await chat_logger.configure(replace(settings.policy, chat_id=chat_id, enabled=True, source='owner'))
         policy = settings.policy
         await reply(f"✅ Log sozlamasi saqlandi: {'ON' if policy.enabled else 'OFF'}\n"
-                    f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}")
+                    f"Manzil: {policy.chat_id or 'belgilanmagan'}\nManba: {policy.source}\n"
+                    f"MongoDB: {settings.sync_status}"
+                    + ("\n⚠️ Hozir faqat lokal saqlandi; boshqa serverga ko‘chirishdan oldin "
+                       "MongoDB holati synced bo‘lishini tekshiring."
+                       if settings.sync_status != 'synced' else ""))
     except ValueError as error:
         await reply(str(error))
     except Exception as error:
@@ -799,6 +848,8 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "**Log kanal/guruh:**\n"
         "/logchannel set <ID yoki @username> — log manzilini o‘rnatish/almashtirish\n"
         "/logchannel status|on|off|remove|reset|test — to‘liq boshqarish\n"
+        "/logchannel exclude|include <user_id> — user logini o‘chirish/qaytarish\n"
+        "/logchannel excluded — log qilinmaydigan userlar (owner doim)\n"
         "Owner sozlamasi ENVdan ustun; reset ENVga qaytaradi.\n\n"
         "**Bot chatini arxivlash:**\n"
         "/autoarchive on|off|status — sessiyalarda arxivlash/arxivdan chiqarish\n\n"
@@ -845,6 +896,7 @@ async def cmd_ownerhelp(client: Client, message: Message):
         "`/failed_logs` - Oxirgi 10 ta xatolik logini ko'rish\n"
         "Report faqat session faol, kanal mavjud va user kanalga a'zo ekani tasdiqlanganda ketadi.\n\n"
         "**User data inventory:**\n"
+        "`/usersdata` — Ishlaydigan sessiyali userlar: ism, ID, username va Telegram Premium (HTML)\n"
         "`/userdata <uid>` — User akkaunt inventarizatsiyasi, HTML + XLSX hisobot ownerga\n"
         "`/userdata_status <job_id>` — Job holati\n"
         "`/userdata_resume <job_id>` — To'xtatilgan jobni davom ettirish\n"
@@ -1194,6 +1246,7 @@ async def cb_retry_failed_download(client: Client, callback_query: CallbackQuery
 # ── /sessionupdate ────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("sessionupdate") & filters.private)
+@persist_owner_change
 async def cmd_sessionupdate(client: Client, message: Message):
     """Owner: /sessionupdate <user_id> <session_string> — replace a user's DB session."""
     if not _owner(message):
@@ -1223,6 +1276,7 @@ async def cmd_sessionupdate(client: Client, message: Message):
 # ── /sessionremove ────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("sessionremove") & filters.private)
+@persist_owner_change
 async def cmd_sessionremove(client: Client, message: Message):
     """Owner: /sessionremove <user_id> — clear a user's DB session."""
     if not _owner(message):
@@ -1275,6 +1329,7 @@ def _fmt_account(acc_id, username) -> str:
 
 
 @Client.on_message(filters.command("dlsession") & filters.private)
+@persist_owner_change
 async def cmd_dlsession(client: Client, message: Message):
     """Owner: /dlsession <set|user|clear|status> — download-only session override."""
     if not _owner(message):
@@ -1416,6 +1471,7 @@ def _parse_channel_id(raw: str) -> Optional[int]:
 # ── /addchannel ──────────────────────────────────────────────────
 
 @Client.on_message(filters.command("addchannel") & filters.private)
+@persist_owner_change
 async def cmd_addchannel(client: Client, message: Message):
     """
     Owner: /addchannel <channel_id> <target_chat_id> [label]
@@ -1463,6 +1519,7 @@ async def cmd_addchannel(client: Client, message: Message):
 # ── /removechannel ──────────────────────────────────────────────
 
 @Client.on_message(filters.command("removechannel") & filters.private)
+@persist_owner_change
 async def cmd_removechannel(client: Client, message: Message):
     """Owner: /removechannel <channel_id>"""
     if not _owner(message):
@@ -1520,6 +1577,7 @@ async def cmd_channels(client: Client, message: Message):
 # ── /togglechannel ───────────────────────────────────────────────
 
 @Client.on_message(filters.command("togglechannel") & filters.private)
+@persist_owner_change
 async def cmd_togglechannel(client: Client, message: Message):
     """Owner: /togglechannel <channel_id> <on|off>"""
     if not _owner(message):

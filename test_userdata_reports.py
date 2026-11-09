@@ -604,3 +604,49 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LatestPostLinks(unittest.TestCase):
+    def test_public_channel_and_private_supergroup_links_in_html(self):
+        from TechVJ.userdata_command import DialogRecord
+        records = [
+            record(title='Channel', chat_type='channel', username='example', latest_message_id=42),
+            DialogRecord(-100123456, 'group', title='Group', chat_type='supergroup', latest_message_id=77),
+        ]
+        snapshot = normalize(source(records))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'report.html'
+            render_html(snapshot, path)
+            text = path.read_text()
+        self.assertIn('href="https://t.me/example/42"', text)
+        self.assertIn('href="https://t.me/c/123456/77"', text)
+        self.assertEqual(text.count('>Latest post</a>'), 2)
+
+    def test_missing_post_and_basic_group_do_not_get_fake_links(self):
+        from TechVJ.userdata_command import DialogRecord
+        snapshot = normalize(source([
+            record(title='Empty', chat_type='channel'),
+            DialogRecord(-123456, 'group', title='Basic', chat_type='group', latest_message_id=77),
+        ]))
+        self.assertTrue(all(not row.latest_post_link for row in snapshot.records))
+
+    def test_private_chat_does_not_get_public_post_link(self):
+        from TechVJ.userdata_command import DialogRecord
+        snapshot = normalize(source([DialogRecord(123, 'private', chat_type='private',
+            username='example', latest_message_id=77)]))
+        self.assertEqual(snapshot.records[0].latest_post_link, '')
+
+
+def test_report_caption_contains_target_name_and_username():
+    async def run():
+        from TechVJ.userdata_command import _upload_report
+        sender = NS(get_users=AsyncMock(return_value=NS(
+            first_name='Ali', last_name='Valiyev', username='ali_example')),
+            send_document=AsyncMock())
+        await _upload_report(sender, 555, '/tmp/report.html', 'HTML', target_user_id=8107531182)
+        sender.get_users.assert_awaited_once_with(8107531182)
+        caption = sender.send_document.await_args.kwargs['caption']
+        assert '8107531182' in caption
+        assert 'Ism: Ali Valiyev' in caption
+        assert 'Username: @ali_example' in caption
+    asyncio.run(run())

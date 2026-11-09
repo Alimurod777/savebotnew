@@ -254,7 +254,7 @@ def test_cancelled_request_does_not_stop_worker_or_send_cancelled_file(monkeypat
 
 @pytest.mark.parametrize('premium', [False, True])
 @pytest.mark.parametrize('seconds', [8, 1912])
-def test_private_final_status_preserves_long_flood_and_partial_delivery(monkeypatch, tmp_path, premium, seconds):
+def test_private_range_resumes_after_full_flood_cooldown(monkeypatch, tmp_path, clock, premium, seconds):
     class PremiumFlood(Exception):
         ID = 'FLOOD_PREMIUM_WAIT_X'
         x = seconds
@@ -284,12 +284,16 @@ def test_private_final_status_preserves_long_flood_and_partial_delivery(monkeypa
         monkeypatch.setattr(save, 'detect_album_boundary', AsyncMock(return_value=None))
         monkeypatch.setattr(save, 'ping_activity', AsyncMock())
         monkeypatch.setattr(save, '_notify_realtime_post_failure', AsyncMock())
-        monkeypatch.setattr(save, 'process_single_post', AsyncMock(side_effect=PremiumFlood() if premium else FloodWait(seconds)))
+        process = AsyncMock(side_effect=[PremiumFlood() if premium else FloodWait(seconds), True])
+        monkeypatch.setattr(save, 'process_single_post', process)
         parsed, _ = save.parse_telegram_url('https://t.me/c/2027730307/62')
         await save.process_private_posts.__wrapped__(bot, request, parsed, context=SimpleNamespace(user_id=123))
         text = bot.edit_message_text.await_args.args[2]
-        assert f'Kutish: {seconds} soniya' in text and 'Tugallanmagan: 1' in text
-        assert 'bo‘laklar yuborilgan bo‘lishi mumkin' in text
-        assert 'avtomatik davom etmaydi' in text
-        assert 'Hech qanday' not in text
+        assert 'Tugadi' in text
+        assert process.await_count == 2
+        assert process.await_args_list[0].args[4] == process.await_args_list[1].args[4] == 62
+        assert clock[0] >= 100 + seconds + 1
+        notices = [call.kwargs['text'] if 'text' in call.kwargs else call.args[1]
+                   for call in bot.send_message.await_args_list]
+        assert any('62-postdan' in notice and str(seconds + 1) in notice for notice in notices)
     asyncio.run(run())

@@ -242,6 +242,7 @@ class UserUploadWorker:
         self._bot_username = bot_username
         self._queue: asyncio.Queue[Optional[UploadTask]] = asyncio.Queue()
         self._client: Optional[Client] = None
+        self._reply_anchor_cache: Dict[Any, int] = {}
         self._task:   Optional[asyncio.Task] = None
         self._session_user_id: Optional[int] = None
         self._running = False
@@ -309,7 +310,7 @@ class UserUploadWorker:
         reply_message: Any,
         *,
         history_limit: int = 50,
-        max_age_seconds: int = 900,
+        max_age_seconds: int = 1,
     ) -> Optional[int]:
         """
         Resolve a bot-authored reply anchor as seen by this user session.
@@ -325,9 +326,9 @@ class UserUploadWorker:
         expected_id = getattr(reply_message, "id", None) or getattr(reply_message, "message_id", None)
         expected_text = self._message_text(reply_message)
         expected_ts = self._message_timestamp(reply_message)
-        if not expected_text:
+        if not expected_text or expected_ts is None:
             logger.warning(
-                "UserUploadWorker[%d] reply anchor has no text; refusing unchecked id-only reply bot_msg_id=%s session_fp=%s",
+                "UserUploadWorker[%d] reply anchor lacks text/date; refusing unchecked reply bot_msg_id=%s session_fp=%s",
                 self._user_id,
                 expected_id,
                 self._session_fp,
@@ -338,14 +339,29 @@ class UserUploadWorker:
         if peer is None:
             return None
 
+        cache_key = (peer, expected_id, expected_ts, expected_text)
+        cached_id = self._reply_anchor_cache.get(cache_key)
+        if cached_id is not None:
+            return cached_id
+
+        def _remember(message_id: int) -> int:
+            # Only verified IDs are cached, scoped to this session connection.
+            if len(self._reply_anchor_cache) >= 128:
+                self._reply_anchor_cache.pop(next(iter(self._reply_anchor_cache)))
+            self._reply_anchor_cache[cache_key] = message_id
+            return message_id
+
         def _matches(candidate: Any) -> bool:
             if getattr(candidate, "empty", False):
                 return False
             if expected_text and self._message_text(candidate) != expected_text:
                 return False
+            sender = getattr(candidate, "from_user", None)
+            if self._bot_id is None or getattr(sender, "id", None) != self._bot_id:
+                return False
             if expected_ts is not None:
                 candidate_ts = self._message_timestamp(candidate)
-                if candidate_ts is not None and abs(candidate_ts - expected_ts) > max_age_seconds:
+                if candidate_ts is None or abs(candidate_ts - expected_ts) > max_age_seconds:
                     return False
             return True
 
@@ -360,7 +376,7 @@ class UserUploadWorker:
                         getattr(candidate, "id", None),
                         self._session_fp,
                     )
-                    return int(getattr(candidate, "id"))
+                    return _remember(int(getattr(candidate, "id")))
             except Exception as err:
                 logger.debug(
                     "UserUploadWorker[%d] reply anchor id lookup failed: bot_msg_id=%s session_fp=%s error=%s",
@@ -394,7 +410,7 @@ class UserUploadWorker:
                     getattr(best, "id", None),
                     self._session_fp,
                 )
-                return int(getattr(best, "id"))
+                return _remember(int(getattr(best, "id")))
         except Exception as err:
             logger.warning(
                 "UserUploadWorker[%d] reply anchor history lookup failed: bot_msg_id=%s session_fp=%s error=%s",
@@ -599,6 +615,7 @@ class UserUploadWorker:
             pass
 
     async def _disconnect(self) -> None:
+        self._reply_anchor_cache.clear()
         if self._client:
             try:
                 if self._client.is_connected:

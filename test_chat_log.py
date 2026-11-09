@@ -13,6 +13,11 @@ from core.chat_log import ChatLogger, ChatLogSettings, LogPolicy, validate_log_c
 from TechVJ import owner_commands, log_channel
 
 
+@pytest.fixture(autouse=True)
+def no_live_settings_db(monkeypatch):
+    monkeypatch.setattr(chat_log, '_settings_collection', lambda: None)
+
+
 def message(mid=1, text='Hello 😀', uid=123, **kwargs):
     values = dict(id=mid, text=text, caption=None, entities=[], caption_entities=[],
                   chat=SimpleNamespace(id=uid, type=ChatType.PRIVATE,
@@ -420,4 +425,194 @@ def test_final_result_on_same_progress_message_is_logged(setup):
         await manager.queue.join()
         client.forward_messages.assert_awaited_once_with(-10099, 123, 1)
         await manager.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('command', ['/ownerhelp', '/autoarchive off', '/start',
+    '/session add global PRIVATE_SESSION', '/setpremium PRIVATE_SESSION'])
+def test_control_commands_and_bot_responses_are_not_logged(setup, command):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text=command))
+        manager.submit(message(2, 'Control response', outgoing=True))
+        manager.submit(message(2, 'Updated control response', outgoing=True, edit_date='edited'))
+        await manager.queue.join()
+        client.forward_messages.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_login_phone_otp_password_qr_and_responses_are_not_logged(setup):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text='/login'))
+        for index, text in enumerate(['+998900000000', '1 2 3 4 5', 'test-password'], 2):
+            manager.submit(message(index, text))
+            manager.submit(message(index + 10, 'Login response', outgoing=True))
+        manager.submit(message(20, None, outgoing=True, photo=object()))
+        await manager.queue.join()
+        client.forward_messages.assert_not_awaited()
+        manager.submit(message(21, 'https://t.me/example/100'))
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 21)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_user_upload_resolves_bot_side_id_and_deduplicates(setup, monkeypatch):
+    async def run():
+        from core import copy_utils
+        manager, client = setup
+        resolved = message(88, None, photo=object())
+        client.get_messages.return_value = resolved
+        resolver = AsyncMock(return_value=88)
+        monkeypatch.setattr(copy_utils, 'get_bot_real_message_id', resolver)
+        await manager.start(client)
+        sent = message(999, None, uid=777, photo=object())
+        manager.submit_user_upload(client, sent, 123)
+        await asyncio.gather(*manager._upload_tasks)
+        manager.submit(resolved)  # ordinary incoming update can arrive as well
+        await manager.queue.join()
+        resolver.assert_awaited_once_with(client, 123, sent)
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 88)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_upload_resolution_failure_is_nonfatal(setup, monkeypatch):
+    async def run():
+        from core import copy_utils
+        manager, client = setup
+        monkeypatch.setattr(copy_utils, 'get_bot_real_message_id', AsyncMock(side_effect=ValueError('unresolved')))
+        await manager.start(client)
+        manager.submit_user_upload(client, message(999, None), 123)
+        await asyncio.gather(*manager._upload_tasks)
+        assert manager.failed == 1
+        client.forward_messages.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_direct_delivery_hook_preserves_user_session_message(monkeypatch):
+    async def run():
+        from TechVJ.save import _copy_user_session_upload_to_user
+        from unittest.mock import Mock
+        observer = Mock()
+        monkeypatch.setattr(chat_log, 'observe_user_upload', observer)
+        client = bot()
+        sent = message(999, None, uid=777)
+        result = await _copy_user_session_upload_to_user(
+            bot_client=client, sent_message=sent, source_user_id=123,
+            target_user_id=123, request_message=None, pre_upload_latest_id=None)
+        assert result is sent
+        observer.assert_called_once_with(client, sent, 123)
+        client.copy_message.assert_not_awaited()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('text', [
+    '⬇️ Yuklanmoqda...', '⬆️ Yuborilmoqda...',
+    '⬆️ Yuklanmoqda: 1/3', '📥 Navbatdan: 3 ta post yuklanmoqda...',
+    '📥 From queue: Bot chat downloading...',
+])
+def test_localized_transfer_status_is_not_logged(setup, text):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(1, 'https://t.me/example/123'))
+        await manager.queue.join()
+        manager.submit(message(2, text, outgoing=True))
+        manager.submit(message(3, 'Natija tayyor', outgoing=True))
+        client.get_messages.return_value = message(3, 'Natija tayyor', outgoing=True)
+        await manager.queue.join()
+        assert [call.args[2] for call in client.forward_messages.await_args_list] == [1, 3]
+        await manager.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('outbound', [False, True])
+def test_owner_and_excluded_user_never_enter_log_queue(setup, monkeypatch, outbound):
+    async def run():
+        from dataclasses import replace
+        manager, client = setup
+        monkeypatch.setattr(chat_log, 'OWNER_ID', 999)
+        await manager.configure(replace(manager.settings.policy, excluded_user_ids=(456,)))
+        await manager.start(client)
+        for uid in (999, 456):
+            manager.submit(message(uid=uid), outbound=outbound)
+            manager.submit(message(2, None, uid=uid, media_group_id='album'), outbound=outbound)
+            manager.submit(message(3, 'Edited', uid=uid, edit_date='edited'), outbound=outbound)
+            manager.submit_user_upload(client, object(), uid)
+        assert manager.queue.empty()
+        assert not manager._upload_tasks
+        assert not manager._seen
+        client.get_messages.assert_not_awaited()
+        client.forward_messages.assert_not_awaited()
+        manager.submit(message(uid=123))
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 1)
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_excluding_user_discards_previously_queued_event(setup):
+    async def run():
+        from dataclasses import replace
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message())
+        event = manager.queue.get_nowait()
+        manager.queue.task_done()
+        await manager.configure(replace(manager.settings.policy, excluded_user_ids=(123,)))
+        # Even an event with the current revision must pass the privacy guard.
+        event.revision = manager.settings.revision
+        await manager._deliver(event)
+        client.send_message.assert_not_awaited()
+        client.forward_messages.assert_not_awaited()
+        await manager.stop()
+    asyncio.run(run())
+
+
+def test_exclusion_commands_authorization_persistence_and_destination_changes(setup, monkeypatch):
+    async def run():
+        manager, client = setup
+        monkeypatch.setattr(chat_log, 'OWNER_ID', 999)
+        async def command(text, uid=999):
+            await owner_commands.cmd_logchannel(client, message(text=text, uid=uid))
+        await command('/logchannel exclude 123', uid=123)
+        assert not manager.settings.policy.excluded_user_ids
+        client.send_message.assert_not_awaited()
+        for invalid in ('0', '-123', 'abc', 'true', '123 456'):
+            await command('/logchannel exclude ' + invalid)
+            assert not manager.settings.policy.excluded_user_ids
+        await command('/logchannel exclude 123')
+        await command('/logchannel exclude 123')
+        assert manager.settings.policy.excluded_user_ids == (123,)
+        for action in ('off', 'on', 'remove', 'set @logs', 'reset'):
+            await command('/logchannel ' + action)
+            assert manager.settings.policy.excluded_user_ids == (123,)
+        restored = ChatLogSettings(manager.settings.path, -1002)
+        assert restored.policy.excluded_user_ids == (123,)
+        await command('/logchannel excluded')
+        assert '123' in client.send_message.await_args.args[1]
+        assert '999' in client.send_message.await_args.args[1]
+        await command('/logchannel include 999')
+        assert manager.is_excluded(999)
+        await command('/logchannel include 123')
+        assert not manager.settings.policy.excluded_user_ids
+    asyncio.run(run())
+
+
+def test_failed_exclusion_save_does_not_change_live_policy(setup, monkeypatch):
+    async def run():
+        manager, client = setup
+        def fail(*args):
+            raise OSError('disk full')
+        monkeypatch.setattr(chat_log.os, 'replace', fail)
+        await owner_commands.cmd_logchannel(client, message(text='/logchannel exclude 123', uid=999))
+        assert not manager.settings.policy.excluded_user_ids
+        assert 'bajarilmadi' in client.send_message.await_args.args[1]
     asyncio.run(run())

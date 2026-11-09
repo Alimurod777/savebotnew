@@ -815,9 +815,9 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Queue/cooldown notices go through the BOT only. Short waits continue within
   existing retry bounds; long/exhausted waits explicitly stop the attempt.
 - Cooldowns are process-local; no cross-process or restart persistence/resume.
-- Private final summary must preserve surfaced FloodWait, count the unfinished
-  post and explain possible partial split delivery. Never overwrite it with
-  "nothing sent / errors 0" or promise automatic resume after termination.
+- Private range jobs report FloodWait and resume the current post/chunk after
+  the full cooldown through flood_wait_handler. Other callers retain bounded
+  retries and an explicit stop summary; never report unfinished delivery as success.
 
 
 ## Vazifa yakunida GitHubga push qilish
@@ -828,7 +828,74 @@ relay_uploader.reload_sessions(strings)  # hot-reload
 - Push muvaffaqiyatsiz bo'lsa, o'zgarishlar faqat lokal qolganini va sababini yakuniy javobda aniq ayting.
 
 
+### Chat log MongoDB backup va progress filtri (2026-11-05)
+- Log policy lokal data/chat_log.json va MongoDB userdb.bot_settings ichida chat_log:<bot_id> kaliti bilan saqlanadi. Boshqa bot sozlamasini ishlatmang.
+- Startup remote policy tiklanadi; pending_sync lokal o'zgarishlar stale remote'dan ustun. Legacy JSON remote yo'q bo'lsa avtomatik migrate qilinadi.
+- off/remove/reset ham bazaga yoziladi; reset yangi serverning ENV qiymatini ishlatadi. Baza xatosi non-fatal, pending state diskda; 60s retry. /logchannel status sync holatini ko'rsatsin.
+- Bot transfer progress texti va editlari logga forward qilinmasin; navbatdagi bot texti forwarddan oldin qayta tekshirilsin. User texti/media captioni va final natijalar saqlansin.
+
+
 ### VideoNote va owner diagnostikasi (2026-11-05)
 - Wzgram send_video_note parse_mode qabul qilmaydi; make_send_fn VideoNote yo'lida caption/caption_entities/parse_mode ni olib tashlang.
 - TypeError/AttributeError/NameError/AssertionError user URL PARSE xatosi sifatida tasniflanmasin.
 - Reportable SYSTEM_FAILURE qo'shimcha session/channel verification ishlamasa ham ownerga yuborilsin; verification issue hisobotda ko'rsatilsin. Oddiy deleted/FloodWait notification siyosatini saqlang.
+
+### Portable owner settings (2026-11-05)
+- core/owner_settings.py: private bot_settings owner_settings:<bot_id>, atomic
+  data/owner_settings.json pending journal, startup restore before pool/session
+  init, 60s retry. Same bot token and DB_URI required across hosts.
+- Rate/parallel limits and maintenance use durable owner settings. Config
+  mutations for role policy/archive/channels/session/premium/download settings
+  use persist_owner_change; snapshot only changed files, keep deletion/off.
+- Session credentials in private Mongo/local storage must never enter Git,
+  logs, status responses or public artifacts. Runtime tasks/flood counters excluded.
+- Local pending wins over stale Mongo; existing Mongo wins over legacy defaults.
+  Failed restore must not overwrite unrelated remote settings. Preserve the
+  separate chat_log:<bot_id> policy. No automatic bot restart/live test sends.
+
+### Chat log content/auth filter (2026-11-05)
+- Command messages, command UI responses/edits and login/QR auth exchanges
+  (phone/OTP/password/QR) must not be logged. A new Telegram URL resumes content.
+- Direct user-session delivery explicitly calls observe_user_upload after success.
+  Resolve the bot-side ID with existing strict resolver; never forward sender ID.
+  Resolution is bounded/nonfatal/background, dedup with incoming updates, cancel
+  on shutdown. No user-session/global Client monkey-patch or routing changes.
+
+### Owner /usersdata (2026-11-05)
+- /usersdata: owner private only; HTML lists session-backed registered users
+  only after live get_me confirms matching user ID, non-bot/non-deleted account.
+- Use create_user_session, bounded sequential checks, guaranteed disconnect;
+  invalid/unverified/timeouts excluded. No session/phone/exception payload exports.
+- Like /userdata, generated owner report document uses the bot sender.
+  Reports are temporary; no stored session or role mutation, no startup job.
+
+### Private range FloodWait resume (2026-11-07)
+- process_private_posts reports the current post ID and wait through the bot,
+  waits Telegram's full cooldown +1s, then retries that post before advancing.
+- Short/long/repeated FloodWait and FloodPremiumWait resume automatically;
+  poll /stop in <=5s sleep steps and preserve activity during the wait.
+- Private pipeline flood_wait_handler lets split/album senders retry only the
+  current unsent chunk/batch. Keep default split caps for other callers, and
+  keep UserUploadWorker session rotation/bounded flood handling unchanged.
+- Failed cleanup of an already delivered media's progress message must not
+  bubble up as a FloodWait that reuploads the delivered media.
+- In-memory continuation only; no automatic service restart or live test sends.
+
+### Native reply routing (2026-11-07)
+- Read IDs with core.reply_compat.get_reply_message_id for reply_parameters
+  and legacy reply_to_message_id. Direct/Premium/fallback worker uploads must
+  resolve the bot anchor to that worker's session ID, then build native kwargs.
+- SessionManager direct uploads use reply_base for resolution; pool uploads
+  strip replies until bot copy_message applies the user's bot-side reply ID.
+- Worker resolver requires anchor text/date and matching bot sender/date (1s
+  tolerance). Unresolved anchors send without reply; never use unchecked IDs.
+- Verified mapping cache is bounded and connection-scoped, cleared on disconnect.
+
+### Chat log user exclusions (2026-11-09)
+- OWNER_ID private conversation is always excluded, both inbound and outbound.
+- Owner-only /logchannel exclude <user_id>, include <user_id>, excluded manage
+  persistent exceptions; include cannot enable the owner's chat log.
+- Store excluded_user_ids in the existing atomic JSON and bot-scoped MongoDB
+  log policy. Persist the empty list too, to clear stale remote exclusions.
+- Destination set/on/off/remove/reset preserve user exceptions. Guard submit,
+  direct upload observation and queued delivery; leave user delivery unchanged.

@@ -4,6 +4,7 @@
 # Ask Doubt on telegram @KingVJ01
 
 import asyncio 
+from copy import copy
 import hashlib
 import random
 import uuid
@@ -7064,6 +7065,15 @@ async def process_single_post(
         if not msg or msg.empty:
             await _notify_failure("fetch", "post is deleted or inaccessible", source_msg=msg)
             return "deleted"
+
+        # Telegram carries a changed chat/channel photo on a service message,
+        # not in Message.photo. Reuse the regular photo pipeline on a shallow
+        # copy so the fetched service message and its source identity stay intact.
+        if getattr(msg, "new_chat_photo", None):
+            msg = copy(msg)
+            msg.photo = msg.new_chat_photo
+            msg.media = MessageMediaType.PHOTO
+            msg.service = None
         
         msg_type = get_message_type(msg)
         
@@ -7355,7 +7365,7 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
         # Get text and entities directly (NOT Markdown formatted)
         text, entities = get_text_with_entities(msg)
         if not text:
-            return True  # Empty text is ok
+            return False  # Nothing delivered; do not count this post as sent.
 
         # Convert to renderer and send with auto-splitting
         renderer = extract_to_renderer(text, entities or [])
@@ -7363,11 +7373,12 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
         # Render chunks
         chunks = renderer.render_chunks(TELEGRAM_MESSAGE_LIMIT)
 
+        sent_any = False
         for i, (chunk_text, chunk_entities) in enumerate(chunks):
             if not chunk_text:
                 continue
 
-            await client.send_message(
+            sent = await client.send_message(
                 chat_id=target,
                 text=chunk_text,
                 entities=chunk_entities if chunk_entities else None,
@@ -7375,7 +7386,10 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
                 reply_markup=reply_markup if i == len(chunks) - 1 else None,
                 **reply_kwargs,
             )
-        return True
+            if not sent:
+                return False
+            sent_any = True
+        return sent_any
     except FloodWait:
         # Re-raise FloodWait so the outer per-post loop can handle it
         raise
@@ -7389,11 +7403,13 @@ async def send_text_message(client: Client, message: Message, msg) -> bool:
             if text:
                 chunks = [text[i:i+TELEGRAM_MESSAGE_LIMIT] for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT)]
                 for i, chunk in enumerate(chunks):
-                    await client.send_message(
+                    sent = await client.send_message(
                         chat_id=target,
                         text=chunk,
                         **reply_kwargs,
                     )
+                    if not sent:
+                        return False
                 return True
         except FloodWait:
             raise
@@ -7471,7 +7487,7 @@ async def download_and_send_media(
                 from core.entity_rebuilder import strip_custom_emoji_entities, validate_entities
                 text, ents = strip_custom_emoji_entities(text, raw_entities)
                 ents = validate_entities(text, ents)
-                await client.send_message(
+                sent = await client.send_message(
                     ctx_target_chat_id,
                     text=text,
                     entities=ents if ents else None,
@@ -7479,7 +7495,9 @@ async def download_and_send_media(
                     disable_web_page_preview=True,
                     **build_reply_kwargs_from_message(reply_base),
                 )
-            return True
+                return bool(sent)
+            setattr(msg, "_upload_error", "Message has no downloadable media or text")
+            return False
         file_size = get_file_size(msg, msg_type)
         show_progress = file_size > 50 * 1024 * 1024  # Avoid edit FloodWait on small transfers
         

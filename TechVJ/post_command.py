@@ -20,6 +20,7 @@ Architecture:
 - Human-readable error diagnostics
 """
 
+from TechVJ.lang import get_string, get_report_error, get_report_type
 import asyncio
 import re
 import logging
@@ -209,7 +210,7 @@ class ParsedLink:
         return self.link_type == "private"
 
 
-def parse_post_link(url: str) -> Tuple[Optional[ParsedLink], Optional[str]]:
+def parse_post_link(url: str, user_id: int = 0) -> Tuple[Optional[ParsedLink], Optional[str]]:
     """
     Parse Telegram post link.
     
@@ -224,7 +225,7 @@ def parse_post_link(url: str) -> Tuple[Optional[ParsedLink], Optional[str]]:
     url = url.strip()
     
     if not url.startswith(('https://t.me/', 'http://t.me/')):
-        return None, "Invalid URL: Must start with https://t.me/"
+        return None, get_string(user_id, 'post_input_start')
     
     # Topic link: /c/CHAT/TOPIC/MSG
     topic_match = re.match(r'^https?://t\.me/c/(\d+)/(\d+)/(\d+)$', url)
@@ -262,10 +263,7 @@ def parse_post_link(url: str) -> Tuple[Optional[ParsedLink], Optional[str]]:
         ), None
     
     return None, (
-        "Invalid link format.\n\n"
-        "Supported formats:\n"
-        "• `https://t.me/c/123456/101` (private)\n"
-        "• `https://t.me/channelname/101` (public)"
+        get_string(user_id, 'post_input_invalid')
     )
 
 
@@ -672,125 +670,61 @@ async def analyze_single_post(
 
 # ==================== OUTPUT FORMATTING ====================
 
-def format_post_analysis(analysis: PostAnalysis) -> str:
-    """Format PostAnalysis as human-readable report."""
-    lines = ["**Post Analysis**\n"]
-    
-    # Error
+def format_post_analysis(analysis: PostAnalysis, user_id: int = 0) -> str:
+    """Translate report labels while preserving all source metadata."""
+    tr = lambda key, **kwargs: get_string(user_id, "report_" + key, **kwargs)
+    lines = [f"**{tr('post_heading')}**\n"]
     if analysis.error:
-        lines.append(f"**Error:** {analysis.error.user_message}")
+        lines.append(get_report_error(user_id, analysis.error))
         if analysis.error.technical_detail:
-            lines.append(f"_Detail: {analysis.error.technical_detail}_")
+            lines.append(f"_{tr('detail')}: {analysis.error.technical_detail}_")
         return "\n".join(lines)
-    
-    # Basic info
-    lines.append(f"• **Chat ID:** `{analysis.chat_id}`")
-    lines.append(f"• **Message ID:** `{analysis.message_id}`")
+    lines.extend([f"• **{tr('chat_id')}:** `{analysis.chat_id}`", f"• **{tr('message_id')}:** `{analysis.message_id}`"])
     if analysis.chat_title:
-        lines.append(f"• **Chat:** {analysis.chat_title}")
+        lines.append(f"• **{tr('chat')}:** {analysis.chat_title}")
     if analysis.chat_username:
-        lines.append(f"• **Username:** @{analysis.chat_username}")
-    
-    # Type
-    type_display = analysis.post_type.replace('_', ' ').title()
+        lines.append(f"• **{tr('username')}:** @{analysis.chat_username}")
+    type_display = get_report_type(user_id, analysis.post_type)
     if analysis.is_album:
-        # Determine album composition
-        unique_types = list(set(analysis.album_types))
-        if len(unique_types) == 1:
-            type_display = f"{unique_types[0].title()} Album"
-        else:
-            type_display = "Mixed Album"
-    lines.append(f"\n• **Type:** {type_display}")
-    
-    # Album info
+        unique_types = set(analysis.album_types)
+        type_display = tr('album_type', type=get_report_type(user_id, next(iter(unique_types)))) if len(unique_types) == 1 else tr('mixed_album')
+    lines.append(f"\n• **{tr('type')}:** {type_display}")
     if analysis.is_album:
-        lines.append(f"• **Album Items:** {analysis.album_count}")
-        lines.append(f"• **Media Group ID:** `{analysis.media_group_id}`")
+        lines.extend([f"• **{tr('album_items')}:** {analysis.album_count}", f"• **{tr('media_group')}:** `{analysis.media_group_id}`"])
         if analysis.album_types:
             type_counts = {}
-            for t in analysis.album_types:
-                type_counts[t] = type_counts.get(t, 0) + 1
-            types_str = ", ".join(f"{k}: {v}" for k, v in type_counts.items())
-            lines.append(f"• **Album Composition:** {types_str}")
-    
-    # Caption/text
+            for kind in analysis.album_types:
+                type_counts[kind] = type_counts.get(kind, 0) + 1
+            counts = ", ".join(f"{get_report_type(user_id, kind)}: {count}" for kind, count in type_counts.items())
+            lines.append(f"• **{tr('album_composition')}:** {counts}")
     if analysis.text:
-        limit_name = "Caption" if analysis.limit_type == "caption" else "Message"
-        limit_val = analysis.applicable_limit
-        
-        status = "OK"
-        if analysis.exceeds_limit:
-            status = f"**split required** (~{analysis.split_count_estimate} parts)"
-        
-        lines.append(f"\n• **{limit_name} Length:** {analysis.text_utf16_length} UTF-16 units ({status})")
-        lines.append(f"  - Limit: {limit_val} UTF-16 units")
-        
-        # Entities
-        if analysis.entity_analysis.total_count > 0:
-            ea = analysis.entity_analysis
-            entity_parts = []
-            if ea.hyperlinks > 0:
-                entity_parts.append(f"hyperlinks: {ea.hyperlinks}")
-            if ea.bold > 0:
-                entity_parts.append(f"bold: {ea.bold}")
-            if ea.italic > 0:
-                entity_parts.append(f"italic: {ea.italic}")
-            if ea.underline > 0:
-                entity_parts.append(f"underline: {ea.underline}")
-            if ea.code > 0:
-                entity_parts.append(f"code: {ea.code}")
-            if ea.mentions > 0:
-                entity_parts.append(f"mentions: {ea.mentions}")
-            if ea.urls > 0:
-                entity_parts.append(f"urls: {ea.urls}")
-            if ea.spoilers > 0:
-                entity_parts.append(f"spoilers: {ea.spoilers}")
-            if ea.custom_emoji > 0:
-                entity_parts.append(f"custom_emoji: {ea.custom_emoji}")
-            
-            lines.append(f"• **Entities:** {analysis.entity_analysis.total_count} ({', '.join(entity_parts)})")
-        
-        # Entity safety
-        if analysis.entity_analysis.hyperlinks > 0:
-            safety = "entity-safe" if analysis.entity_valid else "INVALID"
-            lines.append(f"• **Hyperlinks:** {analysis.entity_analysis.hyperlinks} ({safety})")
-        
-        # Parsing recommendation
-        if analysis.entity_send_mandatory:
-            lines.append("• **Parsing:** `entities=[]` **required** (Markdown unsafe)")
-        elif not analysis.markdown_safe:
-            lines.append("• **Parsing:** `entities=[]` recommended")
-        else:
-            lines.append("• **Parsing:** Markdown safe")
-        
-        # Entity validation errors
+        limit_name = tr('caption' if analysis.limit_type == 'caption' else 'message')
+        status = tr('split_required', count=analysis.split_count_estimate) if analysis.exceeds_limit else tr('valid')
+        lines.extend([f"\n• **{limit_name} {tr('length')}:** {analysis.text_utf16_length} {tr('units')} ({status})", f"  - {tr('limit')}: {analysis.applicable_limit} {tr('units')}"])
+        ea = analysis.entity_analysis
+        if ea.total_count > 0:
+            fields = ['hyperlinks', 'bold', 'italic', 'underline', 'code', 'mentions', 'urls', 'spoilers', 'custom_emoji']
+            parts = [f"{tr(field)}: {getattr(ea, field)}" for field in fields if getattr(ea, field) > 0]
+            lines.append(f"• **{tr('entities')}:** {ea.total_count} ({', '.join(parts)})")
+        if ea.hyperlinks > 0:
+            lines.append(f"• **{tr('hyperlinks')}:** {ea.hyperlinks} ({tr('valid' if analysis.entity_valid else 'invalid')})")
+        lines.append(tr('parse_required' if analysis.entity_send_mandatory else ('parse_recommended' if not analysis.markdown_safe else 'parse_safe')))
         if analysis.entity_errors:
-            lines.append(f"• **Entity Errors:** {len(analysis.entity_errors)}")
-            for err in analysis.entity_errors[:3]:  # Show first 3
-                lines.append(f"  - {err}")
+            lines.append(f"• **{tr('entity_errors')}:** {len(analysis.entity_errors)}")
+            lines.extend(f"  - {err}" for err in analysis.entity_errors[:3])
     else:
-        lines.append("\n• **Text/Caption:** None")
-    
-    # Media info
+        lines.append("\n• " + tr('no_text'))
     if analysis.media_size_bytes > 0:
-        lines.append(f"\n• **Media Size:** {analysis.media_size_formatted}")
+        lines.append(f"\n• **{tr('media_size')}:** {analysis.media_size_formatted}")
         if analysis.media_dimensions:
-            lines.append(f"• **Dimensions:** {analysis.media_dimensions[0]}x{analysis.media_dimensions[1]}")
+            lines.append(f"• **{tr('dimensions')}:** {analysis.media_dimensions[0]}x{analysis.media_dimensions[1]}")
         if analysis.media_duration:
-            mins = analysis.media_duration // 60
-            secs = analysis.media_duration % 60
-            lines.append(f"• **Duration:** {mins}:{secs:02d}")
+            lines.append(f"• **{tr('duration')}:** {analysis.media_duration // 60}:{analysis.media_duration % 60:02d}")
         if analysis.media_filename:
-            lines.append(f"• **Filename:** {analysis.media_filename}")
-        
-        lines.append(f"• **Download Resumable:** {'Yes' if analysis.download_resumable else 'No'}")
-    
-    # Forward status
-    if not analysis.safe_to_forward:
-        lines.append(f"\n• **Safe to Forward:** No ({analysis.forward_restriction})")
-    else:
-        lines.append(f"\n• **Safe to Forward:** Yes")
-    
+            lines.append(f"• **{tr('filename')}:** {analysis.media_filename}")
+        lines.append(f"• **{tr('resumable')}:** {tr('yes' if analysis.download_resumable else 'no')}")
+    forward = tr('yes') if analysis.safe_to_forward else tr('no') + ' (' + tr('forward_restricted') + ')'
+    lines.append(f"\n• **{tr('safe_forward')}:** {forward}")
     return "\n".join(lines)
 
 
@@ -821,16 +755,7 @@ async def post_command_handler(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply(
-            "**Usage:** `/post <telegram_link>`\n\n"
-            "**Examples:**\n"
-            "• `/post https://t.me/c/1234567890/123` (private)\n"
-            "• `/post https://t.me/channelname/123` (public)\n"
-            "• `/post https://t.me/c/1234567890/5/123` (topic)\n\n"
-            "Returns detailed post analysis including:\n"
-            "• Post type and album detection\n"
-            "• Caption/text length and entity analysis\n"
-            "• Media size and download info\n"
-            "• Telegram limit validation",
+            get_string(user_id, 'post_usage'),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -838,10 +763,10 @@ async def post_command_handler(client: Client, message: Message):
     url = parts[1].strip()
     
     # Parse link
-    parsed, error = parse_post_link(url)
+    parsed, error = parse_post_link(url, user_id=user_id)
     if error:
         await message.reply(
-            f"**Error:** {error}",
+            get_string(user_id, "error_generic", error=error),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -850,14 +775,13 @@ async def post_command_handler(client: Client, message: Message):
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
         await message.reply(
-            "You need to /login first to analyze posts.\n"
-            "The bot uses your session to access the post.",
+            get_string(user_id, "need_login"),
             **build_reply_kwargs_from_message(message)
         )
         return
     
     # Status message
-    status_msg = await message.reply("Analyzing post...")
+    status_msg = await message.reply(get_string(user_id, 'post_analyzing'))
     
     try:
         # Create task-scoped session
@@ -892,16 +816,16 @@ async def post_command_handler(client: Client, message: Message):
             )
             
             # Format and send result
-            report = format_post_analysis(analysis)
+            report = format_post_analysis(analysis, user_id=user_id)
             await status_msg.edit_text(report)
             
     except SessionInvalidError as e:
-        await status_msg.edit_text(f"**Session Error:** {e.user_message}")
+        await status_msg.edit_text(get_string(user_id, "session_invalid"))
     except SessionConnectionError as e:
-        await status_msg.edit_text(f"**Connection Error:** {e}")
+        await status_msg.edit_text(get_string(user_id, "connection_error", e=e))
     except asyncio.TimeoutError:
-        await status_msg.edit_text("**Error:** Request timed out. Please try again.")
+        await status_msg.edit_text(get_string(user_id, "report_error_timeout"))
     except Exception as e:
         error = classify_error(e)
-        await status_msg.edit_text(f"**Error:** {error.user_message}")
+        await status_msg.edit_text(get_report_error(user_id, error))
         logger.exception(f"/post error for user {user_id}: {e}")

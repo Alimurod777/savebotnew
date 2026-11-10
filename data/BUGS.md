@@ -1920,3 +1920,22 @@ ajratiladi. is_premium va mavjud caption limitlari saqlandi; yangi
 continuation_prefix keyword-only, default eski callerlar uchun saqlandi.
 Emoji bilan uzun premium/non-premium caption regressionlari tayyor overflow
 4096 UTF-16 birlikdan oshmasligini, entity offsetlari va asl matnni tekshiradi.
+
+## BUG-103: Qo‘shimcha progress va tahlil UIlari /lang tanlovini hisobga olmaydi
+
+Status: ✅ Tuzatildi (2026-11-10).
+Foydalanuvchi ayrim joylarda eski til yana qolganini bildirdi. Auditda faol
+core/downloader/progress_v2 publisheri, status-tracker finish branchlari,
+QuizBot/poll qo‘shimcha sarlavhalari, /info /group /post input/usage/error va
+hisobot label/type/flaglari aniqlangan. Wzgram upload coordinatorining
+queue/flood/stopped xabarlari ham hardcoded Uzbek bo‘lgan.
+Yechim: core progress va finish branchlari mavjud get_string bilan birlashtirildi;
+upload final holati endi Download o‘rniga to‘g‘ri Upload nomini oladi. Quiz/poll
+label va hisobotlar locale-aware, parser/formatterlarda backward-compatible
+user_id optional argument bor. Report error/type uchun faqat machine code
+lookup ishlatiladi: source nomlari/description/fayl nomi/link va poll savol,
+variant, explanation matnlari tarjima qilinmaydi. Raw texnik diagnostika
+ma’lumotlari saqlanadi. Main lug‘atida har til uchun 379 kalit.
+Main tekshiruv: 25 yangi offline regression, full pytest 537 passed va
+22 subtests passed; migration 675 symbols/0 failures, pip check, diff check.
+Wzgram coordinator locale ulanishi va branch tekshiruvi alohida qayd qilinadi.

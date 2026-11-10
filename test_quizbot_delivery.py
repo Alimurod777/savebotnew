@@ -84,3 +84,9 @@ def test_topic_quiz_floodwait_propagates():
             await save.process_single_topic_message(bot, NS(), 123, msg, '/tmp/synthetic', NS())
         assert bot.send_message.await_count == 1
     asyncio.run(run())
+
+
+@pytest.fixture(autouse=True)
+def _use_uzbek_for_original_quiz_regressions(monkeypatch):
+    from TechVJ import lang
+    monkeypatch.setattr(lang, 'get_user_lang', lambda _: 'uz')

@@ -15,6 +15,8 @@ Features:
 - Speed and ETA calculation
 """
 
+from TechVJ.lang import get_string
+
 import asyncio
 import threading
 import time
@@ -275,11 +277,11 @@ class ProgressPublisher:
         status = self.state.status
         
         if status == TransferStatus.COMPLETED:
-            text = "✅ **Download completed**"
+            text = get_string(self.chat_id, "upload_complete" if self.state.transfer_type == "upload" else "download_complete")
         elif status == TransferStatus.FAILED:
-            text = f"❌ **Download failed**\n{self.state.error_message or 'Unknown error'}"
+            text = get_string(self.chat_id, "upload_failed" if self.state.transfer_type == "upload" else "download_failed") + "\n" + (self.state.error_message or get_string(self.chat_id, "unknown_error"))
         elif status == TransferStatus.CANCELLED:
-            text = "⚠️ **Download cancelled**"
+            text = get_string(self.chat_id, "operation_cancelled")
         else:
             return
         
@@ -338,13 +340,13 @@ class ProgressPublisher:
         current_mb = current / 1024 / 1024
         total_mb = total / 1024 / 1024
         
-        action = "Downloading" if transfer_type == "download" else "Uploading"
+        action = get_string(self.chat_id, "downloading" if transfer_type == "download" else "uploading")
         
         return (
             f"**{action}**\n"
             f"{bar} {percent:.1f}%\n"
             f"{current_mb:.1f} / {total_mb:.1f} MB\n"
-            f"Speed: {speed_str} | ETA: {eta_str}"
+            f"{get_string(self.chat_id, 'transfer_speed_eta', speed=speed_str, eta=eta_str)}"
         )
 
 

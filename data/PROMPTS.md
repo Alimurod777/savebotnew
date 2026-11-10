@@ -1657,3 +1657,22 @@ passed. Migration 669 symbols/0 failures, pip check, compileall va diff check.
 UMUMIY YO‘NALISH: `/only <guruh_xabari_havolasi>` faqat shu so‘rovni filtrlasin;
 oddiy havolalar, routing va Premium sessiya tanlash siyosati o‘zgarmasin.
 Live Telegram send, ENV/session mutatsiyasi yoki xizmat restarti bajarilmadi.
+
+## Sessiya (2026-11-10) — Qolgan user UI tarjimalarini tekshirish
+
+So‘rov: «ayrim joylanda yana qolib ketgan». Qo‘shimcha misollar so‘raldi;
+shu paytda koddagi mustaqil audit davom ettirildi. Faol download-engine
+progress publisheri, hidden finish branchlari, QuizBot/poll labeli va
+/info /group /post hisobot/input/usage/error UIlari til tanloviga ulandi.
+Har tilda 379 kalit; Wzgram account upload queue/flood/stopped uchun ham
+umumiy tarjima kalitlari tayyorlandi. Source savol/variant/explanation,
+guruh/topik nomlari, fayl nomlari, description, ID va havolalar saqlandi;
+faqat bot yozgan label va machine-code turlar tarjima qilinadi. Texnik
+exception/entity diagnostika payloadlari saqlanadi. Asl quiz regressioni
+Uzbek locale ni aniq belgilaydi; yangi regressiyalar EN/UZ/RU reportlar,
+parser/handler usage, progress final va source preservationni tekshiradi.
+BUG-103 yozildi. Main full pytest: 537 passed, 22 subtests passed; migration
+675 symbols/0 failures, pip check va diff check o‘tdi.
+UMUMIY YO‘NALISH: main va origin/wzgram birga yangilansin; Wzgramga xos
+upload coordinator notice ham locale ishlatsin. Oddiy source kontentga,
+ENV/session credential, routing, flood algoritmi va live botga tegilmasin.

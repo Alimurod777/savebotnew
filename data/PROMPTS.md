@@ -1571,3 +1571,14 @@ Tekshiruv: full pytest 449 passed va 22 subtests passed; yakuniy kengaytirilgan
 service regression 14 passed (public skip/batch error ham qamraldi). Migration
 0 failures, pip check va git diff --check o'tdi. Live tekshiruv faqat source
 metadata o'qishdan iborat, Telegramga xabar yuborilmadi.
+
+
+## Sessiya (2026-11-10) — Bot javob bermay qolishi diagnostikasi
+
+So'rov: nimaga bot to'xtab qolgan. Read-only Alwaysdata service 31109 va
+project loglari tekshirildi. 9-noyabr 21:12 Telegram uzilishi, 21:15 ikki
+parallel reconnect aniqlandi. safe_disconnect no_updates=True ni tiklamaydi
+(BUG-100); process tirik qolib yangi update qabul qilmaydi. MongoDB ValueError
+warning alohida, process crash emas. Kod/ENV/restart/live send bajarilmadi.
+UMUMIY YO'NALISH: reconnectdan keyin bot yangi xabarlarni qabul qilishi kerak;
+SSH process ro'yxatini alohida Alwaysdata service holati deb talqin qilmaslik.

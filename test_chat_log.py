@@ -616,3 +616,19 @@ def test_failed_exclusion_save_does_not_change_live_policy(setup, monkeypatch):
         assert not manager.settings.policy.excluded_user_ids
         assert 'bajarilmadi' in client.send_message.await_args.args[1]
     asyncio.run(run())
+
+
+def test_only_link_resumes_content_logging_without_logging_command_or_progress(setup):
+    async def run():
+        manager, client = setup
+        await manager.start(client)
+        manager.submit(message(text='/login'))
+        manager.submit(message(2, '/only https://t.me/c/123456/1-10'))
+        manager.submit(message(3, '⏳ /only: проверка сообщений группы...', outgoing=True))
+        content = message(4, 'Original selected post 😀', outgoing=True)
+        client.get_messages.return_value = content
+        manager.submit(content)
+        await manager.queue.join()
+        client.forward_messages.assert_awaited_once_with(-10099, 123, 4)
+        await manager.stop()
+    asyncio.run(run())

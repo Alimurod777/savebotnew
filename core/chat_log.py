@@ -29,6 +29,7 @@ _PROGRESS_TEXT = re.compile(
     r'(?im)^\s*[📥📤⬇️⬆️\s*`]*(?:Downloading|Uploading|Yuklanmoqda|Yuborilmoqda|Скачивание|Отправка)\b'
     r'|^\s*Qism\s+\d+/\d+\s*-\s*[\d.]+/[\d.]+'
     r'|^\s*⏳\s*\d+/\d+\s*\|\s*ID:'
+    r'|^\s*⏳\s*/only:'
     r'|^\s*⏳\s*(?:\d+\s+ta post yuklanmoqda|Downloading\s+\d+\s+posts|Скачивание постов:\s*\d+)'
     r'|^\s*📥\s*(?:Navbatdan:.*yuklanmoqda|From queue:.*downloading|Из очереди:.*скачивание)'
 )
@@ -345,9 +346,15 @@ class ChatLogger:
         if not bot_authored and text:
             if text.lstrip().startswith('/'):
                 command = text.lstrip().split()[0].split('@')[0].lower()
-                self._control_chats.add(chat.id)
-                if command in ('/login', '/qrlogin'):
-                    self._auth_chats.add(chat.id)
+                if command == '/only' and ('https://t.me/' in text or 'http://t.me/' in text):
+                    # It starts a content request, while the command itself
+                    # remains excluded from the log like other commands.
+                    self._control_chats.discard(chat.id)
+                    self._auth_chats.discard(chat.id)
+                else:
+                    self._control_chats.add(chat.id)
+                    if command in ('/login', '/qrlogin'):
+                        self._auth_chats.add(chat.id)
                 return
             if 'https://t.me/' in text or 'http://t.me/' in text:
                 self._control_chats.discard(chat.id)

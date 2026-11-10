@@ -1628,3 +1628,32 @@ tilida chiqsin, asl saqlanayotgan kontentga tegilmasin. Owner administrativ
 buyruqlar/raw Telegram xatolari hali to‘liq tarjima qilinmagan. Routing/session
 tanlash/ENV o‘zgarmadi; jonli Telegram send va restart qilinmadi. Yangi kod
 xizmat keyingi ishga tushirilganda faollashadi; o‘zgarishlar GitHubga push qilinadi.
+
+## Sessiya (2026-11-10) — /only orqali guruh xabarlarini tanlab yuklash
+
+So‘rov: muhokama guruhida asosiy kanaldan kelgan postlar va guruh nomidan
+yuborilgan xabarlarni olish. Yakuniy aniqlashtirish: `/only <havola>` bitta
+buyruqda ishlasin. Persistent rejim va «keyingi havola» holati qo‘shilmadi.
+Yangi core/group_post_filter.py haqiqiy group/sender peer ID va automatic_forward
+hamda forward_origin orqali bog‘langan kanalni tekshiradi; oddiy a’zolar,
+ularning qo‘lda forwardlari va boshqa kanallar avtomatik postlari filtrlanadi.
+Faqat GROUP/SUPERGROUP va forum topic manbalari; kanal/bot/comment-thread
+havolalari rad etiladi. Bog‘langan kanal ma’lum bo‘lmasa uning postlari
+taxminan qabul qilinmaydi, guruh nomidan yuborilgan xabarlar esa olinadi.
+save.py /only handler, umumiy validation/governance/queue va priority dispatch
+orqali ishlaydi. ParsedURL request flagi queued so‘rovda saqlanadi, keyingi
+oddiy havolaga o‘tmaydi. Catch-all exclusion va EN/UZ/RU /help yangilandi.
+100 ID batch bilan faqat so‘ralgan xabarlar olinadi; albomlar filtrlashdan
+keyin yig‘iladi va batch chegarasidan o‘tsa ham saqlanadi. Topic anchor range
+mavjud TopicExtractor.extract_between orqali, mavzulararo xabarlar yuborilmaydi.
+Tanlangan kontent existing process_single_post/process_album_messages orqali
+yuboriladi. Prefetched source_message optional parametri qayta fetchni chetlab
+o‘tadi; oddiy senderning text/media/location/venue/poll/QuizBot yo‘llari saqlandi.
+FloodWait current itemdan davom etadi, /stop tekshiriladi, service skip/error
+alohida hisoblanadi. Chat-log /only commandini va progressini yashiradi,
+keyingi tanlangan kontentni odatdagidek kuzatadi. Yangi UI uchala tilda.
+Tekshiruv: 30 yangi offline regression; full pytest 512 passed va 22 subtests
+passed. Migration 669 symbols/0 failures, pip check, compileall va diff check.
+UMUMIY YO‘NALISH: `/only <guruh_xabari_havolasi>` faqat shu so‘rovni filtrlasin;
+oddiy havolalar, routing va Premium sessiya tanlash siyosati o‘zgarmasin.
+Live Telegram send, ENV/session mutatsiyasi yoki xizmat restarti bajarilmadi.

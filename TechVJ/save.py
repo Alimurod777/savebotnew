@@ -4,6 +4,7 @@
 # Ask Doubt on telegram @KingVJ01
 
 from TechVJ.lang import get_string
+from core.group_post_filter import GroupPostFilter
 
 import asyncio 
 from copy import copy
@@ -1444,6 +1445,7 @@ class ParsedURL:
         thread_root_id: Optional[int] = None,
         thread_source_chat_id: Any = None,
         thread_source_post_id: Optional[int] = None,
+        only_group_posts: bool = False,
     ):
         self.channel_id = channel_id
         self.post_ids = post_ids
@@ -1454,6 +1456,7 @@ class ParsedURL:
         self.thread_root_id = thread_root_id
         self.thread_source_chat_id = thread_source_chat_id
         self.thread_source_post_id = thread_source_post_id
+        self.only_group_posts = only_group_posts
     
     @property
     def is_topic(self) -> bool:
@@ -4417,6 +4420,172 @@ async def comment_analyzer_command(client: Client, message: Message):
 # NOTE: /session handler session_manager_commands.py da (to'liq pool boshqaruv).
 
 
+async def process_only_group_posts(client: Client, message: Message, parsed: ParsedURL,
+                                   context: Optional[TaskContext] = None):
+    """Filter a group request before handing selected content to existing senders."""
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
+    status_msg = None
+    selected = sent = filtered = skipped = failed = 0
+    ending = get_string(user_id, "only_complete")
+    try:
+        user_data = await async_db.find_user(user_id)
+        if not user_data or not user_data.get("logged_in") or not user_data.get("session"):
+            await client.send_message(user_id, get_string(user_id, "need_login"))
+            return
+        session_string = user_data["session"]
+        async with StopSafePipeline(user_id, task_manager) as pipeline:
+            status_msg = await client.send_message(
+                user_id, get_string(user_id, "only_processing"),
+                **build_reply_kwargs_from_message(message),
+            )
+
+            async def check_stop():
+                if await pipeline.check_cancelled():
+                    raise asyncio.CancelledError()
+                await ping_activity(user_id)
+
+            async def wait_for_flood(error):
+                delay = get_floodwait_seconds(error) + 1
+                await _safe_status_edit_message(
+                    client, user_id, status_msg.id,
+                    get_string(user_id, "split_flood_wait", seconds=delay),
+                )
+                while delay > 0:
+                    await check_stop()
+                    step = min(5, delay)
+                    await asyncio.sleep(step)
+                    delay -= step
+
+            async def retry(operation):
+                while True:
+                    await check_stop()
+                    try:
+                        return await operation()
+                    except Exception as error:
+                        if not is_floodwait_error(error):
+                            raise
+                        await wait_for_flood(error)
+
+            pipeline.flood_wait_handler = wait_for_flood
+            async with _open_download_session(
+                session_string, user_id, timeout=30, peers_to_resolve=[parsed.channel_id],
+            ) as acc:
+                group = await retry(lambda: acc.get_chat(parsed.channel_id))
+                if group.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+                    await _safe_status_edit_message(
+                        client, user_id, status_msg.id, get_string(user_id, "only_group_required"),
+                    )
+                    return
+                linked_id = (getattr(group, "linked_chat_id", None)
+                             or getattr(getattr(group, "linked_chat", None), "id", None))
+                author_filter = GroupPostFilter(group.id, linked_id)
+                ctx = replace(ctx, source_chat_id=group.id, client_type="user_session")
+                source_anchor = await _send_source_context_message(
+                    client, user_id=user_id, parsed=parsed, source_chat=group,
+                    request_message=message,
+                ) or _make_reply_target_message(user_id, None)
+                temp_dir = await pipeline.get_temp_dir()
+                topic_extractor = None
+                if parsed.topic_id is not None:
+                    if not _TOPIC_EXTRACTOR_AVAILABLE:
+                        raise RuntimeError("TopicExtractor unavailable")
+                    anchors = getattr(parsed, "topic_range_anchor", None)
+                    topic_extractor = TopicExtractor(acc, TopicExtractorConfig(
+                        chat_id=group.id, topic_id=parsed.topic_id,
+                        stop_after_ids=set(anchors) if anchors else None,
+                        incremental_from_cache=False,
+                    ))
+
+                async def iter_messages():
+                    anchors = getattr(parsed, "topic_range_anchor", None)
+                    if topic_extractor is not None and anchors:
+                        # Reuse chronological topic ranges, including non-monotonic IDs.
+                        messages = await retry(lambda: topic_extractor.extract_between(*anchors))
+                        for msg in messages:
+                            yield msg
+                        return
+                    ids = list(dict.fromkeys(parsed.post_ids))
+                    for offset in range(0, len(ids), 100):
+                        batch_ids = ids[offset:offset + 100]
+                        fetched = await retry(lambda: acc.get_messages(group.id, batch_ids))
+                        if not isinstance(fetched, (list, tuple)):
+                            fetched = [fetched] if fetched else []
+                        by_id = {msg.id: msg for msg in fetched if msg is not None}
+                        for post_id in batch_ids:
+                            yield by_id.get(post_id)
+
+                async def deliver(messages):
+                    nonlocal selected, sent, failed, skipped
+                    if len(messages) > 1 and all(get_message_type(msg) == "Photo" for msg in messages):
+                        ok = await retry(lambda: process_album_messages(
+                            client, acc, user_id, messages, temp_dir, pipeline,
+                            request_message=source_anchor, session_string=session_string, context=ctx,
+                        ))
+                        sent += int(bool(ok))
+                        failed += int(not ok)
+                        return
+                    # Mixed albums are sent individually, so a FloodWait retries
+                    # the current unsent item without replaying earlier items.
+                    for msg in messages:
+                        ok = await retry(lambda: process_single_post(
+                            client, acc, source_anchor, group.id, msg.id, temp_dir, pipeline,
+                            session_string=session_string, context=ctx, source_message=msg,
+                        ))
+                        if ok is None or ok == "deleted":
+                            selected -= 1
+                            skipped += 1
+                            continue
+                        sent += int(bool(ok))
+                        failed += int(not ok)
+
+                pending = []
+                seen_ids = set()
+                async for msg in iter_messages():
+                    await check_stop()
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if pending and media_group_id != getattr(pending[0], "media_group_id", None):
+                        await deliver(pending)
+                        pending = []
+                    if msg is None or getattr(msg, "empty", False):
+                        skipped += 1
+                        continue
+                    if msg.id in seen_ids:
+                        continue
+                    seen_ids.add(msg.id)
+                    if topic_extractor is not None and not topic_extractor._is_topic_message(msg):
+                        filtered += 1
+                        continue
+                    if not author_filter.accepts(msg):
+                        filtered += 1
+                        continue
+                    selected += 1
+                    if media_group_id:
+                        pending.append(msg)
+                    else:
+                        await deliver([msg])
+                if pending:
+                    await deliver(pending)
+    except asyncio.CancelledError:
+        ending = get_string(user_id, "operation_cancelled")
+    except SessionInvalidError as error:
+        await _handle_session_invalid(client, user_id, error)
+        ending = get_string(user_id, "session_invalid")
+    except Exception as error:
+        logger.exception("Only-group request failed for user %s", user_id)
+        ending = get_string(user_id, "request_error", e=error)
+    if status_msg is not None:
+        if failed and ending == get_string(user_id, "only_complete"):
+            ending = get_string(user_id, "only_warnings")
+        await _safe_status_edit_message(
+            client, user_id, status_msg.id,
+            ending + "\n\n" + get_string(
+                user_id, "only_summary", selected=selected, sent=sent,
+                filtered=filtered, skipped=skipped, failed=failed,
+            ),
+        )
+
+
 async def _dispatch_with_priority(
     client: Client,
     message: Message,
@@ -4426,6 +4595,8 @@ async def _dispatch_with_priority(
     role=None,
 ):
     """Dispatch a processing task through PriorityQueue when available."""
+    if getattr(parsed, "only_group_posts", False):
+        handler = process_only_group_posts
     if _GOVERNANCE_AVAILABLE:
         try:
             from core.priority_queue import priority_queue as _pq, PriorityJob
@@ -4457,7 +4628,7 @@ async def _dispatch_with_priority(
 # ==================== MAIN MESSAGE HANDLER ====================
 
 @Client.on_message(filters.text & filters.private & ~filters.me & ~filters.command([
-    "start", "help", "cancel", "stop", "info", "ban", "unban", "banlist",
+    "start", "help", "only", "cancel", "stop", "info", "ban", "unban", "banlist",
     "login", "logout", "qrlogin", "status", "chatinfo", "msgstats", "members",
     "comment", "comments", "session", "post", "group", "queue", "lang", "clean", "cleanstatus",
     "setrole", "userinfo", "set_rate_limit", "set_parallel_limit", "queue_status",
@@ -4474,10 +4645,28 @@ async def _dispatch_with_priority(
 @track_activity
 async def save(client: Client, message: Message):
     """Main handler for Telegram URLs with queue support"""
+    return await _save_request(client, message, str(message.text or "").strip())
+
+
+@Client.on_message(filters.command("only") & filters.private & ~filters.forwarded)
+@check_banned
+@track_activity
+async def only_command(client: Client, message: Message):
+    """Apply the group-author filter to the link supplied in this command."""
+    parts = str(message.text or "").split(maxsplit=1)
+    if len(parts) != 2:
+        await message.reply(get_string(message.from_user.id, "only_usage"))
+        return
+    return await _save_request(client, message, parts[1].strip(), only_group_posts=True)
+
+
+async def _save_request(client: Client, message: Message, url: str, only_group_posts: bool = False):
+    """Shared validation, governance and queueing for normal and /only links."""
+    user_id = message.from_user.id
     try:
-        url = message.text.strip()
-        
         if "https://t.me/" not in url and "http://t.me/" not in url:
+            if only_group_posts:
+                await message.reply(get_string(user_id, "only_usage"))
             return  # Not a Telegram URL, ignore
         
         # Parse the URL
@@ -4490,6 +4679,12 @@ async def save(client: Client, message: Message):
         if not parsed:
             await message.reply(get_string(message.from_user.id, 'url_invalid'))
             return
+
+        if only_group_posts:
+            if parsed.url_type not in ("private", "public", "topic"):
+                await message.reply(get_string(user_id, "only_group_required"))
+                return
+            parsed.only_group_posts = True
         
         # Validate post IDs exist
         if not parsed.post_ids:
@@ -6964,6 +7159,7 @@ async def process_single_post(
     target_user_id: int = None,
     session_string: Optional[str] = None,
     context: Optional[TaskContext] = None,
+    source_message: Optional[Message] = None,
 ) -> Optional[Union[bool, str]]:
     """
     Process a single NON-ALBUM post completely before returning.
@@ -6977,6 +7173,7 @@ async def process_single_post(
     Args:
         message: Original user message (can be None for queued items)
         target_user_id: User ID to send to (used when message is None)
+        source_message: Optional already-fetched message from a filtered request.
     """
     user_id = context.user_id if context else (target_user_id if target_user_id else (message.chat.id if message else None))
     if not user_id:
@@ -7010,11 +7207,13 @@ async def process_single_post(
         
         # Get the message with timeout
         try:
-            await _resolve_peer_safe(acc, chat_id, context)
-            msg = await asyncio.wait_for(
-                acc.get_messages(chat_id, post_id),
-                timeout=30.0
-            )
+            msg = source_message
+            if msg is None:
+                await _resolve_peer_safe(acc, chat_id, context)
+                msg = await asyncio.wait_for(
+                    acc.get_messages(chat_id, post_id),
+                    timeout=30.0
+                )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching message {post_id}")
             await _notify_failure("fetch", "get_messages timed out")

@@ -98,6 +98,7 @@ data/PROMPTS.md                     — Prompt tarixi: sessiya buyurtmalari va y
 ```
 /uploadsetting [auto|force_split|no_split]  — Upload bo'lish usulini tanlash
 /split_media [on|off|auto]                  — Caption bo'lishni boshqarish
+/only <guruh_havolasi>                     — Bog'langan kanalning avtomatik postlari va guruh nomidan yozilgan xabarlar
 ```
 
 ---

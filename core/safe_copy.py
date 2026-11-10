@@ -556,7 +556,8 @@ async def safe_forward_or_copy(
             options=[opt.text for opt in source_msg.poll.options],
             correct_option_id=getattr(source_msg.poll, 'correct_option_id', None),
             explanation=getattr(source_msg.poll, 'explanation', None),
-            is_quiz=source_msg.poll.type.name == 'QUIZ' if source_msg.poll.type else False
+            is_quiz=source_msg.poll.type.name == 'QUIZ' if source_msg.poll.type else False,
+            user_id=target_chat_id,
         )
         try:
             msg = await _send_text_safe(client, target_chat_id, poll_text, None, reply_to_message_id)

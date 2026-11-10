@@ -7894,12 +7894,13 @@ async def download_and_send_media(
                             await asyncio.sleep(2)
 
                     if status_msg:
-                        await _safe_status_edit_message(
-                            client,
-                            ctx_target_chat_id,
-                            status_msg.id,
-                            get_string(user_id, "split_complete", parts=total_parts),
-                        )
+                        # All parts were delivered. Delete only the bot's
+                        # temporary progress message, as on the non-split path.
+                        # Cleanup failure must never replay delivered parts.
+                        try:
+                            await client.delete_messages(ctx_target_chat_id, [status_msg.id])
+                        except Exception as cleanup_err:
+                            logger.debug("Split upload status cleanup failed: %s", cleanup_err)
                     return True
 
                 except Exception as split_err:

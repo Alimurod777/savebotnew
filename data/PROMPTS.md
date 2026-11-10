@@ -1676,3 +1676,20 @@ BUG-103 yozildi. Main full pytest: 537 passed, 22 subtests passed; migration
 UMUMIY YO‘NALISH: main va origin/wzgram birga yangilansin; Wzgramga xos
 upload coordinator notice ham locale ishlatsin. Oddiy source kontentga,
 ENV/session credential, routing, flood algoritmi va live botga tegilmasin.
+
+## Sessiya (2026-11-10) — Poll label va split status cleanup misollari
+
+So‘rov: ruscha savolli pollning Uzbek sarlavhalari hamda barcha qismlar
+ketgach qolgan «Файл разделён на 2 частей!» statusini ko‘rsatish.
+BUG-104: standard split success progressni delete qilib qaytadi, umumiy
+cleanupdan oldingi return sababli status qolishi tuzatildi. Faqat bot statusi
+o‘chadi; cleanup xatosi uploadni qaytarmaydi. Failure konteksti saqlanadi.
+BUG-105: core.message_utils dagi existing poll normalizer va core.safe_copy
+kirish yo‘li ham recipientning tanlangan tilini ishlatadi. Asl savol/variant/
+explanation, bo‘sh joylar va vote belgilariga tegilmadi.
+16 yangi offline test (3 til, quiz natijasi, safe-copy, document/video split,
+cleanup FloodWait/error, upload/copy failure). Main full pytest 553 passed va
+22 subtests passed; migration 678 symbols/0 failures, pip check, diff check.
+UMUMIY YO‘NALISH: main va Wzgram ikkisi yangilansin. Muvaffaqiyatli yuborilgan
+media/part/caption qoladi, vaqtinchalik bot statusi ketadi; xato yoki cleanup
+uchun kontent qayta yuborilmasin. ENV/session/live botga tegilmasin.

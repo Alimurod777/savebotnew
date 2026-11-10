@@ -1,6 +1,7 @@
 # QR Code Login utilities for Telegram
 # Uses auth.ExportLoginToken API for QR-based authentication
 
+from TechVJ.lang import get_string
 import os
 import asyncio
 import base64
@@ -293,27 +294,20 @@ async def wait_for_qr_scan(client, user_id, bot, chat_id, timeout=120, refresh_i
             
             if token is None:
                 cleanup_qr_files(user_id)
-                return False, False, "Failed to generate QR code token"
+                return False, False, get_string(user_id, 'qr_token_failed')
             
             # Create QR image
             qr_path = create_qr_image(token, user_id)
             if not qr_path:
                 cleanup_qr_files(user_id)
-                return False, False, "Failed to create QR code image"
+                return False, False, get_string(user_id, 'qr_image_failed')
             
             # Calculate remaining time
             remaining = int(timeout - (current_time - start_time))
             
             # Send or update QR code message
             caption = (
-                "**Scan this QR code to login**\n\n"
-                "**Instructions:**\n"
-                "1. Open Telegram on your phone\n"
-                "2. Go to **Settings** > **Devices** > **Link Desktop Device**\n"
-                "3. Point your phone camera at this QR code\n\n"
-                f"⏱ Time remaining: **{remaining}s**\n"
-                f"🔄 QR refreshes every {refresh_interval}s\n\n"
-                "_Send /cancel to cancel login_"
+                get_string(user_id, "qr_caption", seconds=remaining, refresh=refresh_interval)
             )
             
             try:
@@ -378,7 +372,7 @@ async def wait_for_qr_scan(client, user_id, bot, chat_id, timeout=120, refresh_i
             await qr_message.delete()
         except:
             pass
-    return False, False, "Login timeout. Please try again."
+    return False, False, get_string(user_id, 'qr_timeout')
 
 
 async def perform_qr_login(bot, message, user_id):
@@ -396,7 +390,7 @@ async def perform_qr_login(bot, message, user_id):
     from database.db import database
     
     if not HAS_QRCODE:
-        return False, None, "QR code library not installed. Please install: pip install qrcode[pil] Pillow"
+        return False, None, get_string(user_id, 'qr_library_missing')
     
     # Create sessions directory
     os.makedirs("sessions", exist_ok=True)
@@ -440,18 +434,15 @@ async def perform_qr_login(bot, message, user_id):
                     two_step_msg = await ask_message(
                         client=bot,
                         chat_id=user_id,
-                        text=f"**Your account has Two-Step Verification enabled.**\n\n"
-                        f"Please enter your 2FA password:\n\n"
-                        f"**Attempts remaining: {remaining_2fa}**\n"
-                        f"_Send /cancel to cancel_",
+                        text=get_string(user_id, "send_password") + get_string(user_id, "attempts_remaining", count=remaining_2fa),
                         filters_arg=filters.text,
                         timeout=300
                     )
                 except TimeoutError:
-                    return False, None, "Login cancelled due to timeout."
+                    return False, None, get_string(user_id, 'qr_login_timeout')
                 
                 if two_step_msg.text == '/cancel':
-                    return False, None, "Login cancelled"
+                    return False, None, get_string(user_id, 'qr_cancelled')
                 
                 try:
                     password = two_step_msg.text
@@ -459,29 +450,29 @@ async def perform_qr_login(bot, message, user_id):
                     break  # Success, exit loop
                 except PasswordHashInvalid:
                     if fa_attempt < max_2fa_attempts - 1:
-                        await bot.send_message(user_id, "**Invalid password. Please try again.**")
+                        await bot.send_message(user_id, get_string(user_id, "invalid_password"))
                         continue
                     else:
-                        return False, None, "Invalid 2FA password. Maximum attempts reached."
+                        return False, None, get_string(user_id, 'qr_password_limit')
                 except Exception as e:
                     if "PasswordHashInvalid" in str(e) or "PASSWORD" in str(e).upper():
                         if fa_attempt < max_2fa_attempts - 1:
-                            await bot.send_message(user_id, "**Invalid password. Please try again.**")
+                            await bot.send_message(user_id, get_string(user_id, "invalid_password"))
                             continue
                         else:
-                            return False, None, "Invalid 2FA password. Maximum attempts reached."
-                    return False, None, f"2FA error: {str(e)}"
+                            return False, None, get_string(user_id, 'qr_password_limit')
+                    return False, None, get_string(user_id, 'qr_2fa_error', value_0=str(e))
         
         # Export session string
         session_string = await client.export_session_string()
         
         if not session_string or len(session_string) < 100:
-            return False, None, "Failed to export session"
+            return False, None, get_string(user_id, 'qr_export_failed')
         
         return True, session_string, None
         
     except Exception as e:
-        return False, None, f"Login error: {str(e)}"
+        return False, None, get_string(user_id, 'qr_error_detail', value_0=str(e))
     
     finally:
         # Cleanup

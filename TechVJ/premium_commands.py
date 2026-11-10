@@ -22,6 +22,7 @@ User commands (any user):
   /split_media [on|off]         — Toggle caption splitting per-user
 """
 
+from TechVJ.lang import get_string
 from core.owner_settings import persist_owner_change
 import asyncio
 import logging
@@ -268,13 +269,7 @@ async def upload_setting_command(client: Client, message: Message):
     if len(parts) < 2:
         # Show current setting
         await message.reply(
-            f"**Upload Setting**\n\n"
-            f"Current: `{current}`\n\n"
-            f"**Options:**\n"
-            f"• `auto` — No split only with your own Premium session\n"
-            f"• `force_split` — Always split even if Premium\n"
-            f"• `no_split` — Never split (requires your own Premium session)\n\n"
-            f"**Usage:** `/uploadsetting <option>`",
+            get_string(user_id, 'upload_setting_detail', current=current),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -283,8 +278,7 @@ async def upload_setting_command(client: Client, message: Message):
 
     if new_setting not in VALID_SETTINGS:
         await message.reply(
-            f"Invalid option: `{new_setting}`\n"
-            f"Valid options: `auto`, `force_split`, `no_split`",
+            get_string(user_id, 'upload_invalid', new_setting=new_setting),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -293,20 +287,18 @@ async def upload_setting_command(client: Client, message: Message):
     if new_setting == UPLOAD_NO_SPLIT:
         if not await _user_has_own_premium_session(client, user_id):
             await message.reply(
-                "**Cannot set `no_split`**\n\n"
-                "This option requires your own Telegram Premium session string.\n"
-                "Without a valid personal session, files >2GB will be split.",
+                get_string(user_id, 'own_premium_required'),
                 **build_reply_kwargs_from_message(message)
             )
             return
 
     if set_user_upload_setting(user_id, new_setting):
         await message.reply(
-            f"Upload setting changed to `{new_setting}`",
+            get_string(user_id, 'upload_setting_saved', new_setting=new_setting),
             **build_reply_kwargs_from_message(message)
         )
     else:
-        await message.reply("Failed to save setting. Please try again.")
+        await message.reply(get_string(user_id, 'setting_save_failed'))
 
 
 @Client.on_message(filters.command("split_media") & filters.private)
@@ -330,18 +322,14 @@ async def split_media_command(client: Client, message: Message):
     if len(parts) < 2:
         # Show current status
         if current == UPLOAD_FORCE_SPLIT:
-            status = "**ON** ✅ — Captions will always be split"
+            status = get_string(user_id, 'split_mode_on')
         elif current == UPLOAD_NO_SPLIT:
-            status = "**OFF** ❌ — No splitting (your Premium session)"
+            status = get_string(user_id, 'split_mode_off')
         else:
-            status = "**AUTO** 🔄 — System decides from your Premium+session"
+            status = get_string(user_id, 'split_mode_auto')
 
         await message.reply(
-            f"**Split Media Status:** {status}\n\n"
-            f"**Usage:**\n"
-            f"• `/split_media on` — Always split captions\n"
-            f"• `/split_media off` — Never split (requires your own Premium session)\n"
-            f"• `/split_media auto` — Let system decide",
+            get_string(user_id, 'split_setting_detail', status=status),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -354,9 +342,7 @@ async def split_media_command(client: Client, message: Message):
         # Verify user's own Premium session is available
         if not await _user_has_own_premium_session(client, user_id):
             await message.reply(
-                "**Cannot disable splitting** ❌\n\n"
-                "This requires your own Telegram Premium session string.\n"
-                "Use `/split_media on` or `/split_media auto` instead.",
+                get_string(user_id, 'own_premium_required'),
                 **build_reply_kwargs_from_message(message)
             )
             return
@@ -365,24 +351,23 @@ async def split_media_command(client: Client, message: Message):
         new_setting = UPLOAD_AUTO
     else:
         await message.reply(
-            f"Invalid option: `{choice}`\n"
-            f"Use: `on`, `off`, or `auto`",
+            get_string(user_id, 'split_invalid', choice=choice),
             **build_reply_kwargs_from_message(message)
         )
         return
 
     if set_user_upload_setting(user_id, new_setting):
         labels = {
-            UPLOAD_FORCE_SPLIT: "ON ✅ — Captions will always be split",
-            UPLOAD_NO_SPLIT: "OFF ❌ — No splitting (your Premium session)",
-            UPLOAD_AUTO: "AUTO 🔄 — System decides from your Premium+session",
+            UPLOAD_FORCE_SPLIT: get_string(user_id, 'split_mode_on'),
+            UPLOAD_NO_SPLIT: get_string(user_id, 'split_mode_off'),
+            UPLOAD_AUTO: get_string(user_id, 'split_mode_auto'),
         }
         await message.reply(
-            f"**Split Media:** {labels.get(new_setting, new_setting)}",
+            get_string(user_id, 'split_setting_saved', value_0=labels.get(new_setting, new_setting)),
             **build_reply_kwargs_from_message(message)
         )
     else:
-        await message.reply("Failed to save setting. Please try again.")
+        await message.reply(get_string(user_id, 'setting_save_failed'))
 
 
 # ==================== /premium — UNIFIED RELAY MANAGEMENT ====================

@@ -251,7 +251,14 @@ def test_public_user_session_counts_service_skips_separately(monkeypatch, with_t
             bot, NS(chat=NS(id=123), id=1),
             NS(channel_id='synthetic_channel', post_ids=sorted(posts)), context=ctx)
         final = bot.edit_message_text.await_args.args[2]
-        assert 'Service messages skipped: 1' in final
-        assert ('Processed: 1/2' if with_text else 'No content to send') in final
+        assert 'Kontentsiz xizmat xabarlari: 1' in final
+        assert ('Qayta ishlandi: 1/2' if with_text else 'Yuboriladigan kontent yo‘q') in final
         batch.record_error.assert_not_called()
     asyncio.run(run())
+
+
+@pytest.fixture(autouse=True)
+def _use_uzbek_ui_for_existing_regressions(monkeypatch):
+    # These regressions assert Uzbek UI text; do not depend on host preferences.
+    from TechVJ import lang
+    monkeypatch.setattr(lang, 'get_user_lang', lambda user_id: 'uz')

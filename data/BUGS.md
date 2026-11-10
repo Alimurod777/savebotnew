@@ -1887,3 +1887,36 @@ reconnectni tekshiradi. Full pytest: 460 passed, 22 subtests passed.
 Migration: 663 symbols, 0 failures; pip check va diff check o'tdi.
 ENV/routing/sessions o'zgarmadi. Live service restart yoki send bajarilmadi;
 yangi kod service keyingi ishga tushirilganda yuklanadi.
+
+## BUG-101: /lang tanlanganda ham bot UI boshqa tilda qoladi
+
+Status: ✅ Tuzatildi (2026-11-10).
+Sabab: lang.py lug‘ati mavjud, ammo login/logout/QR, start/help/status,
+navbat, progress va post/topic natijalarining ko‘pi hardcoded matn yuborgan.
+Manba sarlavhasi save.py da, «📌 Davomi» esa caption_splitter ichida alohida
+yozilgan. Rus tili tanlanganda ham «Tugadi / Yuklandi / Albumlar», «Manba»
+va «Davomi» qolgan — foydalanuvchi 6/6 yuklash misoli bilan tasdiqlagan.
+Yechim: asosiy user flow mavjud get_string orqali tanlangan EN/UZ/RU
+lug‘atiga ulandi; har tilda 232 kalit. Source/topic sarlavhalari va caption
+continuation_prefix ham tarjima qilinadi. Asl post/caption/sarlavha nomi
+tarjima qilinmaydi; UTF-16 entity siljishi aynan lokal header bilan hisoblanadi.
+Split/premium user sozlamalari va band sessiya tugmalari ham lokalizatsiya
+qilindi. Ruscha progress bot chat-log filtrida chiqariladi, final natija va
+manba captionlari filtrlanmaydi. Tilni diskka saqlash xatosida success yo‘q.
+Owner diagnostikasi/administrativ buyruqlar va Telegram raw exception matnlari
+to‘liq tarjima doirasiga kiritilmadi.
+Tekshiruv: 22 yangi offline til regressioni, jami pytest 482 passed va
+22 subtests passed; migration 665 symbols/0 failures, pip check va diff check.
+Live service restart yoki Telegramga xabar yuborish bajarilmadi.
+
+## BUG-102: Caption davomi sarlavhasi overflow chegarasiga qo‘shilmagan
+
+Status: ✅ Tuzatildi (2026-11-10).
+Sabab: caption_splitter 4096 UTF-16 birlikli overflow tayyorlab, keyin
+«Davomi N/total» headerini qo‘shgan; tayyor xabar Telegram chegarasidan
+oshishi mumkin. Uzunroq ruscha header bu muammoni ham keltirib chiqarardi.
+Yechim: overflow bo‘lishdan oldin lokal header va part raqamlari uchun joy
+ajratiladi. is_premium va mavjud caption limitlari saqlandi; yangi
+continuation_prefix keyword-only, default eski callerlar uchun saqlandi.
+Emoji bilan uzun premium/non-premium caption regressionlari tayyor overflow
+4096 UTF-16 birlikdan oshmasligini, entity offsetlari va asl matnni tekshiradi.

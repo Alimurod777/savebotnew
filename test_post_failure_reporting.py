@@ -123,7 +123,7 @@ def test_private_range_final_status_preserves_stop_reason(monkeypatch, throttled
             client, SimpleNamespace(id=1), parsed, context=SimpleNamespace(user_id=123))
         final = client.edit_message_text.await_args.args[2]
         if stop_kind.startswith('cancel_'):
-            assert 'Bekor qilindi' in final
+            assert save.get_string(123, 'operation_cancelled') in final
             assert 'Tugadi' not in final
             assert attempted == [161, 162]
         elif initial_flood_count:
@@ -217,3 +217,10 @@ def test_owner_gets_exact_error_even_if_context_verification_fails(monkeypatch, 
         persist.assert_awaited_once()
         acc.get_messages.assert_not_awaited()
     asyncio.run(run())
+
+
+@pytest.fixture(autouse=True)
+def _use_uzbek_ui_for_existing_regressions(monkeypatch):
+    # These regressions assert Uzbek UI text; do not depend on host preferences.
+    from TechVJ import lang
+    monkeypatch.setattr(lang, 'get_user_lang', lambda user_id: 'uz')

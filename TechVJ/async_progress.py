@@ -16,6 +16,8 @@ warnings.warn(
 
 # Original: Async-Safe Progress System for Telegram Media Transfers
 
+from TechVJ.lang import get_string
+
 import asyncio
 import time
 import logging
@@ -223,29 +225,30 @@ class ProgressFormatter:
         Returns:
             Formatted message string
         """
+        user_id = state.status_message.chat.id if state.status_message else 0
         percentage = state.get_percentage()
         eta = state.get_eta_seconds(speed)
         
         # Determine emoji based on transfer type
         if state.transfer_type == TransferType.DOWNLOAD:
             icon = "⬇️"
-            action = "Downloading"
+            action = get_string(user_id, "downloading")
         else:
             icon = "⬆️"
-            action = "Uploading"
+            action = get_string(user_id, "uploading")
         
         # Build progress bar
         bar = cls.format_progress_bar(percentage)
         
         # Build message
         lines = [
-            f"{icon} **{action}**",
+            action,
             "",
             f"`{bar}` {percentage:.1f}%",
             "",
             f"📦 {cls.format_size(state.current_bytes)} / {cls.format_size(state.total_bytes)}",
             f"⚡ {cls.format_speed(speed)}",
-            f"⏱ ETA: {cls.format_time(eta)}",
+            f"⏱ {get_string(user_id, 'eta_label')}: {cls.format_time(eta) if eta > 0 else get_string(user_id, 'calculating')}",
         ]
         
         # Add filename if available
@@ -266,6 +269,7 @@ class ProgressFormatter:
         error_message: Optional[str] = None
     ) -> str:
         """Format a completion message."""
+        user_id = state.status_message.chat.id if state.status_message else 0
         elapsed = time.time() - state.start_time
         avg_speed = state.total_bytes / elapsed if elapsed > 0 else 0
         
@@ -276,15 +280,15 @@ class ProgressFormatter:
         
         if success:
             return (
-                f"✅ **{action} Complete**\n\n"
-                f"📦 Size: {cls.format_size(state.total_bytes)}\n"
-                f"⏱ Time: {cls.format_time(elapsed)}\n"
-                f"⚡ Avg Speed: {cls.format_speed(avg_speed)}"
+                get_string(user_id, "download_complete" if state.transfer_type == TransferType.DOWNLOAD else "upload_complete") + "\n\n" +
+                f"📦 {get_string(user_id, 'size_label')}: {cls.format_size(state.total_bytes)}\n"
+                f"⏱ {get_string(user_id, 'time_label')}: {cls.format_time(elapsed)}\n"
+                f"⚡ {get_string(user_id, 'average_speed_label')}: {cls.format_speed(avg_speed)}"
             )
         else:
             return (
-                f"❌ **{action} Failed**\n\n"
-                f"{error_message or 'Unknown error'}"
+                get_string(user_id, "download_failed" if state.transfer_type == TransferType.DOWNLOAD else "upload_failed") + "\n\n" +
+                f"{error_message or get_string(user_id, 'unknown_error')}"
             )
 
 

@@ -1608,3 +1608,23 @@ format placeholderlari offline tekshirildi; full pytest 460 passed va
 22 subtests passed; migration 663 symbols/0 failures, pip check o‘tdi.
 UMUMIY YO‘NALISH: /lang English, O‘zbek va Русский tillarini qo‘llasin.
 Upload/session/routing o‘zgarmadi; live Telegram send va restart bajarilmadi.
+
+## Sessiya davomi (2026-11-10) — Tanlangan tilni asosiy UIga ulash
+
+So‘rov: ayrim joylarda eski inglizcha matn qolganini tekshirish va yaxshilash.
+Foydalanuvchi /lang Русский tanlangandan keyingi «Tugadi / Yuklandi: 6/6 /
+Albumlar: 0», «Manba: MB2 Master's», «Davomi 2/2» misolini yubordi.
+BUG-101 tuzatildi: login/logout/QR, start/help/status, stop/queue, progress,
+comment/topic/public/private natijalari, source/topic sarlavhasi, split/premium
+user sozlamalari mavjud get_string tizimiga ulandi. 232 kalit har uch tilda.
+BUG-102: lokal caption header uchun UTF-16 joy oldindan rezerv qilinadi.
+Manba matni va entitylari saqlandi; caption header offsetlari test qilindi.
+Chat-log progress filtri ruscha transfer UI uchun yangilandi. Eski Uzbek UI
+regressionlari test tilini endi aniq belgilaydi. 22 yangi offline test bor.
+Tekshiruv: full pytest 482 passed va 22 subtests passed; Wzgram migration
+665 symbols/0 failures, pip check, compileall va git diff --check o‘tdi.
+UMUMIY YO‘NALISH: botning asosiy foydalanuvchi UI matni tanlangan EN/UZ/RU
+tilida chiqsin, asl saqlanayotgan kontentga tegilmasin. Owner administrativ
+buyruqlar/raw Telegram xatolari hali to‘liq tarjima qilinmagan. Routing/session
+tanlash/ENV o‘zgarmadi; jonli Telegram send va restart qilinmadi. Yangi kod
+xizmat keyingi ishga tushirilganda faollashadi; o‘zgarishlar GitHubga push qilinadi.

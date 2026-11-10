@@ -16,6 +16,8 @@ Design Decisions:
 Author: WOODcraft Refactored
 """
 
+from TechVJ.lang import get_string
+
 import asyncio
 import time
 import logging
@@ -279,7 +281,8 @@ class ProgressController:
                 current_bytes=state.current_bytes,
                 total_bytes=state.total_bytes,
                 speed=speed,
-                eta_seconds=eta_seconds
+                eta_seconds=eta_seconds,
+                user_id=state.status_message.chat.id if state.status_message else 0,
             )
             
             # Skip if text hasn't changed
@@ -329,7 +332,8 @@ class ProgressController:
         current_bytes: int,
         total_bytes: int,
         speed: float,
-        eta_seconds: float
+        eta_seconds: float,
+        user_id: int = 0,
     ) -> str:
         """
         Format the progress message text.
@@ -358,14 +362,14 @@ class ProgressController:
             eta_str = f"{int(eta_seconds / 3600)}h {int((eta_seconds % 3600) / 60)}m"
         
         # Build message
-        action = "⬇️ Downloading" if transfer_type == "download" else "⬆️ Uploading"
+        action = get_string(user_id, "downloading" if transfer_type == "download" else "uploading")
         
         return (
             f"{action}\n\n"
             f"{bar} {percentage:.1f}%\n\n"
             f"📦 {current_mb:.1f} / {total_mb:.1f} MB\n"
             f"⚡ {speed_mbs:.1f} MB/s\n"
-            f"⏱ ETA: {eta_str}"
+            f"⏱ {get_string(user_id, 'eta_label')}: {eta_str}"
         )
     
     async def finalize_progress(
@@ -394,18 +398,19 @@ class ProgressController:
             total_mb = state.total_bytes / (1024 * 1024) if state.total_bytes > 0 else 0
             avg_speed = (state.total_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0
             
+            user_id = state.status_message.chat.id if state.status_message else 0
             # Format completion message
             if success:
                 text = (
-                    f"✅ {'Download' if state.transfer_type == 'download' else 'Upload'} Complete\n\n"
-                    f"📦 Size: {total_mb:.1f} MB\n"
-                    f"⏱ Time: {elapsed:.1f}s\n"
-                    f"⚡ Avg Speed: {avg_speed:.1f} MB/s"
+                    get_string(user_id, "download_complete" if state.transfer_type == "download" else "upload_complete") + "\n\n" +
+                    f"📦 {get_string(user_id, 'size_label')}: {total_mb:.1f} MB\n"
+                    f"⏱ {get_string(user_id, 'time_label')}: {elapsed:.1f}s\n"
+                    f"⚡ {get_string(user_id, 'average_speed_label')}: {avg_speed:.1f} MB/s"
                 )
             else:
                 text = (
-                    f"❌ {'Download' if state.transfer_type == 'download' else 'Upload'} Failed\n\n"
-                    f"{error_message or 'Unknown error'}"
+                    get_string(user_id, "download_failed" if state.transfer_type == "download" else "upload_failed") + "\n\n" +
+                    f"{error_message or get_string(user_id, 'unknown_error')}"
                 )
             
             # Update message

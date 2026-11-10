@@ -404,10 +404,12 @@ class AlbumHandler:
         
         # Add continuation header to first chunk
         first_chunk = chunks[0]
-        text = f"[Caption continued]\n\n{first_chunk.text}"
+        from TechVJ.lang import get_string
+        header = get_string(chat_id, "caption_continued") + "\n\n"
+        text = header + first_chunk.text
         
         # Adjust entity offsets for added header
-        header_len = utf16_length("[Caption continued]\n\n")
+        header_len = utf16_length(header)
         adjusted_entities = []
         for e in first_chunk.entities:
             try:

@@ -24,6 +24,8 @@ Usage:
         await message.reply(f"Navbatda: {position}-o'rin")
 """
 
+from TechVJ.lang import get_string
+
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
@@ -283,20 +285,14 @@ async def check_and_queue(
     if position == 0:
         return True, 0, ""
     elif position == -1:
-        return False, -1, (
-            "⚠️ **Navbat to'lgan**\n\n"
-            f"Maksimum {MAX_QUEUE_SIZE} ta havola navbatda bo'lishi mumkin.\n"
-            "Oldingi yuklanishlar tugashini kuting yoki /stop bilan bekor qiling."
-        )
+        return False, -1, get_string(user_id, "queue_full", max=MAX_QUEUE_SIZE)
     else:
         queue_status = await user_queue.get_status(user_id)
-        return False, position, (
-            f"📋 **Navbatga qo'shildi**\n\n"
-            f"O'rni: **{position}** / {queue_status['queue_size']}\n"
-            f"Hozir yuklanmoqda: {queue_status['current_link'] or 'N/A'}\n\n"
-            f"Navbatingiz kelganda avtomatik boshlanadi.\n"
-            f"Bekor qilish: /stop"
+        return False, position, get_string(
+            user_id, "queue_added", position=position,
+            current=queue_status['current_link'] or get_string(user_id, "processing"),
         )
+
 
 
 async def on_download_complete(user_id: int, client, process_func: Callable) -> None:
@@ -315,9 +311,7 @@ async def on_download_complete(user_id: int, client, process_func: Callable) -> 
         # Notify user
         try:
             await client.send_message(
-                next_item.chat_id,
-                f"▶️ **Navbatdan keyingi havola boshlanmoqda...**\n"
-                f"`{next_item.link[:60]}...`"
+                user_id, get_string(user_id, "queue_next", link=next_item.link[:60] + "...")
             )
         except Exception as e:
             logger.warning(f"Failed to notify user {user_id}: {e}")
@@ -336,23 +330,18 @@ async def on_download_complete(user_id: int, client, process_func: Callable) -> 
             await on_download_complete(user_id, client, process_func)
 
 
-def format_queue_status(status: Dict[str, Any]) -> str:
-    """Format queue status for display."""
+def format_queue_status(status: Dict[str, Any], user_id: int = 0) -> str:
+    """Format queue state in the requesting user's language."""
     if not status['is_processing'] and status['queue_size'] == 0:
-        return "📭 Navbat bo'sh"
-    
-    lines = ["📋 **Navbat holati**\n"]
-    
+        return get_string(user_id, "queue_empty")
+    lines = [get_string(user_id, "queue_heading") + "\n"]
     if status['is_processing']:
-        lines.append(f"▶️ Hozir: {status['current_link'] or 'Yuklanmoqda...'}")
-    
+        lines.append(get_string(user_id, "queue_current", link=status['current_link'] or get_string(user_id, "processing")))
     if status['queue_size'] > 0:
-        lines.append(f"\n📝 Navbatda: {status['queue_size']} ta\n")
-        for item in status['queue_items'][:5]:  # Show max 5
+        lines.append(get_string(user_id, "queue_waiting_count", count=status['queue_size']))
+        for item in status['queue_items'][:5]:
             lines.append(f"  {item['position']}. {item['link']}")
         if status['queue_size'] > 5:
-            lines.append(f"  ... va yana {status['queue_size'] - 5} ta")
-    
-    lines.append(f"\n📊 Jami yuklangan: {status['total_processed']}")
-    
+            lines.append(get_string(user_id, "more_count", count=status['queue_size'] - 5))
+    lines.append(get_string(user_id, "queue_total", count=status['total_processed']))
     return "\n".join(lines)

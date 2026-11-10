@@ -221,6 +221,8 @@ def split_caption(
     caption: str,
     entities: Optional[List[MessageEntity]],
     is_premium: bool = False,
+    *,
+    continuation_prefix: str = CONTINUATION_PREFIX,
 ) -> Tuple[CaptionChunk, List[CaptionChunk]]:
     """
     Split a caption into a primary chunk and overflow chunks.
@@ -231,7 +233,8 @@ def split_caption(
     Step 1: Strip custom emoji entities (non-premium only).
     Step 2: If caption fits → return (chunk, []).
     Step 3: Split into multiple chunks respecting hyperlink boundaries.
-    Step 4: Label overflow chunks with "📌 Davomi N/total".
+    Step 4: Label overflow chunks with the caller's localized continuation_prefix.
+            The default remains "📌 Davomi" for existing callers.
     Step 5: Validate all entity bounds before returning.
 
     Returns:
@@ -260,9 +263,17 @@ def split_caption(
         chunk = CaptionChunk(text=text, entities=clean_entities).validate()
         return chunk, []
 
+    # Reserve the complete localized header before splitting overflow. The number
+    # of parts cannot exceed the number of characters plus one.
+    max_parts = len(text) + 1
+    header_budget = utf16_len(f"{continuation_prefix} {max_parts}/{max_parts}\n\n")
+    overflow_limit = MESSAGE_LIMIT - header_budget
+    if overflow_limit <= 0:
+        raise ValueError("Continuation header exceeds Telegram message limit")
+
     # Step 3: split into raw chunks
     raw_chunks = _split_text_into_chunks(
-        text, clean_entities, caption_limit, MESSAGE_LIMIT, is_premium=is_premium
+        text, clean_entities, caption_limit, overflow_limit, is_premium=is_premium
     )
 
     if not raw_chunks:
@@ -278,7 +289,7 @@ def split_caption(
     total = 1 + len(overflow_raw)
     overflow: List[CaptionChunk] = []
     for i, chunk in enumerate(overflow_raw, start=2):
-        header = f"{CONTINUATION_PREFIX} {i}/{total}\n\n"
+        header = f"{continuation_prefix} {i}/{total}\n\n"
         header_utf16 = utf16_len(header)
         overflow_text = header + chunk.text
 

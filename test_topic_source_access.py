@@ -107,3 +107,10 @@ def test_unsupported_search_still_uses_replies(monkeypatch):
         assert extractor._raw_search_supported is False
         replies.assert_awaited_once_with(81)
     asyncio.run(run())
+
+
+@pytest.fixture(autouse=True)
+def _use_uzbek_ui_for_existing_regressions(monkeypatch):
+    # These regressions assert Uzbek UI text; do not depend on host preferences.
+    from TechVJ import lang
+    monkeypatch.setattr(lang, 'get_user_lang', lambda user_id: 'uz')

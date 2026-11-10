@@ -2424,3 +2424,10 @@ def test_url_cleanup_preserves_internal_query_characters():
     parsed, error = parse_telegram_url('https://t.me/QuizBot?start=ab\u2060cd')
     assert parsed is None
     assert error is not None
+
+
+@pytest.fixture(autouse=True)
+def _use_uzbek_ui_for_existing_regressions(monkeypatch):
+    # These regressions assert Uzbek UI text; do not depend on host preferences.
+    from TechVJ import lang
+    monkeypatch.setattr(lang, 'get_user_lang', lambda user_id: 'uz')

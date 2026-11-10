@@ -278,7 +278,8 @@ class Bot(Client):
                 
                 # Start the connection monitor (SAFE version)
                 if SAFE_RECONNECT_AVAILABLE:
-                    self._connection_monitor_obj = create_connection_monitor(self)
+                    if getattr(self, '_connection_monitor_obj', None) is None:
+                        self._connection_monitor_obj = create_connection_monitor(self)
                     self._connection_monitor_obj.start()
                     logger.info("Safe connection monitor started")
                 else:

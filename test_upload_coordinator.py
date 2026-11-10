@@ -255,6 +255,9 @@ def test_cancelled_request_does_not_stop_worker_or_send_cancelled_file(monkeypat
 @pytest.mark.parametrize('premium', [False, True])
 @pytest.mark.parametrize('seconds', [8, 1912])
 def test_private_range_resumes_after_full_flood_cooldown(monkeypatch, tmp_path, clock, premium, seconds):
+    from TechVJ import lang
+    # This regression checks Uzbek cooldown/resume wording explicitly.
+    monkeypatch.setattr(lang, "get_user_lang", lambda user_id: "uz")
     class PremiumFlood(Exception):
         ID = 'FLOOD_PREMIUM_WAIT_X'
         x = seconds

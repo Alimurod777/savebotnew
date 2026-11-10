@@ -1691,3 +1691,112 @@ Tekshiruv: full pytest 467 passed va 22 subtests passed; yakuniy kengaytirilgan
 service regression 14 passed (public skip/batch error ham qamraldi). Migration
 0 failures, pip check va git diff --check o'tdi. Live tekshiruv faqat source
 metadata o'qishdan iborat, Telegramga xabar yuborilmadi.
+Tekshiruv: full pytest 449 passed va 22 subtests passed; yakuniy kengaytirilgan
+service regression 14 passed (public skip/batch error ham qamraldi). Migration
+0 failures, pip check va git diff --check o'tdi. Live tekshiruv faqat source
+metadata o'qishdan iborat, Telegramga xabar yuborilmadi.
+
+
+## Sessiya (2026-11-10) — Bot javob bermay qolishi diagnostikasi
+
+So'rov: nimaga bot to'xtab qolgan. Read-only Alwaysdata service 31109 va
+project loglari tekshirildi. 9-noyabr 21:12 Telegram uzilishi, 21:15 ikki
+parallel reconnect aniqlandi. safe_disconnect no_updates=True ni tiklamaydi
+(BUG-100); process tirik qolib yangi update qabul qilmaydi. MongoDB ValueError
+warning alohida, process crash emas. Kod/ENV/restart/live send bajarilmadi.
+UMUMIY YO'NALISH: reconnectdan keyin bot yangi xabarlarni qabul qilishi kerak;
+SSH process ro'yxatini alohida Alwaysdata service holati deb talqin qilmaslik.
+
+
+## Sessiya davomi (2026-11-10) — Bot reconnect tuzatishi
+
+So'rov: «shuni to'g'irla». BUG-100 tuzatildi: temporary no_updates finallyda
+tiklanadi, concurrent reconnectlar client lock/generation bilan birlashtiriladi,
+mavjud monitor qayta ishlatiladi. Stop muvaffaqiyatsiz bo'lsa start yo'q.
+9 yangi offline regression; full pytest 460 passed/22 subtests; migration
+663 symbols/0 failures, pip check va diff check o'tdi. Kod GitHubga push qilinadi.
+UMUMIY YO'NALISH: ulanish tiklanganda bot yangi xabarlarni qabul qilsin,
+monitorlar to'planmasin. AGENTS.md no automatic restart siyosati saqlandi;
+ENV va live Telegramga tegilmadi. Service Restart yangi kodni faollashtiradi.
+
+
+## Sessiya (2026-11-10) — /lang menyusiga rus tilini qo‘shish
+
+So‘rov: «lang ga rus tilini ham qosh».
+TechVJ/lang.py ga ru lug‘ati (mavjud 62 kalitning barchasi tarjimasi),
+🇷🇺 Русский tugmasi va lang_ru callback registratsiyasi qo‘shildi.
+Til tanlash va tasdiqlash matni mavjud get_string orqali olinadi;
+rus tili mavjud faylga saqlash mexanizmi bilan eslab qolinadi.
+Tekshiruv: uch til menyusi/callbacki va persistence, tarjima kalitlari va
+format placeholderlari offline tekshirildi; full pytest 460 passed va
+22 subtests passed; migration 663 symbols/0 failures, pip check o‘tdi.
+UMUMIY YO‘NALISH: /lang English, O‘zbek va Русский tillarini qo‘llasin.
+Upload/session/routing o‘zgarmadi; live Telegram send va restart bajarilmadi.
+
+## Sessiya davomi (2026-11-10) — Tanlangan tilni asosiy UIga ulash
+
+So‘rov: ayrim joylarda eski inglizcha matn qolganini tekshirish va yaxshilash.
+Foydalanuvchi /lang Русский tanlangandan keyingi «Tugadi / Yuklandi: 6/6 /
+Albumlar: 0», «Manba: MB2 Master's», «Davomi 2/2» misolini yubordi.
+BUG-101 tuzatildi: login/logout/QR, start/help/status, stop/queue, progress,
+comment/topic/public/private natijalari, source/topic sarlavhasi, split/premium
+user sozlamalari mavjud get_string tizimiga ulandi. 232 kalit har uch tilda.
+BUG-102: lokal caption header uchun UTF-16 joy oldindan rezerv qilinadi.
+Manba matni va entitylari saqlandi; caption header offsetlari test qilindi.
+Chat-log progress filtri ruscha transfer UI uchun yangilandi. Eski Uzbek UI
+regressionlari test tilini endi aniq belgilaydi. 22 yangi offline test bor.
+Tekshiruv: full pytest 482 passed va 22 subtests passed; Wzgram migration
+665 symbols/0 failures, pip check, compileall va git diff --check o‘tdi.
+UMUMIY YO‘NALISH: botning asosiy foydalanuvchi UI matni tanlangan EN/UZ/RU
+tilida chiqsin, asl saqlanayotgan kontentga tegilmasin. Owner administrativ
+buyruqlar/raw Telegram xatolari hali to‘liq tarjima qilinmagan. Routing/session
+tanlash/ENV o‘zgarmadi; jonli Telegram send va restart qilinmadi. Yangi kod
+xizmat keyingi ishga tushirilganda faollashadi; o‘zgarishlar GitHubga push qilinadi.
+
+## Sessiya (2026-11-10) — /only orqali guruh xabarlarini tanlab yuklash
+
+So‘rov: muhokama guruhida asosiy kanaldan kelgan postlar va guruh nomidan
+yuborilgan xabarlarni olish. Yakuniy aniqlashtirish: `/only <havola>` bitta
+buyruqda ishlasin. Persistent rejim va «keyingi havola» holati qo‘shilmadi.
+Yangi core/group_post_filter.py haqiqiy group/sender peer ID va automatic_forward
+hamda forward_origin orqali bog‘langan kanalni tekshiradi; oddiy a’zolar,
+ularning qo‘lda forwardlari va boshqa kanallar avtomatik postlari filtrlanadi.
+Faqat GROUP/SUPERGROUP va forum topic manbalari; kanal/bot/comment-thread
+havolalari rad etiladi. Bog‘langan kanal ma’lum bo‘lmasa uning postlari
+taxminan qabul qilinmaydi, guruh nomidan yuborilgan xabarlar esa olinadi.
+save.py /only handler, umumiy validation/governance/queue va priority dispatch
+orqali ishlaydi. ParsedURL request flagi queued so‘rovda saqlanadi, keyingi
+oddiy havolaga o‘tmaydi. Catch-all exclusion va EN/UZ/RU /help yangilandi.
+100 ID batch bilan faqat so‘ralgan xabarlar olinadi; albomlar filtrlashdan
+keyin yig‘iladi va batch chegarasidan o‘tsa ham saqlanadi. Topic anchor range
+mavjud TopicExtractor.extract_between orqali, mavzulararo xabarlar yuborilmaydi.
+Tanlangan kontent existing process_single_post/process_album_messages orqali
+yuboriladi. Prefetched source_message optional parametri qayta fetchni chetlab
+o‘tadi; oddiy senderning text/media/location/venue/poll/QuizBot yo‘llari saqlandi.
+FloodWait current itemdan davom etadi, /stop tekshiriladi, service skip/error
+alohida hisoblanadi. Chat-log /only commandini va progressini yashiradi,
+keyingi tanlangan kontentni odatdagidek kuzatadi. Yangi UI uchala tilda.
+Tekshiruv: 30 yangi offline regression; full pytest 512 passed va 22 subtests
+passed. Migration 669 symbols/0 failures, pip check, compileall va diff check.
+UMUMIY YO‘NALISH: `/only <guruh_xabari_havolasi>` faqat shu so‘rovni filtrlasin;
+oddiy havolalar, routing va Premium sessiya tanlash siyosati o‘zgarmasin.
+Live Telegram send, ENV/session mutatsiyasi yoki xizmat restarti bajarilmadi.
+
+
+## Sessiya (2026-11-10) — Main yangiliklarini origin/wzgramga birlashtirish
+
+So‘rov: main dagi o‘zgarishlar alohida Wzgram branchiga ham kiritilganmi.
+Tekshiruv: origin/wzgram 2ef3a4b, main eadc564; reconnect, rus tili, kengroq
+lokalizatsiya va /only commitlari faqat mainda qolgan. Oldingi javobda
+Wzgram importli main nusxasi bilan origin/wzgram branchi adashtirilgani
+foydalanuvchiga aniq aytildi. Main to‘liq tarixi merge qilindi.
+Save.py va service regressionlaridagi konfliktlar yangi locale/prefetch
+variantiga moslandi; Wzgram shared account upload coordinator, worker
+queue/cooldown, upload-part patchlari va Alwaysdata launcher o‘zgarishlari
+saqlandi. Wzgramga xos FloodWait testida Uzbek locale aniq belgilandi.
+Tekshiruv: full pytest 530 passed, 22 subtests passed; Wzgram 3.1.6/
+WarpCrypto 2.1.0, 672 import symbols/0 failures; pip check va diff check.
+UMUMIY YO‘NALISH: origin/wzgram main commitlarining barchasini o‘z ichiga
+olsin, Wzgramga xos upload koordinatsiyasi saqlansin; lokal Wzgram clone
+ham fast-forward qilinsin. ENV/runtime session fayllari o‘zgartirilmasin.
+Bot restarti yoki jonli Telegram send bajarilmasin.

@@ -11,6 +11,8 @@ Author: Production-Grade Fix
 Python: 3.10+
 """
 
+from TechVJ.lang import get_string
+
 import asyncio
 import time
 import logging
@@ -276,8 +278,9 @@ class ProgressHandler:
     
     def _format_message(self, state: ProgressState, speed: float) -> str:
         """Format progress message with bar, percentage, speed, ETA."""
+        user_id = state.message.chat.id
         if state.total <= 0:
-            return "📊 Processing..."
+            return get_string(user_id, "processing")
         
         pct = state.get_percentage()
         filled = int(pct / 100 * PROGRESS_BAR_LENGTH)
@@ -310,19 +313,19 @@ class ProgressHandler:
             else:
                 eta = f"{int(eta_sec / 3600)}h {int((eta_sec % 3600) / 60)}m"
         else:
-            eta = "calculating..."
+            eta = get_string(user_id, "calculating")
         
         icon = "⬆️" if state.is_upload else "⬇️"
-        action = "Uploading" if state.is_upload else "Downloading"
+        action = get_string(user_id, "uploading" if state.is_upload else "downloading")
         
         lines = [
-            f"{icon} **{action}**",
+            action,
             "",
             f"`{bar}` {pct:.1f}%",
             "",
             f"📦 {fmt_size(state.current)} / {fmt_size(state.total)}",
             f"⚡ {fmt_speed(speed)}",
-            f"⏱ ETA: {eta}",
+            f"⏱ {get_string(user_id, 'eta_label')}: {eta}",
         ]
         
         if state.filename:
@@ -364,16 +367,17 @@ class ProgressHandler:
                     return f"{b / 1024 ** 2:.1f} MB"
                 return f"{b / 1024 ** 3:.2f} GB"
             
+            user_id = state.message.chat.id
             if success:
                 avg_speed = state.total / elapsed if elapsed > 0 else 0
                 text = (
-                    f"✅ **{'Upload' if state.is_upload else 'Download'} Complete**\n\n"
-                    f"📦 Size: {fmt_size(state.total)}\n"
-                    f"⏱ Time: {elapsed:.1f}s\n"
-                    f"⚡ Avg Speed: {avg_speed / 1024 ** 2:.1f} MB/s"
+                    get_string(user_id, "upload_complete" if state.is_upload else "download_complete") + "\n\n" +
+                    f"📦 {get_string(user_id, 'size_label')}: {fmt_size(state.total)}\n"
+                    f"⏱ {get_string(user_id, 'time_label')}: {elapsed:.1f}s\n"
+                    f"⚡ {get_string(user_id, 'average_speed_label')}: {avg_speed / 1024 ** 2:.1f} MB/s"
                 )
             else:
-                text = f"❌ **{'Upload' if state.is_upload else 'Download'} Failed**\n\n{error or 'Unknown error'}"
+                text = get_string(user_id, "upload_failed" if state.is_upload else "download_failed") + "\n\n" + (error or get_string(user_id, "unknown_error"))
             
             try:
                 await state.client.edit_message_text(

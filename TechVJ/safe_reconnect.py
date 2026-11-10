@@ -10,6 +10,8 @@ Rules:
 4. User sessions are TASK-SCOPED - pass reference, don't recreate
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Optional
@@ -62,6 +64,9 @@ async def safe_disconnect(client: Client, timeout: float = DISCONNECT_TIMEOUT) -
     """
     if not client:
         return True
+
+    had_no_updates = hasattr(client, 'no_updates')
+    previous_no_updates = getattr(client, 'no_updates', None)
     
     try:
         # Check if already disconnected
@@ -87,12 +92,37 @@ async def safe_disconnect(client: Client, timeout: float = DISCONNECT_TIMEOUT) -
     except Exception as e:
         logger.warning(f"Disconnect error: {e}")
         return False
+    finally:
+        # This flag is only temporary. start() must use the original setting,
+        # including when stop() times out, fails or is cancelled.
+        if had_no_updates:
+            client.no_updates = previous_no_updates
 
 
 async def safe_reconnect(
     client: Client,
     max_attempts: int = 3,
     initial_delay: float = MIN_RECONNECT_DELAY
+) -> bool:
+    """Serialize reconnects and share the result with concurrent callers."""
+    lock = getattr(client, '_safe_reconnect_lock', None)
+    if lock is None:
+        lock = asyncio.Lock()
+        client._safe_reconnect_lock = lock
+    generation = getattr(client, '_safe_reconnect_generation', 0)
+    async with lock:
+        if getattr(client, '_safe_reconnect_generation', 0) != generation:
+            return client._safe_reconnect_result
+        result = await _safe_reconnect_locked(client, max_attempts, initial_delay)
+        client._safe_reconnect_result = result
+        client._safe_reconnect_generation = generation + 1
+        return result
+
+
+async def _safe_reconnect_locked(
+    client: Client,
+    max_attempts: int,
+    initial_delay: float,
 ) -> bool:
     """
     Safely reconnect a Pyrogram client WITHOUT recreating it.
@@ -121,6 +151,8 @@ async def safe_reconnect(
                 disconnect_ok = await safe_disconnect(client)
                 if not disconnect_ok:
                     logger.warning("Disconnect did not complete cleanly")
+                    # Never start while an earlier stop may still be active.
+                    continue
             
             # Step 2: Wait for Telegram to acknowledge disconnect
             # This is CRITICAL - too short = AUTH_KEY_DUPLICATED

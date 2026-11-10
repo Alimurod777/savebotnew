@@ -3,6 +3,9 @@
 # Subscribe YouTube Channel For Amazing Bot https://youtube.com/@Tech_VJ
 # Ask Doubt on telegram @KingVJ01
 
+from TechVJ.lang import get_string
+from core.group_post_filter import GroupPostFilter
+
 import asyncio 
 from copy import copy
 import hashlib
@@ -81,9 +84,8 @@ def _safe_session_fp(session_string: Optional[str]) -> str:
         return "unknown"
 
 
-from config import API_ID, API_HASH, OWNER_ID, OWNER_USERNAME, BANNED_MESSAGE, TEMP_DOWNLOAD_DIR
+from config import API_ID, API_HASH, OWNER_ID, OWNER_USERNAME, TEMP_DOWNLOAD_DIR
 from database.async_db import async_db
-from TechVJ.strings import strings, HELP_TXT
 
 from TechVJ.file_splitter import (
     needs_splitting, split_file, cleanup_chunks, 
@@ -516,15 +518,13 @@ async def _handle_session_invalid(client, user_id: int, error) -> None:
 
     # Foydalanuvchiga xabar
     _error_type = getattr(error, 'error_type', 'unknown')
-    _relogin_text = "/login bilan qayta kiring."
+    _relogin_text = get_string(user_id, "relogin")
     if _fast_relogin_enabled:
-        _relogin_text = "Tizim band bo'lmasa 1 daqiqadan keyin /login bilan qayta kiring."
+        _relogin_text = get_string(user_id, "relogin_wait")
     try:
         await core_safe_send(
             client, user_id,
-            f"**Sessiyangiz muddati tugagan**\n"
-            f"Sabab: `{_error_type}`\n\n"
-            f"{_relogin_text}"
+            get_string(user_id, "session_expired_detail", error=_error_type, relogin=_relogin_text)
         )
     except Exception:
         pass
@@ -1209,7 +1209,6 @@ async def _send_split_part_with_peer_retry(
                     seconds, flood_retries, os.path.basename(chunk_path),
                 )
                 if status_msg is not None and status_chat_id is not None:
-                    from TechVJ.lang import get_string
                     await _safe_status_edit_message(
                         bot_client, status_chat_id, status_msg.id,
                         get_string(status_chat_id, "split_flood_wait", seconds=delay),
@@ -1460,6 +1459,7 @@ class ParsedURL:
         thread_root_id: Optional[int] = None,
         thread_source_chat_id: Any = None,
         thread_source_post_id: Optional[int] = None,
+        only_group_posts: bool = False,
     ):
         self.channel_id = channel_id
         self.post_ids = post_ids
@@ -1470,6 +1470,7 @@ class ParsedURL:
         self.thread_root_id = thread_root_id
         self.thread_source_chat_id = thread_source_chat_id
         self.thread_source_post_id = thread_source_post_id
+        self.only_group_posts = only_group_posts
     
     @property
     def is_topic(self) -> bool:
@@ -2204,7 +2205,7 @@ async def send_source_name_message(
     reply_target = _make_reply_target_message(target_chat_id, reply_to_message_id)
     return await client.send_message(
         target_chat_id,
-        f"📡 Manba: {title}",
+        get_string(target_chat_id, "source_heading", title=title),
         parse_mode=ParseMode.DISABLED,
         **build_reply_kwargs_from_message(reply_target),
         **build_link_preview_kwargs(is_disabled=True),
@@ -2228,7 +2229,7 @@ async def _send_source_context_message(
             source_chat,
             getattr(parsed, "channel_id", None) if parsed else None,
         )
-        header = f"📡 Manba: {title}"
+        header = get_string(user_id, "source_heading", title=title)
         topic_id = getattr(parsed, "topic_id", None) if parsed else None
         if topic_id is not None:
             topic_title = ""
@@ -2237,7 +2238,7 @@ async def _send_source_context_message(
             if not topic_title and getattr(topic_msg, "id", None) == topic_id:
                 created = getattr(topic_msg, "forum_topic_created", None)
                 topic_title = str(getattr(created, "title", None) or "").strip()
-            header += f"\n📂 Topik: {topic_title or topic_id}"
+            header += get_string(user_id, "source_topic", title=topic_title or topic_id)
         reply_target = request_message or _make_reply_target_message(user_id, None)
         return await client.send_message(
             user_id,
@@ -2507,30 +2508,25 @@ async def _notify_owner_channel_post_failure(
         logger.warning("Could not send owner post-failure diagnostic: %s", e)
 
 
-def _user_failure_text(stage: str, reason: str, post_id: int, error: Any = None) -> str:
+def _user_failure_text(stage: str, reason: str, post_id: int, error: Any = None, user_id: int = 0) -> str:
     reason_text = str(reason or "").strip()
     error_text = _owner_diag_error(error)
     joined = f"{stage} {reason_text} {error_text}".upper()
 
     if "FLOODWAIT" in joined or "FLOOD" in joined:
-        short = "Telegram vaqtinchalik kutishni talab qildi."
+        short = get_string(user_id, 'failure_wait')
     elif "DELETED" in joined or "EMPTY" in joined or "MSG_ID_INVALID" in joined:
-        short = "Post o'chirilgan yoki mavjud emas."
+        short = get_string(user_id, 'failure_missing')
     elif "RESTRICT" in joined or "PROTECTED" in joined or "FORBIDDEN" in joined:
-        short = "Post cheklangan yoki yuborishga ruxsat yo'q."
+        short = get_string(user_id, 'failure_restricted')
     elif "TIMEOUT" in joined:
-        short = "Postni olish vaqti tugadi."
+        short = get_string(user_id, 'failure_timeout')
     elif any(name in joined for name in ("TYPEERROR", "ATTRIBUTEERROR", "NAMEERROR", "ASSERTIONERROR")):
-        short = "Postni yuborishda botning ichki xatosi yuz berdi."
+        short = get_string(user_id, 'failure_system')
     else:
-        short = "Postni olish yoki yuborishda xatolik yuz berdi."
+        short = get_string(user_id, 'failure_generic')
 
-    return (
-        "Post o'tkazib yuborildi.\n"
-        f"Post ID: {post_id}\n"
-        f"Sabab: {short}\n"
-        "Keyingi postga o'tyapman."
-    )
+    return get_string(user_id, "failure_skip", post_id=post_id, reason=short)
 
 
 async def _notify_realtime_post_failure(
@@ -2585,7 +2581,7 @@ async def _notify_realtime_post_failure(
         try:
             await client.send_message(
                 user_id,
-                _user_failure_text(stage, reason, post_id, error),
+                _user_failure_text(stage, reason, post_id, error, user_id=user_id),
                 parse_mode=ParseMode.DISABLED,
                 **build_reply_kwargs_from_message(request_message),
             )
@@ -2702,7 +2698,7 @@ async def _notify_bot_only_post_failure(
         try:
             await client.send_message(
                 user_id,
-                _user_failure_text(stage, reason, post_id, error),
+                _user_failure_text(stage, reason, post_id, error, user_id=user_id),
                 parse_mode=ParseMode.DISABLED,
                 **build_reply_kwargs_from_message(request_message),
             )
@@ -3037,7 +3033,6 @@ async def send_media_entity_safe(
     # Send overflow caption if needed
     overflow_msg = None
     if overflow_chunks and media_msg:
-        from TechVJ.lang import get_string
         from core.entity_validator import utf16_length as u16len
         from wzgram.types import MessageEntity
         header = get_string(media_msg.chat.id, "caption_continued") + "\n\n"
@@ -3602,7 +3597,7 @@ def check_banned(func):
         else:
             banned = await async_db.is_banned(user_id)
         if banned:
-            await message.reply(BANNED_MESSAGE)
+            await message.reply(get_string(user_id, 'banned_notice'))
             return
         return await func(client, message)
     return wrapper
@@ -3619,7 +3614,7 @@ def check_banned_callback(func):
         else:
             banned = await async_db.is_banned(user_id)
         if banned:
-            await callback_query.answer(BANNED_MESSAGE, show_alert=True)
+            await callback_query.answer(get_string(callback_query.from_user.id, 'banned_notice'), show_alert=True)
             return
         return await func(client, callback_query)
     return wrapper
@@ -4152,15 +4147,11 @@ async def stop_command(client: Client, message: Message):
     total_cancelled = cancelled_count + engine_cancelled + queue_cleared
     
     if total_cancelled == 0 and active_tasks == 0:
-        await message.reply("❌ Bekor qilinadigan faol vazifa yo'q.")
+        await message.reply(get_string(user_id, 'no_active_tasks'))
         return
     
     await message.reply(
-        f"**✅ Barcha operatsiyalar to'xtatildi**\n\n"
-        f"📋 Navbatdan o'chirildi: {queue_cleared}\n"
-        f"⚙️ Pipeline tasks: {cancelled_count}\n"
-        f"📥 Download workers: {engine_cancelled}\n\n"
-        f"Barcha yuklanishlar va navbat tozalandi."
+        get_string(user_id, 'stop_summary', queue_cleared=queue_cleared, cancelled_count=cancelled_count, engine_cancelled=engine_cancelled)
     )
 
 
@@ -4171,7 +4162,7 @@ async def queue_status_command(client: Client, message: Message):
     """Show user's queue status"""
     user_id = message.from_user.id
     status = await user_queue.get_status(user_id)
-    await message.reply(format_queue_status(status))
+    await message.reply(format_queue_status(status, user_id))
 
 
 # ==================== BASIC COMMANDS ====================
@@ -4184,34 +4175,20 @@ async def send_start(client: Client, message: Message):
     user_data = await async_db.find_user(user_id)
     is_logged = bool(user_data and user_data.get('logged_in') and user_data.get('session'))
 
-    login_status = "✅ Tizimga kirilgan" if is_logged else "❌ Kirilmagan — /login bilan kiring"
+    login_status = get_string(user_id, "logged_in" if is_logged else "logged_out")
 
     role_line = ""
     if _GOVERNANCE_AVAILABLE:
         try:
             _role = await _role_manager.get_role(user_id)
             role_emoji = {"vip_user": "⭐", "normal_user": "👤", "new_user": "🆕"}.get(_role.value, "❓")
-            role_line = f"\n🎭 <b>Rolingiz:</b> {role_emoji} <code>{_role.value}</code>"
+            role_line = get_string(user_id, "role_line", emoji=role_emoji, role=get_string(user_id, "role_" + _role.value))
         except Exception:
             pass
 
     await client.send_message(
         message.chat.id,
-        f"<b>👋 Salom, {message.from_user.mention}!</b>\n\n"
-        f"🤖 <b>Cheklangan kontent saqlash boti</b>\n\n"
-        f"<b>💼 Holat:</b> {login_status}{role_line}\n\n"
-        f"<b>📎 Havola formati:</b>\n"
-        f"<code>https://t.me/c/CHANNEL_ID/POST</code>\n"
-        f"<code>https://t.me/c/CHANNEL_ID/101-200</code> (diapazon)\n"
-        f"<code>https://t.me/c/CHANNEL_ID/101,102,103</code> (ro'yxat)\n"
-        f"<code>https://t.me/username/POST</code> (ochiq kanal)\n\n"
-        f"<b>📋 Asosiy buyruqlar:</b>\n"
-        f"  /login — Telegram hisobingizni bog'lash\n"
-        f"  /logout — Hisobdan chiqish\n"
-        f"  /status — Batafsil holat (profil, limitlar)\n"
-        f"  /stop — Barcha operatsiyalarni to'xtatish\n"
-        f"  /help — To'liq yordam\n\n"
-        f"<i>Bot ishlatish uchun Telegram hisobingizni /login orqali bog'lang.</i>"
+        get_string(user_id, "start_detail", name=message.from_user.first_name, status=login_status, role=role_line)
     )
 
 
@@ -4219,8 +4196,7 @@ async def send_start(client: Client, message: Message):
 @check_banned
 @track_activity
 async def send_help(client: Client, message: Message):
-    from TechVJ.strings import HELP_TXT
-    await client.send_message(message.chat.id, HELP_TXT)
+    await client.send_message(message.chat.id, get_string(message.from_user.id, "help_detail"))
 
 
 @Client.on_message(filters.command(["status"]))
@@ -4233,7 +4209,7 @@ async def send_status(client: Client, message: Message):
     # Session holati
     user_data = await async_db.find_user(user_id)
     is_logged = bool(user_data and user_data.get('logged_in') and user_data.get('session'))
-    session_text = "✅ Faol" if is_logged else "❌ Yo'q"
+    session_text = get_string(user_id, "session_active" if is_logged else "session_absent")
 
     # Bog'liq profil (get_me dan)
     profile_text = ""
@@ -4243,17 +4219,11 @@ async def send_status(client: Client, message: Message):
             async with create_user_session(user_data['session'], user_id) as acc:
                 me = await acc.get_me()
                 name = f"{getattr(me, 'first_name', '')} {getattr(me, 'last_name', '') or ''}".strip()
-                uname = f"@{me.username}" if getattr(me, 'username', None) else "yo'q"
-                premium = "⭐ Premium" if getattr(me, 'is_premium', False) else "Oddiy"
-                profile_text = (
-                    f"\n\n👤 <b>Bog'langan profil:</b>\n"
-                    f"  Ism: <b>{name}</b>\n"
-                    f"  Username: <code>{uname}</code>\n"
-                    f"  ID: <code>{me.id}</code>\n"
-                    f"  Turi: {premium}"
-                )
+                uname = f"@{me.username}" if getattr(me, 'username', None) else get_string(user_id, "none")
+                premium = "⭐ Premium" if getattr(me, 'is_premium', False) else get_string(user_id, "account_regular")
+                profile_text = get_string(user_id, "profile_detail", name=name, username=uname, id=me.id, kind=premium)
         except Exception as _pe:
-            profile_text = f"\n\n⚠️ Profilni olishda xato: <code>{str(_pe)[:60]}</code>"
+            profile_text = get_string(user_id, "profile_error", error=str(_pe)[:60])
 
     # Rol va limitlar
     role_text = ""
@@ -4264,12 +4234,8 @@ async def send_status(client: Client, message: Message):
                 _role.value, "❓"
             )
             max_req, window = _rate_limiter.get_limit(_role)
-            multi_link = "✅" if _role.value not in ("new_user",) else "❌ (faqat 1 ID)"
-            role_text = (
-                f"\n\n🎭 <b>Ro'l:</b> {role_emoji} <code>{_role.value}</code>\n"
-                f"  📊 Rate limit: <code>{max_req} so'rov / {window}s</code>\n"
-                f"  🔗 Ko'p ID/diapazon: {multi_link}"
-            )
+            multi_link = "✅" if _role.value not in ("new_user",) else get_string(user_id, "single_only")
+            role_text = get_string(user_id, "role_detail", emoji=role_emoji, role=get_string(user_id, "role_" + _role.value), count=max_req, seconds=window, multi=multi_link)
         except Exception as _re:
             logger.debug("status cmd role error: %s", _re)
 
@@ -4278,20 +4244,12 @@ async def send_status(client: Client, message: Message):
     queue_info = ""
     try:
         q_status = await user_queue.get_status(user_id)
-        if q_status.get('active'):
-            queue_info = f"\n\n⚙️ <b>Navbat:</b> Faol download mavjud"
-        elif q_status.get('queued', 0) > 0:
-            queue_info = f"\n\n⏳ <b>Navbat:</b> {q_status['queued']} ta kutmoqda"
+        queue_info = get_string(user_id, "status_queue", active=int(q_status["is_processing"]), waiting=q_status["queue_size"])
     except Exception:
         pass
 
     await message.reply(
-        f"📊 <b>Sizning holatingiz</b>\n\n"
-        f"🔐 <b>Sessiya:</b> {session_text}"
-        f"{profile_text}"
-        f"{role_text}"
-        f"{queue_info}\n\n"
-        f"ℹ️ Yordam uchun /help buyrug'ini yuboring.",
+        get_string(user_id, "status_detail", session=session_text, profile=profile_text, role=role_text, queue=queue_info),
         disable_web_page_preview=True
     )
 
@@ -4316,9 +4274,9 @@ async def cancel_command(client: Client, message: Message):
 
     total = cancelled + engine_cancelled
     if total > 0:
-        await message.reply(f"Cancelled {total} tasks. Use /stop in the future.")
+        await message.reply(get_string(user_id, 'tasks_cancelled', total=total))
     else:
-        await message.reply("No active tasks. Use /stop to cancel operations.")
+        await message.reply(get_string(user_id, 'no_active_tasks'))
 
 
 # ==================== /comment COMMAND ====================
@@ -4340,10 +4298,7 @@ async def comment_analyzer_command(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply(
-            "**Usage:** `/comment <post_link>` or `/comments <post_link>`\n\n"
-            "**Example:**\n"
-            "`/comment https://t.me/c/123456789/108`\n\n"
-            "Analyzes the comment section of a post.",
+            get_string(user_id, 'comment_usage'),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -4353,19 +4308,19 @@ async def comment_analyzer_command(client: Client, message: Message):
     # Parse URL
     parsed, error = parse_telegram_url(url)
     if error or not parsed:
-        await message.reply(f"Invalid URL: {error or 'Could not parse'}")
+        await message.reply(get_string(user_id, 'comment_url_invalid', value_0=get_string(user_id, "url_invalid")))
         return
     
     # Check user session
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
         await message.reply(
-            strings['need_login'],
+            get_string(user_id, 'need_login'),
             **build_reply_kwargs_from_message(message)
         )
         return
     
-    status_msg = await message.reply("Analyzing comments...")
+    status_msg = await message.reply(get_string(user_id, 'comments_analyzing'))
     
     try:
         async with create_user_session(
@@ -4376,7 +4331,7 @@ async def comment_analyzer_command(client: Client, message: Message):
             post_id = parsed.post_ids[0] if parsed.post_ids else None
 
             if not post_id:
-                await status_msg.edit_text("No post ID found in URL.")
+                await status_msg.edit_text(get_string(user_id, 'url_no_posts'))
                 return
 
             # Channel title (best-effort — comment_stats.py birlashtirilganda saqlab qolindi)
@@ -4392,10 +4347,10 @@ async def comment_analyzer_command(client: Client, message: Message):
             try:
                 post_msg = await acc.get_messages(channel_id, post_id)
                 if not post_msg or post_msg.empty:
-                    await status_msg.edit_text("Post not found or deleted.")
+                    await status_msg.edit_text(get_string(user_id, 'post_missing'))
                     return
             except Exception as e:
-                await status_msg.edit_text(f"Cannot access post: {e}")
+                await status_msg.edit_text(get_string(user_id, 'post_access_error', e=e))
                 return
             
             # Fetch comments - collect IDs and extract discussion group info
@@ -4430,21 +4385,16 @@ async def comment_analyzer_command(client: Client, message: Message):
                 error_str = str(e).upper()
                 if "MSG_ID_INVALID" in error_str:
                     await status_msg.edit_text(
-                        "**Comments Disabled**\n\n"
-                        "This post does not have comments enabled or is not a discussion post."
+                        get_string(user_id, 'comments_disabled')
                     )
                     return
                 else:
-                    await status_msg.edit_text(f"Error fetching comments: {e}")
+                    await status_msg.edit_text(get_string(user_id, 'comments_error', e=e))
                     return
             
             if total_comments == 0 or not comment_ids:
                 await status_msg.edit_text(
-                    f"**Comment Analysis**\n\n"
-                    f"**Channel:** {channel_title}\n"
-                    f"**Post ID:** `{post_id}`\n"
-                    f"**Comments:** None found\n\n"
-                    f"This post has no comments yet."
+                    get_string(user_id, 'comments_none', channel_title=channel_title, post_id=post_id)
                 )
             else:
                 # Normalize IDs - first is ALWAYS min, last is ALWAYS max
@@ -4465,34 +4415,189 @@ async def comment_analyzer_command(client: Client, message: Message):
                     logger.warning(f"Could not extract thread_id from comments, using post_id: {post_id}")
                 
                 await status_msg.edit_text(
-                    f"**Comment Analysis**\n\n"
-                    f"**Channel:** {channel_title}\n"
-                    f"**Post ID:** `{post_id}`\n"
-                    f"**Thread ID:** `{thread_id}`\n"
-                    f"**Discussion Group:** `{group_id}`\n"
-                    f"**First Comment ID:** `{first_comment_id}`\n"
-                    f"**Last Comment ID:** `{last_comment_id}`\n"
-                    f"**Total Comments:** {total_comments}\n\n"
-                    f"**First Comment Link:**\n"
-                    f"`https://t.me/c/{group_id_short}/{first_comment_id}?thread={thread_id}`\n\n"
-                    f"**Range Link:**\n"
-                    f"`https://t.me/c/{group_id_short}/{first_comment_id}?thread={thread_id}&range={first_comment_id}-{last_comment_id}`"
+                    get_string(user_id, "comment_analysis_detail", channel_title=channel_title, post_id=post_id, thread_id=thread_id, group_id=group_id, first_comment_id=first_comment_id, last_comment_id=last_comment_id, total_comments=total_comments, group_id_short=group_id_short)
                 )
                 
     except SessionInvalidError as _sie1:
         await _handle_session_invalid(client, user_id, _sie1)
         if status_msg:
             try:
-                await status_msg.edit_text("Session invalid. /login bilan qayta kiring.")
+                await status_msg.edit_text(get_string(user_id, 'session_invalid'))
             except Exception:
                 pass
     except SessionConnectionError as e:
-        await status_msg.edit_text(f"Connection error: {e}")
+        await status_msg.edit_text(get_string(user_id, 'connection_error', e=e))
     except Exception as e:
-        await status_msg.edit_text(f"Error: {e}")
+        await status_msg.edit_text(get_string(user_id, 'request_error', e=e))
 
 
 # NOTE: /session handler session_manager_commands.py da (to'liq pool boshqaruv).
+
+
+async def process_only_group_posts(client: Client, message: Message, parsed: ParsedURL,
+                                   context: Optional[TaskContext] = None):
+    """Filter a group request before handing selected content to existing senders."""
+    ctx = context or _new_task_context(message, parsed, client_type="user_session")
+    user_id = ctx.user_id
+    status_msg = None
+    selected = sent = filtered = skipped = failed = 0
+    ending = get_string(user_id, "only_complete")
+    try:
+        user_data = await async_db.find_user(user_id)
+        if not user_data or not user_data.get("logged_in") or not user_data.get("session"):
+            await client.send_message(user_id, get_string(user_id, "need_login"))
+            return
+        session_string = user_data["session"]
+        async with StopSafePipeline(user_id, task_manager) as pipeline:
+            status_msg = await client.send_message(
+                user_id, get_string(user_id, "only_processing"),
+                **build_reply_kwargs_from_message(message),
+            )
+
+            async def check_stop():
+                if await pipeline.check_cancelled():
+                    raise asyncio.CancelledError()
+                await ping_activity(user_id)
+
+            async def wait_for_flood(error):
+                delay = get_floodwait_seconds(error) + 1
+                await _safe_status_edit_message(
+                    client, user_id, status_msg.id,
+                    get_string(user_id, "split_flood_wait", seconds=delay),
+                )
+                while delay > 0:
+                    await check_stop()
+                    step = min(5, delay)
+                    await asyncio.sleep(step)
+                    delay -= step
+
+            async def retry(operation):
+                while True:
+                    await check_stop()
+                    try:
+                        return await operation()
+                    except Exception as error:
+                        if not is_floodwait_error(error):
+                            raise
+                        await wait_for_flood(error)
+
+            pipeline.flood_wait_handler = wait_for_flood
+            async with _open_download_session(
+                session_string, user_id, timeout=30, peers_to_resolve=[parsed.channel_id],
+            ) as acc:
+                group = await retry(lambda: acc.get_chat(parsed.channel_id))
+                if group.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+                    await _safe_status_edit_message(
+                        client, user_id, status_msg.id, get_string(user_id, "only_group_required"),
+                    )
+                    return
+                linked_id = (getattr(group, "linked_chat_id", None)
+                             or getattr(getattr(group, "linked_chat", None), "id", None))
+                author_filter = GroupPostFilter(group.id, linked_id)
+                ctx = replace(ctx, source_chat_id=group.id, client_type="user_session")
+                source_anchor = await _send_source_context_message(
+                    client, user_id=user_id, parsed=parsed, source_chat=group,
+                    request_message=message,
+                ) or _make_reply_target_message(user_id, None)
+                temp_dir = await pipeline.get_temp_dir()
+                topic_extractor = None
+                if parsed.topic_id is not None:
+                    if not _TOPIC_EXTRACTOR_AVAILABLE:
+                        raise RuntimeError("TopicExtractor unavailable")
+                    anchors = getattr(parsed, "topic_range_anchor", None)
+                    topic_extractor = TopicExtractor(acc, TopicExtractorConfig(
+                        chat_id=group.id, topic_id=parsed.topic_id,
+                        stop_after_ids=set(anchors) if anchors else None,
+                        incremental_from_cache=False,
+                    ))
+
+                async def iter_messages():
+                    anchors = getattr(parsed, "topic_range_anchor", None)
+                    if topic_extractor is not None and anchors:
+                        # Reuse chronological topic ranges, including non-monotonic IDs.
+                        messages = await retry(lambda: topic_extractor.extract_between(*anchors))
+                        for msg in messages:
+                            yield msg
+                        return
+                    ids = list(dict.fromkeys(parsed.post_ids))
+                    for offset in range(0, len(ids), 100):
+                        batch_ids = ids[offset:offset + 100]
+                        fetched = await retry(lambda: acc.get_messages(group.id, batch_ids))
+                        if not isinstance(fetched, (list, tuple)):
+                            fetched = [fetched] if fetched else []
+                        by_id = {msg.id: msg for msg in fetched if msg is not None}
+                        for post_id in batch_ids:
+                            yield by_id.get(post_id)
+
+                async def deliver(messages):
+                    nonlocal selected, sent, failed, skipped
+                    if len(messages) > 1 and all(get_message_type(msg) == "Photo" for msg in messages):
+                        ok = await retry(lambda: process_album_messages(
+                            client, acc, user_id, messages, temp_dir, pipeline,
+                            request_message=source_anchor, session_string=session_string, context=ctx,
+                        ))
+                        sent += int(bool(ok))
+                        failed += int(not ok)
+                        return
+                    # Mixed albums are sent individually, so a FloodWait retries
+                    # the current unsent item without replaying earlier items.
+                    for msg in messages:
+                        ok = await retry(lambda: process_single_post(
+                            client, acc, source_anchor, group.id, msg.id, temp_dir, pipeline,
+                            session_string=session_string, context=ctx, source_message=msg,
+                        ))
+                        if ok is None or ok == "deleted":
+                            selected -= 1
+                            skipped += 1
+                            continue
+                        sent += int(bool(ok))
+                        failed += int(not ok)
+
+                pending = []
+                seen_ids = set()
+                async for msg in iter_messages():
+                    await check_stop()
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if pending and media_group_id != getattr(pending[0], "media_group_id", None):
+                        await deliver(pending)
+                        pending = []
+                    if msg is None or getattr(msg, "empty", False):
+                        skipped += 1
+                        continue
+                    if msg.id in seen_ids:
+                        continue
+                    seen_ids.add(msg.id)
+                    if topic_extractor is not None and not topic_extractor._is_topic_message(msg):
+                        filtered += 1
+                        continue
+                    if not author_filter.accepts(msg):
+                        filtered += 1
+                        continue
+                    selected += 1
+                    if media_group_id:
+                        pending.append(msg)
+                    else:
+                        await deliver([msg])
+                if pending:
+                    await deliver(pending)
+    except asyncio.CancelledError:
+        ending = get_string(user_id, "operation_cancelled")
+    except SessionInvalidError as error:
+        await _handle_session_invalid(client, user_id, error)
+        ending = get_string(user_id, "session_invalid")
+    except Exception as error:
+        logger.exception("Only-group request failed for user %s", user_id)
+        ending = get_string(user_id, "request_error", e=error)
+    if status_msg is not None:
+        if failed and ending == get_string(user_id, "only_complete"):
+            ending = get_string(user_id, "only_warnings")
+        await _safe_status_edit_message(
+            client, user_id, status_msg.id,
+            ending + "\n\n" + get_string(
+                user_id, "only_summary", selected=selected, sent=sent,
+                filtered=filtered, skipped=skipped, failed=failed,
+            ),
+        )
 
 
 async def _dispatch_with_priority(
@@ -4504,6 +4609,8 @@ async def _dispatch_with_priority(
     role=None,
 ):
     """Dispatch a processing task through PriorityQueue when available."""
+    if getattr(parsed, "only_group_posts", False):
+        handler = process_only_group_posts
     if _GOVERNANCE_AVAILABLE:
         try:
             from core.priority_queue import priority_queue as _pq, PriorityJob
@@ -4535,7 +4642,7 @@ async def _dispatch_with_priority(
 # ==================== MAIN MESSAGE HANDLER ====================
 
 @Client.on_message(filters.text & filters.private & ~filters.me & ~filters.command([
-    "start", "help", "cancel", "stop", "info", "ban", "unban", "banlist",
+    "start", "help", "only", "cancel", "stop", "info", "ban", "unban", "banlist",
     "login", "logout", "qrlogin", "status", "chatinfo", "msgstats", "members",
     "comment", "comments", "session", "post", "group", "queue", "lang", "clean", "cleanstatus",
     "setrole", "userinfo", "set_rate_limit", "set_parallel_limit", "queue_status",
@@ -4552,26 +4659,50 @@ async def _dispatch_with_priority(
 @track_activity
 async def save(client: Client, message: Message):
     """Main handler for Telegram URLs with queue support"""
+    return await _save_request(client, message, str(message.text or "").strip())
+
+
+@Client.on_message(filters.command("only") & filters.private & ~filters.forwarded)
+@check_banned
+@track_activity
+async def only_command(client: Client, message: Message):
+    """Apply the group-author filter to the link supplied in this command."""
+    parts = str(message.text or "").split(maxsplit=1)
+    if len(parts) != 2:
+        await message.reply(get_string(message.from_user.id, "only_usage"))
+        return
+    return await _save_request(client, message, parts[1].strip(), only_group_posts=True)
+
+
+async def _save_request(client: Client, message: Message, url: str, only_group_posts: bool = False):
+    """Shared validation, governance and queueing for normal and /only links."""
+    user_id = message.from_user.id
     try:
-        url = message.text.strip()
-        
         if "https://t.me/" not in url and "http://t.me/" not in url:
+            if only_group_posts:
+                await message.reply(get_string(user_id, "only_usage"))
             return  # Not a Telegram URL, ignore
         
         # Parse the URL
         parsed, error = parse_telegram_url(url)
         
         if error:
-            await message.reply(error)
+            await message.reply(get_string(message.from_user.id, "url_invalid") + "\n/help")
             return
         
         if not parsed:
-            await message.reply("Could not parse URL. Please check the format.")
+            await message.reply(get_string(message.from_user.id, 'url_invalid'))
             return
+
+        if only_group_posts:
+            if parsed.url_type not in ("private", "public", "topic"):
+                await message.reply(get_string(user_id, "only_group_required"))
+                return
+            parsed.only_group_posts = True
         
         # Validate post IDs exist
         if not parsed.post_ids:
-            await message.reply("No post IDs found in URL.")
+            await message.reply(get_string(message.from_user.id, 'url_no_posts'))
             return
         
         user_id = message.from_user.id
@@ -4617,7 +4748,7 @@ async def save(client: Client, message: Message):
         if _GOVERNANCE_AVAILABLE:
             # Maintenance mode check
             if _is_maintenance() and user_id != OWNER_ID:
-                await message.reply("🔧 Bot hozir texnik xizmatda. Keyinroq urinib ko'ring.")
+                await message.reply(get_string(user_id, 'maintenance_notice'))
                 return
 
             _gov_role = await _role_manager.get_role(user_id)
@@ -4629,13 +4760,13 @@ async def save(client: Client, message: Message):
             # Rate limit check
             _gov_allowed, _gov_retry = _rate_limiter.check(user_id, _gov_role)
             if not _gov_allowed:
-                await message.reply(f"⏳ {_gov_retry} soniyadan keyin qayta urinib ko'ring.")
+                await message.reply(get_string(user_id, 'rate_retry', _gov_retry=_gov_retry))
                 return
 
             # Permission guard (role-based link validation)
             _gov_ok, _gov_err_msg = _permission_guard.validate(parsed, _gov_role)
             if not _gov_ok:
-                await message.reply(_gov_err_msg)
+                await message.reply(get_string(user_id, "new_user_limit"))
                 return
         # ── End governance middleware ──────────────────────────────────────────
 
@@ -4651,12 +4782,7 @@ async def save(client: Client, message: Message):
         
         if not can_start:
             # Queued or rejected - send localized status message
-            from TechVJ.lang import get_string
-            if "to'lgan" in status_msg or "full" in status_msg.lower():
-                localized = get_string(user_id, "queue_full", max=10)
-            else:
-                # Extract position from status
-                localized = status_msg  # fallback to original
+            localized = status_msg
             await message.reply(localized, **build_link_preview_kwargs(is_disabled=True))
             return
         
@@ -4713,7 +4839,6 @@ async def save(client: Client, message: Message):
             next_item = await user_queue.complete(user_id)
             if next_item:
                 # Notify and process next queued item
-                from TechVJ.lang import get_string
                 await client.send_message(
                     next_item.chat_id,
                     get_string(next_item.chat_id, "queue_next", link=next_item.link[:60] + "..."),
@@ -4728,7 +4853,7 @@ async def save(client: Client, message: Message):
         if _REQUEST_CONTEXT_AVAILABLE:
             _clear_req_ctx()
         try:
-            await message.reply("Operation cancelled.")
+            await message.reply(get_string(user_id, 'operation_cancelled'))
         except Exception:
             pass
         # Don't call complete here - /stop already clears queue
@@ -4736,7 +4861,7 @@ async def save(client: Client, message: Message):
         if _REQUEST_CONTEXT_AVAILABLE:
             _clear_req_ctx()
         try:
-            await message.reply(f"Error: {str(e)[:200]}")
+            await message.reply(get_string(user_id, 'request_error_short', value_0=str(e)[:200]))
         except Exception:
             pass
         # Clear from queue on error (but complete was already called in finally)
@@ -4773,7 +4898,7 @@ async def _process_queued_item(client: Client, item):
     except Exception as e:
         logger.error(f"Error processing queued item for {user_id}: {e}")
         try:
-            await client.send_message(user_id, f"❌ Xatolik: {str(e)[:100]}")
+            await client.send_message(user_id, get_string(user_id, 'request_error_short', value_0=str(e)[:100]))
         except Exception:
             pass
     finally:
@@ -4781,7 +4906,6 @@ async def _process_queued_item(client: Client, item):
         next_item = await user_queue.complete(user_id)
         if next_item:
             try:
-                from TechVJ.lang import get_string
                 await client.send_message(
                     next_item.chat_id,
                     get_string(next_item.chat_id, "queue_next", link=next_item.link[:60] + "..."),
@@ -4915,7 +5039,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
             user_data = await async_db.find_user(user_id)
             if not get(user_data, 'logged_in', False) or not user_data.get('session'):
                 await client.send_message(
-                    user_id, strings['need_login'],
+                    user_id, get_string(user_id, 'need_login'),
                     **build_reply_kwargs_from_message(message)
                 )
                 return
@@ -4937,14 +5061,14 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                 range_start = min(parsed.post_ids)
                 range_end = max(parsed.post_ids)
                 if thread_id is not None:
-                    status_text = f"Fetching comments {range_start}-{range_end} from thread {thread_id}..."
+                    status_text = get_string(user_id, 'comments_range_thread', range_start=range_start, range_end=range_end, thread_id=thread_id)
                 else:
-                    status_text = f"Fetching comments {range_start}-{range_end}..."
+                    status_text = get_string(user_id, 'comments_range', range_start=range_start, range_end=range_end)
             else:
                 if thread_id is not None:
-                    status_text = f"Fetching comment {single_comment_id} from thread {thread_id}..."
+                    status_text = get_string(user_id, 'comment_thread', single_comment_id=single_comment_id, thread_id=thread_id)
                 else:
-                    status_text = f"Fetching comment {single_comment_id}..."
+                    status_text = get_string(user_id, 'comment_single', single_comment_id=single_comment_id)
             
             status_msg = await client.send_message(
                 user_id, status_text,
@@ -4984,7 +5108,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                         await client.edit_message_text(
                             user_id,
                             status_msg.id,
-                            "Muhokama guruhiga qo'shilish so'rovi yuborildi. Guruh admini tasdiqlagandan keyin qayta urinib ko'ring.",
+                            get_string(user_id, 'discussion_join_pending'),
                         )
                         return
                     if source_post_id is not None and (
@@ -4993,7 +5117,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                         await client.edit_message_text(
                             user_id,
                             status_msg.id,
-                            "Muhokama guruhi aniqlanmadi yoki unga avtomatik qo'shilib bo'lmadi. Kanal comment linkini qayta yuboring yoki muhokama guruhiga qo'shilib qayta urinib ko'ring.",
+                            get_string(user_id, 'discussion_missing'),
                         )
                         return
                     source_chat = route_source_chat
@@ -5038,7 +5162,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                             else:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    f"Comment {single_comment_id} not found or deleted."
+                                    get_string(user_id, 'comment_missing', single_comment_id=single_comment_id)
                                 )
                                 return
                                 
@@ -5049,7 +5173,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                             if "MSG_ID_INVALID" in error_str:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    f"Comment {single_comment_id} does not exist."
+                                    get_string(user_id, 'comment_nonexistent', single_comment_id=single_comment_id)
                                 )
                                 return
                             raise
@@ -5069,7 +5193,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                         
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            f"Fetching {len(target_ids)} comments ({range_start}-{range_end})..."
+                            get_string(user_id, 'comments_fetching', value_0=len(target_ids), range_start=range_start, range_end=range_end)
                         )
                         
                         try:
@@ -5089,13 +5213,13 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                             if "MSG_ID_INVALID" in error_str or "CHANNEL_INVALID" in error_str:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    "Cannot access comments. Check if you have access to this group."
+                                    get_string(user_id, 'chat_inaccessible')
                                 )
                                 return
                             elif "FLOOD" in error_str:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    "Rate limited. Please try again later."
+                                    get_string(user_id, 'rate_limited')
                                 )
                                 return
                             raise
@@ -5129,7 +5253,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                     total = len(comments)
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"Found {total} comments. Processing..."
+                        get_string(user_id, 'comments_found', total=total)
                     )
                     
                     processed = 0
@@ -5140,7 +5264,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                         if await pipeline.check_cancelled():
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"**Cancelled**\nProcessed: {processed}/{total}"
+                                get_string(user_id, 'cancelled_count', processed=processed, total=total)
                             )
                             return
                         
@@ -5150,8 +5274,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                                 try:
                                     await client.edit_message_text(
                                         user_id, status_msg.id,
-                                        f"Processing comment {idx + 1}/{total}...\n"
-                                        f"Done: {processed} | Failed: {failed}"
+                                        get_string(user_id, 'comment_progress', value_0=idx + 1, total=total, processed=processed, failed=failed)
                                     )
                                 except FloodWait as fw:
                                     await asyncio.sleep(fw.value if hasattr(fw, 'value') else 5)
@@ -5238,10 +5361,7 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                     # Final status
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"**Thread Comments Completed**\n"
-                        f"Thread ID: {thread_id}\n"
-                        f"Processed: {processed}/{total}\n"
-                        f"Failed: {failed}"
+                        get_string(user_id, 'comments_complete', thread_id=thread_id, processed=processed, total=total, failed=failed)
                     )
                     
                 except Exception as e:
@@ -5249,36 +5369,36 @@ async def process_thread_comments(client: Client, message: Message, parsed: Pars
                     if "MSG_ID_INVALID" in error_str:
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            "Comments are disabled for this post or thread not found."
+                            get_string(user_id, 'comments_disabled')
                         )
                     elif "CHANNEL_INVALID" in error_str or "PEER_ID_INVALID" in error_str:
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            "Cannot access this channel. Make sure you're a member."
+                            get_string(user_id, 'chat_inaccessible')
                         )
                     else:
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            f"Error fetching comments: {e}"
+                            get_string(user_id, 'comments_error', e=e)
                         )
 
     except SessionInvalidError as _sie2:
         await _handle_session_invalid(client, user_id, _sie2)
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, "Session invalid. /login bilan qayta kiring.")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'session_invalid'))
             except Exception:
                 pass
     except SessionConnectionError as e:
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, f"Connection error: {e}")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'connection_error', e=e))
             except Exception:
                 pass
     except asyncio.CancelledError:
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, "Operation cancelled.")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'operation_cancelled'))
             except Exception:
                 pass
 
@@ -5381,7 +5501,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
             user_data = await async_db.find_user(user_id)
             if not get(user_data, 'logged_in', False) or not user_data.get('session'):
                 await client.send_message(
-                    user_id, strings['need_login'],
+                    user_id, get_string(user_id, 'need_login'),
                     **build_reply_kwargs_from_message(message)
                 )
                 return
@@ -5395,18 +5515,17 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
             total_posts = len(post_ids)
             is_range = bool(topic_range_anchor) or total_posts > 1
             if topic_range_anchor:
-                status_detail = f"Anchors: {topic_range_anchor[0]} -> {topic_range_anchor[1]}"
+                status_detail = get_string(user_id, 'topic_anchors', value_0=topic_range_anchor[0], value_1=topic_range_anchor[1])
             elif is_range:
                 status_detail = f"IDs: {', '.join(str(pid) for pid in post_ids[:10])}"
                 if total_posts > 10:
                     status_detail += f" ... +{total_posts - 10}"
             else:
-                status_detail = f"Message ID: {post_ids[0]}"
+                status_detail = get_string(user_id, 'message_id', value_0=post_ids[0])
             
             status_msg = await client.send_message(
                 user_id,
-                f"Processing {'range' if is_range else 'message'} from topic {topic_id}...\n"
-                f"{status_detail}",
+                get_string(user_id, 'topic_processing', value_0='range' if is_range else 'message', topic_id=topic_id, status_detail=status_detail),
                 **build_reply_kwargs_from_message(message)
             )
             
@@ -5429,21 +5548,14 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     )
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"⚠️ Manba guruhiga kirish imkoni yo'q.\n"
-                        f"Guruh ID: {channel_id}\n"
-                        f"Yuklab olish akkaunti: {download_account_id}\n"
-                        f"Havoladagi guruh ID sini /userdata hisobotidagi aynan "
-                        f"shu topiklar joylashgan guruh bilan solishtiring. "
-                        f"Yuklab olish akkaunti o'sha guruhga a'zo bo'lishi kerak.\n"
-                        f"Telegram xatosi: {type(access_error).__name__}",
+                        get_string(user_id, "source_inaccessible", channel_id=channel_id, download_account_id=download_account_id, value_2=type(access_error).__name__),
                         parse_mode=ParseMode.DISABLED,
                     )
                     return
                 except asyncio.TimeoutError:
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"Manba guruhini tekshirish vaqti tugadi: {channel_id}. "
-                        f"Keyinroq qayta urinib ko'ring.",
+                        get_string(user_id, 'source_timeout', channel_id=channel_id),
                         parse_mode=ParseMode.DISABLED,
                     )
                     return
@@ -5459,7 +5571,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     if not chat:
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            "Cannot access this chat. Make sure you're a member."
+                            get_string(user_id, 'chat_inaccessible')
                         )
                         return
                     
@@ -5520,7 +5632,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     if not topic_msg or topic_msg.empty:
                         await client.edit_message_text(
                             user_id, status_msg.id,
-                            f"⚠️ Topic not found.\nThe topic ID {topic_id} does not exist or was deleted."
+                            get_string(user_id, 'topic_missing', topic_id=topic_id)
                         )
                         return
                     
@@ -5531,8 +5643,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                             # This message is a reply in another topic, not a topic starter
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"⚠️ Invalid topic URL.\nMessage {topic_id} is not a topic starter.\n"
-                                f"It appears to be a reply in topic {topic_msg.reply_to_top_message_id}."
+                                get_string(user_id, 'topic_wrong_root', topic_id=topic_id, value_1=topic_msg.reply_to_top_message_id)
                             )
                             return
                 except asyncio.TimeoutError:
@@ -5607,7 +5718,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         try:
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"Topic fetched: {total_posts} messages found in topic order. Processing...",
+                                get_string(user_id, 'topic_fetched', total_posts=total_posts),
                             )
                         except Exception:
                             pass
@@ -5636,7 +5747,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 await client.edit_message_text(
                                     user_id,
                                     status_msg.id,
-                                    f"Could not resolve topic range anchors: {_te}",
+                                    get_string(user_id, 'topic_anchors_error', _te=_te),
                                 )
                             except Exception:
                                 pass
@@ -5655,7 +5766,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         else:
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"**Cancelled**\nProcessed: {processed}/{total_posts}\nSkipped: {skipped}"
+                                get_string(user_id, 'cancelled_topic', processed=processed, total_posts=total_posts, skipped=skipped)
                             )
                         return
 
@@ -5666,14 +5777,13 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                             if pause > 0:
                                 if _t_status:
                                     await _t_status.update(
-                                        f"⏸ Pauza {pause:.0f}s... ({idx}/{total_posts})", force=True
+                                        get_string(user_id, 'batch_pause', pause=pause, idx=idx, total_posts=total_posts), force=True
                                     )
                                 await asyncio.sleep(pause)
 
                         # Update status
                         _t_progress = (
-                            f"Processing {idx + 1}/{total_posts}\n"
-                            f"Done: {processed} | Skipped: {skipped} | Failed: {failed}"
+                            get_string(user_id, 'topic_progress', value_0=idx + 1, total_posts=total_posts, processed=processed, skipped=skipped, failed=failed)
                         )
                         if _t_status:
                             await _t_status.update(_t_progress)
@@ -5889,9 +5999,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                                 try:
                                     await client.edit_message_text(
                                         user_id, status_msg.id,
-                                        f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                        f"✅ {processed} processed, ❌ {failed} failed\n"
-                                        f"Retry in {wait_time // 60} min."
+                                        get_string(user_id, 'topic_flood', wait_time=wait_time, processed=processed, failed=failed, value_3=wait_time // 60)
                                     )
                                 except Exception:
                                     pass
@@ -5931,30 +6039,26 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                 # Final status
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"**Topic Download Completed**\n"
-                    f"Topic ID: {topic_id}\n"
-                    f"Processed: {processed}\n"
-                    f"Skipped (not in topic/missing): {skipped}\n"
-                    f"Failed: {failed}"
+                    get_string(user_id, 'topic_complete', topic_id=topic_id, processed=processed, skipped=skipped, failed=failed)
                 )
 
     except SessionInvalidError as _sie3:
         await _handle_session_invalid(client, user_id, _sie3)
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, "Session invalid. /login bilan qayta kiring.")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'session_invalid'))
             except Exception:
                 pass
     except SessionConnectionError as e:
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, f"Connection error: {e}")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'connection_error', e=e))
             except Exception:
                 pass
     except asyncio.CancelledError:
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, "Operation cancelled.")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'operation_cancelled'))
             except Exception:
                 pass
 
@@ -6243,7 +6347,6 @@ async def process_album_messages(
                                 payload.update(build_reply_kwargs_from_message(request_message))
                                 await client.send_message(**payload)
                             else:
-                                from TechVJ.lang import get_string
                                 header = get_string(user_id, "caption_continued")
                                 await client.send_message(
                                     user_id,
@@ -6307,7 +6410,6 @@ async def process_album_messages(
                         payload.update(build_reply_kwargs_from_message(request_message))
                         await client.send_message(**payload)
                     else:
-                        from TechVJ.lang import get_string
                         header = get_string(user_id, "caption_continued")
                         await client.send_message(
                             user_id,
@@ -6414,7 +6516,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             # Check user session
             user_data = await async_db.find_user(user_id)
             if not get(user_data, 'logged_in', False) or not user_data.get('session'):
-                await client.send_message(user_id, strings['need_login'], **build_reply_kwargs_from_message(message))
+                await client.send_message(user_id, get_string(user_id, 'need_login'), **build_reply_kwargs_from_message(message))
                 return
             
             session_string = user_data['session']
@@ -6425,7 +6527,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             total_posts = len(parsed.post_ids)
             status_msg = await client.send_message(
                 user_id,
-                f"⏳ {total_posts} ta post yuklanmoqda...",
+                get_string(user_id, 'posts_processing', total_posts=total_posts),
                 **build_reply_kwargs_from_message(message)
             )
 
@@ -6459,13 +6561,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 if _batch:
                     _batch.record_flood(wait_time)
                 wait_text = (
-                    f"⏳ Telegram vaqtinchalik cheklov qo'ydi (FloodWait).\n"
-                    f"Yetib kelgan post ID: {post_id}\n"
-                    f"Yuborilgan post/album: {processed}\n"
-                    f"Kutish: {wait_time} soniya.\n"
-                    f"Kutish tugagach, aynan {post_id}-postdan avtomatik "
-                    f"davom etaman. Havolani qayta yuborishingiz shart emas.\n"
-                    f"Bekor qilish: /stop"
+                    get_string(user_id, "private_flood_resume", post_id=post_id, processed=processed, wait_time=wait_time)
                 )
                 # Text stays bot-authored; notification errors must
                 # not turn a temporary upload limit into a failed post.
@@ -6533,7 +6629,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             else:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    f"**Cancelled**\nProcessed: {processed}/{total_posts}\nAlbums: {albums_processed}"
+                                    get_string(user_id, 'cancelled_albums', processed=processed, total_posts=total_posts, albums_processed=albums_processed)
                                 )
                             return
 
@@ -6554,7 +6650,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                                 if pause > 0:
                                     if _status:
                                         await _status.update(
-                                            f"⏸ Pauza {pause:.0f}s... ({iterator.current_position}/{total_posts})",
+                                            get_string(user_id, 'private_pause', pause=pause, value_1=iterator.current_position, total_posts=total_posts),
                                             force=True
                                         )
                                     await asyncio.sleep(pause)
@@ -6660,7 +6756,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                             # Consecutive error check
                             if _batch and _batch.should_stop():
                                 logger.warning("BatchController: stopping batch for user %s (consecutive errors)", user_id)
-                                stop_summary = "⚠️ **Ko'p xato — batch to'xtatildi**"
+                                stop_summary = get_string(user_id, 'batch_errors')
                                 break
 
                             # Rate limiting delay
@@ -6699,7 +6795,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 try:
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"**Sessiya yaroqsiz**\n/login bilan qayta kiring.\nSabab: {e}"
+                        get_string(user_id, 'private_session_invalid', e=e)
                     )
                 except Exception:
                     pass
@@ -6709,7 +6805,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                 try:
                     await client.edit_message_text(
                         user_id, status_msg.id,
-                        f"**Download sessiyasi yaroqsiz**\n{e}"
+                        get_string(user_id, 'download_session_invalid', e=e)
                     )
                 except Exception:
                     pass
@@ -6717,7 +6813,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             except SessionConnectionError as e:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"**Connection Error**\nPlease try again.\nError: {e}"
+                    get_string(user_id, 'connection_retry', e=e)
                 )
                 return
 
@@ -6726,53 +6822,38 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             if failed_ids:
                 shown_ids = failed_ids[:20]
                 id_list = ", ".join(str(i) for i in shown_ids)
-                failed_info = f"\n\n**Jo'natilmagan ID lar:**\n`{id_list}`"
+                failed_info = get_string(user_id, 'failed_ids', id_list=id_list)
                 if len(failed_ids) > 20:
-                    failed_info += f"\n...va yana {len(failed_ids) - 20} ta"
+                    failed_info += get_string(user_id, 'failed_more', value_0=len(failed_ids) - 20)
             
-            deleted_info = f"\n🗑 O'chirilgan: {deleted}" if deleted > 0 else ""
-            service_info = (f"\nℹ️ Kontentsiz xizmat xabarlari: {service_skipped}"
+            deleted_info = get_string(user_id, 'deleted_count', deleted=deleted) if deleted > 0 else ""
+            service_info = (get_string(user_id, 'service_skipped', service_skipped=service_skipped)
                             if service_skipped else "")
             
             if stop_summary:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"{stop_summary}\n"
-                    f"Yuborilgan post/album: {processed}\n"
-                    f"So'ralgan ID lar: {total_posts}\n"
-                    f"📁 Albumlar: {albums_processed}\n"
-                    f"❌ Xato: {failed}{deleted_info}{service_info}{failed_info}"
+                    get_string(user_id, 'private_stopped', stop_summary=stop_summary, processed=processed, total_posts=total_posts, albums_processed=albums_processed, failed=failed, deleted_info=deleted_info, service_info=service_info, failed_info=failed_info)
                 )
             elif processed == 0 and failed == 0 and deleted > 0 and service_skipped == 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"⚠️ **Barcha xabarlar o'chirilgan**\n"
-                    f"So'ralgan: {total_posts}\n"
-                    f"🗑 O'chirilgan: {deleted}"
+                    get_string(user_id, 'private_deleted', total_posts=total_posts, deleted=deleted)
                 )
             elif processed == 0 and total_posts > 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"⚠️ **Hech qanday xabar jo'natilmadi**\n"
-                    f"So'ralgan: {total_posts}\n"
-                    f"❌ Xato: {failed}{deleted_info}{service_info}"
-                    f"{failed_info}"
+                    get_string(user_id, 'private_none', total_posts=total_posts, failed=failed, deleted_info=deleted_info, service_info=service_info, failed_info=failed_info)
                 )
             elif failed > 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"✅ **Tugadi**\n"
-                    f"Yuklandi: {processed}/{total_posts}\n"
-                    f"📁 Albumlar: {albums_processed}\n"
-                    f"❌ Xato: {failed}{deleted_info}{service_info}"
-                    f"{failed_info}"
+                    get_string(user_id, 'private_complete_errors', processed=processed, total_posts=total_posts, albums_processed=albums_processed, failed=failed, deleted_info=deleted_info, service_info=service_info, failed_info=failed_info)
                 )
             else:
                 await client.edit_message_text(
                     user_id, status_msg.id,
-                    f"✅ **Tugadi**\n"
-                    f"Yuklandi: {processed}/{total_posts}\n"
-                    f"📁 Albumlar: {albums_processed}{deleted_info}{service_info}"
+                    get_string(user_id, 'private_complete', processed=processed, total_posts=total_posts, albums_processed=albums_processed, deleted_info=deleted_info, service_info=service_info)
                 )
             
             # Unpin status message when done
@@ -6791,7 +6872,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             _batch.finish()
         if status_msg:
             try:
-                await client.edit_message_text(user_id, status_msg.id, "❌ Bekor qilindi.")
+                await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'operation_cancelled'))
                 await client.unpin_chat_message(user_id, status_msg.id)
             except Exception:
                 pass
@@ -6806,7 +6887,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
     async with StopSafePipeline(user_id, task_manager) as pipeline:
         total_posts = len(parsed.post_ids)
         status_msg = await client.send_message(
-            user_id, f"Processing {total_posts} public posts...",
+            user_id, get_string(user_id, 'public_processing', total_posts=total_posts),
             **build_reply_kwargs_from_message(message)
         )
         source_chat = None
@@ -6854,7 +6935,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                 for idx, post_id in enumerate(parsed.post_ids):
                     await ping_activity(user_id)
                     if await pipeline.check_cancelled():
-                        await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
+                        await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'cancelled_processed', processed=processed))
                         break
 
                     if _p_batch:
@@ -6900,8 +6981,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                             try:
                                 await client.edit_message_text(
                                     user_id, status_msg.id,
-                                    f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                    f"✅ {processed}/{total_posts} processed."
+                                    get_string(user_id, 'batch_flood', wait_time=wait_time, processed=processed, total_posts=total_posts)
                                 )
                             except Exception:
                                 pass
@@ -6944,7 +7024,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
             for idx, post_id in enumerate(parsed.post_ids):
                 await ping_activity(user_id)
                 if await pipeline.check_cancelled():
-                    await client.edit_message_text(user_id, status_msg.id, f"Cancelled. Processed: {processed}")
+                    await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'cancelled_processed', processed=processed))
                     break
 
                 if _p_batch:
@@ -6984,8 +7064,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                         try:
                             await client.edit_message_text(
                                 user_id, status_msg.id,
-                                f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                f"✅ {processed}/{total_posts} processed."
+                                get_string(user_id, 'batch_flood', wait_time=wait_time, processed=processed, total_posts=total_posts)
                             )
                         except Exception:
                             pass
@@ -7019,24 +7098,24 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
         if _p_batch:
             _p_batch.finish()
         
-        service_info = f"\nService messages skipped: {service_skipped}" if service_skipped else ""
+        service_info = get_string(user_id, "service_skipped", service_skipped=service_skipped) if service_skipped else ""
         if service_skipped > 0 and processed == 0 and service_skipped == total_posts:
             await client.edit_message_text(
                 user_id, status_msg.id,
-                f"No content to send. Requested: {total_posts}{service_info}",
+                get_string(user_id, 'no_content', total_posts=total_posts, service_info=service_info),
             )
         elif processed == 0 and total_posts > 0:
             await client.edit_message_text(
                 user_id, status_msg.id,
-                f"⚠️ **No messages retrieved**\nRequested: {total_posts}\n\nMessages may have been deleted or are inaccessible.{service_info}"
+                get_string(user_id, 'no_messages_retrieved', total_posts=total_posts, service_info=service_info)
             )
         elif processed < total_posts:
             await client.edit_message_text(
                 user_id, status_msg.id,
-                f"✅ **Completed with warnings**\nProcessed: {processed}/{total_posts}\nSome messages could not be retrieved.{service_info}"
+                get_string(user_id, 'public_complete_warnings', processed=processed, total_posts=total_posts, service_info=service_info)
             )
         else:
-            await client.edit_message_text(user_id, status_msg.id, f"✅ **Completed**\nProcessed: {processed}/{total_posts}")
+            await client.edit_message_text(user_id, status_msg.id, get_string(user_id, 'public_complete', processed=processed, total_posts=total_posts))
 
 
 @track_activity
@@ -7047,12 +7126,12 @@ async def process_bot_posts(client: Client, message: Message, parsed: ParsedURL,
     
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
-        await client.send_message(user_id, strings['need_login'], **build_reply_kwargs_from_message(message))
+        await client.send_message(user_id, get_string(user_id, 'need_login'), **build_reply_kwargs_from_message(message))
         return
     
     acc, error = await create_client_session(user_data['session'])
     if error:
-        await client.send_message(user_id, f"Connection error: {error}", **build_reply_kwargs_from_message(message))
+        await client.send_message(user_id, get_string(user_id, 'connection_error_value', error=error), **build_reply_kwargs_from_message(message))
         return
     
     try:
@@ -7094,6 +7173,7 @@ async def process_single_post(
     target_user_id: int = None,
     session_string: Optional[str] = None,
     context: Optional[TaskContext] = None,
+    source_message: Optional[Message] = None,
 ) -> Optional[Union[bool, str]]:
     """
     Process a single NON-ALBUM post completely before returning.
@@ -7107,6 +7187,7 @@ async def process_single_post(
     Args:
         message: Original user message (can be None for queued items)
         target_user_id: User ID to send to (used when message is None)
+        source_message: Optional already-fetched message from a filtered request.
     """
     user_id = context.user_id if context else (target_user_id if target_user_id else (message.chat.id if message else None))
     if not user_id:
@@ -7140,11 +7221,13 @@ async def process_single_post(
         
         # Get the message with timeout
         try:
-            await _resolve_peer_safe(acc, chat_id, context)
-            msg = await asyncio.wait_for(
-                acc.get_messages(chat_id, post_id),
-                timeout=30.0
-            )
+            msg = source_message
+            if msg is None:
+                await _resolve_peer_safe(acc, chat_id, context)
+                msg = await asyncio.wait_for(
+                    acc.get_messages(chat_id, post_id),
+                    timeout=30.0
+                )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching message {post_id}")
             await _notify_failure("fetch", "get_messages timed out")
@@ -7560,7 +7643,7 @@ async def download_and_send_media(
             size_mb = file_size / 1024 / 1024
             status_msg = await client.send_message(
                 ctx_target_chat_id, 
-                f"**Downloading**\n{size_mb:.1f} MB",
+                get_string(message.chat.id, 'download_size', size_mb=size_mb),
                 **build_reply_kwargs_from_message(reply_base)
             )
         
@@ -7635,7 +7718,6 @@ async def download_and_send_media(
         actual_file_size = os.path.getsize(file_path)
         _do_split = True  # Default: split if >2GB
         if actual_file_size > MAX_TELEGRAM_FILE_SIZE:
-            from TechVJ.lang import get_string
 
             # Determine if Premium path can bypass splitting
             _do_split = True
@@ -7850,7 +7932,6 @@ async def download_and_send_media(
                     return False
         
         if status_msg:
-            from TechVJ.lang import get_string
             await _safe_status_edit_message(
                 client,
                 ctx_target_chat_id,
@@ -7868,6 +7949,7 @@ async def download_and_send_media(
                 _primary, _overflow_chunks = _split_caption(
                     caption, caption_entities or [],
                     is_premium=bool(_premium_session_str),
+                    continuation_prefix=get_string(message.chat.id, "continuation_prefix"),
                 )
                 caption = _primary.text
                 caption_entities = _primary.entities if _primary.entities else None
@@ -8690,13 +8772,12 @@ async def download_and_send_media(
                             _cb_wait = f"pw_wait_{_acc_user_id}_{_uuid_mod.uuid4().hex[:8]}"
                             _cb_skip = f"pw_skip_{_acc_user_id}_{_uuid_mod.uuid4().hex[:8]}"
                             _kb = InlineKeyboardMarkup([[
-                                InlineKeyboardButton(f"⏳ Kutaman ({_wait_min} daq)", callback_data=_cb_wait),
-                                InlineKeyboardButton("⚡ Premiumsiz davom", callback_data=_cb_skip),
+                                InlineKeyboardButton(get_string(user_id, 'premium_wait', _wait_min=_wait_min), callback_data=_cb_wait),
+                                InlineKeyboardButton(get_string(user_id, 'premium_skip'), callback_data=_cb_skip),
                             ]])
                             _ask_msg = await client.send_message(
                                 _acc_user_id,
-                                f"⚠️ Barcha premium sessiyalar band ({_wait_min} daqiqa).\n"
-                                f"Nima qilamiz?",
+                                get_string(user_id, 'premium_busy', _wait_min=_wait_min),
                                 reply_markup=_kb,
                             )
 

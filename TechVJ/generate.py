@@ -2,6 +2,8 @@
 # Subscribe YouTube Channel For Amazing Bot https://youtube.com/@Tech_VJ
 # Ask Doubt on telegram @KingVJ01
 
+from TechVJ.lang import get_string
+
 import traceback
 import os
 import asyncio
@@ -22,8 +24,7 @@ from wzgram.errors import (
     PasswordHashInvalid,
     PhoneNumberUnoccupied
 )
-from TechVJ.strings import strings
-from config import API_ID, API_HASH, BANNED_MESSAGE
+from config import API_ID, API_HASH
 from database.async_db import async_db
 from TechVJ.qr_login import perform_qr_login, is_qr_available, cleanup_qr_files, get_device_info
 from TechVJ.login_rate_limiter import login_limiter, rate_limited_login
@@ -206,7 +207,7 @@ def check_banned_sync(func):
     async def wrapper(client: Client, message: Message):
         user_id = message.from_user.id
         if await async_db.is_banned(user_id):
-            await message.reply(BANNED_MESSAGE)
+            await message.reply(get_string(user_id, 'banned_notice'))
             return
         return await func(client, message)
     return wrapper
@@ -221,11 +222,11 @@ async def logout(bot, msg):
         # Also check file-based session
         _file_session = load_session_from_file(user_id)
         if not _file_session:
-            await msg.reply("You are not logged in.")
+            await msg.reply(get_string(user_id, 'not_logged_in'))
             return
         # File session exists but DB says no — clear it
         _delete_session_file(user_id)
-        await msg.reply("**Logout Successfully** ♦")
+        await msg.reply(get_string(user_id, 'logout_success'))
         return
 
     # 1. Clear DB (session + logged_in)
@@ -250,7 +251,7 @@ async def logout(bot, msg):
         _USER_CACHE.pop(user_id, None)
         await async_db.update_user(user_id, {'session': None, 'logged_in': False})
 
-    await msg.reply("**Logout Successfully** ♦")
+    await msg.reply(get_string(user_id, 'logout_success'))
 
 
 def _delete_session_file(user_id: int) -> None:
@@ -301,7 +302,7 @@ async def main(bot: Client, message: Message):
             from TechVJ.session_handler import quick_session_check
             _is_valid = await quick_session_check(user_data['session'], message.from_user.id)
             if _is_valid:
-                await message.reply(strings['already_logged_in'])
+                await message.reply(get_string(message.from_user.id, 'already_logged_in'))
                 return
             else:
                 # Session is invalid — clear it and allow re-login
@@ -323,16 +324,8 @@ async def main(bot: Client, message: Message):
     # Check if user can login (prevents IP blocks from Telegram)
     can_login, wait_time, reason = await login_limiter.can_login(user_id)
     if not can_login:
-        if wait_time > 60:
-            wait_str = f"{wait_time / 60:.0f} daqiqa"
-        else:
-            wait_str = f"{wait_time:.0f} soniya"
-        
         await message.reply(
-            f"⏳ **Login cheklangan**\n\n"
-            f"{reason}\n\n"
-            f"Iltimos **{wait_str}** kuting.\n\n"
-            f"_Bu cheklov serverdan ko'p login qilinmasligi uchun._"
+            get_string(user_id, "login_limited", seconds=int(wait_time))
         )
         return
     # ===== END RATE LIMITING =====
@@ -342,18 +335,15 @@ async def main(bot: Client, message: Message):
             client=bot,
             chat_id=user_id, 
             text=(
-                "*Please send your phone number with country code*\n"
-                "*Example:* `+998901234567`\n\n"
-                "_You have 5 minutes to respond._\n"
-                "_Send /cancel to abort._"
+                get_string(user_id, "send_phone") + get_string(user_id, "prompt_timeout")
             ),
             timeout=300,
         )
     except TimeoutError:
-        return await message.reply("*Login cancelled due to timeout.*", parse_mode=ParseMode.DISABLED)
+        return await message.reply(get_string(message.from_user.id, 'login_cancelled'), parse_mode=ParseMode.DISABLED)
     
     if phone_number_msg.text == '/cancel':
-        return await phone_number_msg.reply("*Process cancelled!*", parse_mode=ParseMode.DISABLED)
+        return await phone_number_msg.reply(get_string(message.from_user.id, 'process_cancelled'), parse_mode=ParseMode.DISABLED)
     phone_number = phone_number_msg.text
     
     os.makedirs("sessions", exist_ok=True)
@@ -378,8 +368,7 @@ async def main(bot: Client, message: Message):
     async with login_limiter.acquire(user_id) as slot_acquired:
         if not slot_acquired:
             await message.reply(
-                "⏳ **Server band**\n\n"
-                "Boshqa userlar login qilmoqda. Iltimos 1-2 daqiqa kuting."
+                get_string(user_id, 'login_server_busy')
             )
             return
         
@@ -395,23 +384,19 @@ async def main(bot: Client, message: Message):
         
         try:
             await client.connect()
-            await phone_number_msg.reply("Sending OTP...")
+            await phone_number_msg.reply(get_string(message.from_user.id, 'sending_otp'))
             
             try:
                 phone_code_hash, code_type, email_required = await send_code_raw(client, phone_number)
                 
                 if email_required:
                     await phone_number_msg.reply(
-                        "*OTP could not be sent to this account.*\n\n"
-                        "This may be due to Telegram's security requirements.\n\n"
-                        "*Alternative: Use QR Code Login*\n"
-                        "Send /qrlogin to login by scanning a QR code with your phone.\n\n"
-                        "_This method is more reliable and doesn't require OTP._",
+                        get_string(user_id, 'login_use_qr'),
                         parse_mode=ParseMode.DISABLED
                     )
                     return
             except PhoneNumberInvalid:
-                await phone_number_msg.reply("`PHONE_NUMBER` *is invalid.*", parse_mode=ParseMode.DISABLED)
+                await phone_number_msg.reply(get_string(message.from_user.id, 'invalid_phone'), parse_mode=ParseMode.DISABLED)
                 return
             except Exception as e:
                 error_str = str(e).upper()
@@ -420,29 +405,15 @@ async def main(bot: Client, message: Message):
                 if "FLOOD" in error_str or hasattr(e, 'value') or hasattr(e, 'x'):
                     # Extract wait time
                     wait_time = getattr(e, 'value', getattr(e, 'x', 60))
-                    if wait_time > 3600:
-                        wait_str = f"{wait_time // 3600} soat {(wait_time % 3600) // 60} daqiqa"
-                    elif wait_time > 60:
-                        wait_str = f"{wait_time // 60} daqiqa"
-                    else:
-                        wait_str = f"{wait_time} soniya"
-                    
                     await phone_number_msg.reply(
-                        f"⏳ **Telegram tomonidan cheklangan**\n\n"
-                        f"Bu telefon raqamiga juda ko'p so'rov yuborilgan.\n\n"
-                        f"Iltimos **{wait_str}** kutib, qayta urinib ko'ring.\n\n"
-                        f"_Yoki /qrlogin orqali kirish usulini sinab ko'ring._",
+                        get_string(user_id, "login_limited", seconds=int(wait_time)),
                         parse_mode=ParseMode.DISABLED
                     )
                     return
                 
                 if "EMAIL_SETUP_REQUIRED" in str(e) or "EMAIL" in error_str or "SENTCODETYPE" in error_str:
                     await phone_number_msg.reply(
-                        "*OTP could not be sent to this account.*\n\n"
-                        "This may be due to Telegram's security requirements.\n\n"
-                        "*Alternative: Use QR Code Login*\n"
-                        "Send /qrlogin to login by scanning a QR code with your phone.\n\n"
-                        "_This method is more reliable and doesn't require OTP._",
+                        get_string(user_id, 'login_use_qr'),
                         parse_mode=ParseMode.DISABLED
                     )
                     return
@@ -456,24 +427,19 @@ async def main(bot: Client, message: Message):
                         client=bot,
                         chat_id=user_id,
                         text=(
-                            "Please check for an OTP in official Telegram account.\n"
-                            "If you got it, send OTP here after reading the format below.\n\n"
-                            "If OTP is `12345`, *please send it as* `1 2 3 4 5`\n\n"
-                            f"*Attempts remaining:* {remaining_attempts}\n"
-                            "_Send /cancel to abort._"
+                            get_string(user_id, "send_otp") + get_string(user_id, "attempts_remaining", count=remaining_attempts)
                         ),
                         filters_arg=filters.text,
                         timeout=300
                     )
                 except TimeoutError:
-                    return await message.reply("*Login cancelled due to timeout.*", parse_mode=ParseMode.DISABLED)
+                    return await message.reply(get_string(message.from_user.id, 'login_cancelled'), parse_mode=ParseMode.DISABLED)
 
                 if not phone_code_msg.text or phone_code_msg.text.startswith('/'):
                     if phone_code_msg.text == '/cancel':
-                        return await phone_code_msg.reply("*Process cancelled!*", parse_mode=ParseMode.DISABLED)
+                        return await phone_code_msg.reply(get_string(message.from_user.id, 'process_cancelled'), parse_mode=ParseMode.DISABLED)
                     await phone_code_msg.reply(
-                        "*Iltimos faqat OTP kodini yuboring.*\n"
-                        "Boshqa buyruqlar login paytida ishlamaydi.",
+                        get_string(user_id, 'otp_only'),
                         parse_mode=ParseMode.DISABLED
                     )
                     continue
@@ -482,7 +448,7 @@ async def main(bot: Client, message: Message):
                     # Strip spaces, dashes, dots from OTP
                     phone_code = phone_code_msg.text.replace(" ", "").replace("-", "").replace(".", "").strip()
                     if not phone_code.isdigit():
-                        await phone_code_msg.reply("*OTP faqat raqamlardan iborat bo'lishi kerak.*", parse_mode=ParseMode.DISABLED)
+                        await phone_code_msg.reply(get_string(user_id, 'otp_digits'), parse_mode=ParseMode.DISABLED)
                         continue
                     try:
                         # Use high-level sign_in() — it updates session storage
@@ -496,8 +462,7 @@ async def main(bot: Client, message: Message):
                         break
                     except PhoneNumberUnoccupied:
                         await phone_code_msg.reply(
-                            "*Bu telefon raqami Telegram'da ro'yxatdan o'tmagan.*\n\n"
-                            "Iltimos avval rasmiy Telegram ilovasida ro'yxatdan o'ting.",
+                            get_string(user_id, 'phone_unregistered'),
                             parse_mode=ParseMode.DISABLED
                         )
                         return
@@ -507,24 +472,22 @@ async def main(bot: Client, message: Message):
                         raise
                 except PhoneCodeInvalid:
                     if otp_attempt < max_otp_attempts - 1:
-                        await phone_code_msg.reply("*OTP is invalid. Please try again.*", parse_mode=ParseMode.DISABLED)
+                        await phone_code_msg.reply(get_string(message.from_user.id, 'invalid_otp'), parse_mode=ParseMode.DISABLED)
                         continue
                     else:
-                        await phone_code_msg.reply("*OTP is invalid. Maximum attempts reached.*", parse_mode=ParseMode.DISABLED)
+                        await phone_code_msg.reply(get_string(message.from_user.id, 'otp_max_attempts'), parse_mode=ParseMode.DISABLED)
                         return
                 except PhoneCodeExpired:
                     # OTP muddati o'tgan — yangi kod so'rab, davom etamiz
                     await phone_code_msg.reply(
-                        "⚠️ *OTP muddati o'tgan.*\n\n"
-                        "Yangi OTP yuborilmoqda...",
+                        get_string(user_id, 'otp_refreshing'),
                         parse_mode=ParseMode.DISABLED
                     )
                     try:
                         phone_code_hash, _, _ = await send_code_raw(client, phone_number)
                         await bot.send_message(
                             user_id,
-                            "✅ Yangi OTP yuborildi. Iltimos yangi kodni kiriting.\n\n"
-                            "If OTP is `12345`, *please send it as* `1 2 3 4 5`",
+                            get_string(user_id, 'otp_resent'),
                             parse_mode=ParseMode.DISABLED
                         )
                         # otp_attempt ni reset qilmaymiz — attempt hisobi davom etadi
@@ -532,8 +495,7 @@ async def main(bot: Client, message: Message):
                     except Exception as resend_err:
                         await bot.send_message(
                             user_id,
-                            f"❌ Yangi OTP yuborishda xato: `{resend_err}`\n\n"
-                            "Iltimos /login bilan qaytadan urinib ko'ring.",
+                            get_string(user_id, 'otp_resend_failed', resend_err=resend_err),
                             parse_mode=ParseMode.DISABLED
                         )
                         return
@@ -546,19 +508,16 @@ async def main(bot: Client, message: Message):
                                 client=bot,
                                 chat_id=user_id, 
                                 text=(
-                                    "*Your account has enabled two-step verification.*\n"
-                                    "Please provide the password.\n\n"
-                                    f"*Attempts remaining:* {remaining_2fa}\n"
-                                    "_Send /cancel to abort._"
+                                    get_string(user_id, "send_password") + get_string(user_id, "attempts_remaining", count=remaining_2fa)
                                 ),
                                 filters_arg=filters.text, 
                                 timeout=300
                             )
                         except TimeoutError:
-                            return await message.reply("*Login cancelled due to timeout.*", parse_mode=ParseMode.DISABLED)
+                            return await message.reply(get_string(message.from_user.id, 'login_cancelled'), parse_mode=ParseMode.DISABLED)
                         
                         if two_step_msg.text == '/cancel':
-                            return await two_step_msg.reply("*Process cancelled!*", parse_mode=ParseMode.DISABLED)
+                            return await two_step_msg.reply(get_string(message.from_user.id, 'process_cancelled'), parse_mode=ParseMode.DISABLED)
                         
                         try:
                             password = two_step_msg.text
@@ -566,10 +525,10 @@ async def main(bot: Client, message: Message):
                             break
                         except PasswordHashInvalid:
                             if fa_attempt < max_2fa_attempts - 1:
-                                await two_step_msg.reply("*Invalid password. Please try again.*", parse_mode=ParseMode.DISABLED)
+                                await two_step_msg.reply(get_string(message.from_user.id, 'invalid_password'), parse_mode=ParseMode.DISABLED)
                                 continue
                             else:
-                                await two_step_msg.reply("*Invalid password. Maximum attempts reached.*", parse_mode=ParseMode.DISABLED)
+                                await two_step_msg.reply(get_string(message.from_user.id, 'password_max_attempts'), parse_mode=ParseMode.DISABLED)
                                 return
                     break
             
@@ -582,8 +541,7 @@ async def main(bot: Client, message: Message):
                 )
                 await client.disconnect()
                 return await message.reply(
-                    "*Login xatosi: session yaratishda muammo.*\n\n"
-                    "Iltimos /logout qilib, qaytadan /login bilan kiring.",
+                    get_string(user_id, 'session_export_failed'),
                     parse_mode=ParseMode.DISABLED
                 )
 
@@ -601,15 +559,14 @@ async def main(bot: Client, message: Message):
                 logger.warning("get_me() failed after login for user %d: %s", user_id, _me_err)
                 await client.disconnect()
                 return await message.reply(
-                    "*Login muvaffaqiyatsiz — sessiya tekshiruvdan o'tmadi.*\n\n"
-                    "Iltimos qaytadan /login bilan urinib ko'ring.",
+                    get_string(user_id, 'session_validation_failed'),
                     parse_mode=ParseMode.DISABLED
                 )
 
             await client.disconnect()
 
             if len(string_session) < SESSION_STRING_SIZE:
-                return await message.reply("*Invalid session string*", parse_mode=ParseMode.DISABLED)
+                return await message.reply(get_string(user_id, 'session_invalid'), parse_mode=ParseMode.DISABLED)
             
             session_saved = False
             try:
@@ -622,9 +579,9 @@ async def main(bot: Client, message: Message):
                 try:
                     save_session_to_file(user_id, string_session)
                     session_saved = True
-                    await message.reply_text("*Warning: Database unavailable. Session saved to file.*", parse_mode=ParseMode.DISABLED)
+                    await message.reply_text(get_string(message.from_user.id, 'db_unavailable'), parse_mode=ParseMode.DISABLED)
                 except Exception as file_error:
-                    return await message.reply_text(f"*ERROR IN LOGIN:* `{e}`", parse_mode=ParseMode.DISABLED)
+                    return await message.reply_text(get_string(user_id, 'session_save_failed', e=e), parse_mode=ParseMode.DISABLED)
             
             if session_saved:
                 # Auto-unblock bot (non-fatal, background — login javobini sekinlashtirmaydi)
@@ -639,8 +596,7 @@ async def main(bot: Client, message: Message):
                     pass
                 await bot.send_message(
                     message.from_user.id,
-                    "*Account Login Successfully.*\n\n"
-                    "_If you get any error related to AUTH KEY, use /logout and /login again._",
+                    get_string(user_id, 'login_success_detail'),
                     parse_mode=ParseMode.DISABLED
                 )
         finally:
@@ -663,8 +619,7 @@ async def qr_login_command(bot: Client, message: Message):
     
     if not is_qr_available():
         await message.reply(
-            "*QR Code login is not available.*\n\n"
-            "Please use /login with your phone number instead.",
+            get_string(message.from_user.id, 'qr_unavailable'),
             parse_mode=ParseMode.DISABLED
         )
         return
@@ -679,7 +634,7 @@ async def qr_login_command(bot: Client, message: Message):
         try:
             from TechVJ.session_handler import quick_session_check
             if await quick_session_check(user_data['session'], user_id):
-                await message.reply(strings['already_logged_in'])
+                await message.reply(get_string(message.from_user.id, 'already_logged_in'))
                 return
             else:
                 await async_db.update_user(user_id, {'session': None, 'logged_in': False})
@@ -693,23 +648,14 @@ async def qr_login_command(bot: Client, message: Message):
     # ===== LOGIN RATE LIMITING =====
     can_login, wait_time, reason = await login_limiter.can_login(user_id)
     if not can_login:
-        if wait_time > 60:
-            wait_str = f"{wait_time / 60:.0f} daqiqa"
-        else:
-            wait_str = f"{wait_time:.0f} soniya"
-        
         await message.reply(
-            f"⏳ **Login cheklangan**\n\n"
-            f"{reason}\n\n"
-            f"Iltimos **{wait_str}** kuting."
+            get_string(user_id, "login_limited", seconds=int(wait_time))
         )
         return
     # ===== END RATE LIMITING =====
     
     status_msg = await message.reply(
-        "*QR Code Login*\n\n"
-        "Generating QR code...\n"
-        "Please wait a moment.",
+        get_string(user_id, 'qr_generating'),
         parse_mode=ParseMode.DISABLED
     )
     
@@ -718,11 +664,7 @@ async def qr_login_command(bot: Client, message: Message):
         
         if not success:
             await status_msg.edit_text(
-                f"*Login Failed*\n\n"
-                f"{error or 'Unknown error occurred.'}\n\n"
-                "You can try:\n"
-                "- /qrlogin - Try QR login again\n"
-                "- /login - Use phone number login",
+                get_string(user_id, 'qr_login_failed', value_0=error or get_string(user_id, "unknown_error")),
                 parse_mode=ParseMode.DISABLED
             )
             return
@@ -745,22 +687,17 @@ async def qr_login_command(bot: Client, message: Message):
                 pass
 
             await status_msg.edit_text(
-                "*Login Successful!*\n\n"
-                "Your account has been connected.\n"
-                "You can now use the bot to save restricted content.\n\n"
-                "_If you encounter AUTH KEY errors, use /logout and login again._",
+                get_string(user_id, 'login_success_detail'),
                 parse_mode=ParseMode.DISABLED
             )
             
         except Exception as e:
-            await status_msg.edit_text(f"*Error saving session:* `{e}`", parse_mode=ParseMode.DISABLED)
+            await status_msg.edit_text(get_string(user_id, 'session_save_failed', e=e), parse_mode=ParseMode.DISABLED)
             
     except Exception as e:
         cleanup_qr_files(user_id)
         await status_msg.edit_text(
-            f"*Login Error*\n\n"
-            f"`{str(e)}`\n\n"
-            "Please try again with /qrlogin or /login",
+            get_string(user_id, 'qr_login_error', value_0=str(e)),
             parse_mode=ParseMode.DISABLED
         )
 

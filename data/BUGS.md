@@ -1935,3 +1935,19 @@ Yechim: main tarixi Wzgramga merge qilindi; account upload coordinator,
 part-level cooldown, native Wzgram patchlari va Alwaysdata SIGHUP saqlandi.
 Takror progress detector olib tashlandi; BUG-095 raqam konflikti uchun
 Alwaysdata yozuvi BUG-097ga ko'chirildi. ENV/runtime credential o'zgarmadi.
+
+## BUG-099: Pinned service xabarlari Text send xatosi sifatida ownerga yuboriladi
+
+Status: ✅ Tuzatildi (2026-11-10).
+User c3742c2 taskidagi DALOILUL XOYROT kanalining 15/17 IDlari uchun
+send_text False owner reportlarini ko'rsatdi. Download override bilan faqat
+get_chat/get_messages orqali tekshirildi: ikkala ID PINNED_MESSAGE service,
+text/caption/media yo'q. Haqiqiy postlar o'chmagan, ammo repost kontenti yo'q.
+Sabab: classifier service eventni Text fallbackga yuboradi; bo'sh text False
+yuborish natijasi sifatida SYSTEM_FAILUREga aylangan.
+Yechim: kontentsiz service event None skip natijasini qaytaradi; private va
+public user-session range so'rovlarida alohida hisoblanadi, sent/deleted/error
+hisobiga qo'shilmaydi, BatchController errorini oshirmaydi. Haqiqiy text send
+xatolari oldingidek ownerga boradi; new_chat_photo upload yo'li saqlandi.
+Owner diagnostikasi endi service turini aniq ko'rsatadi. ENV/routing/sessiya
+tanlash o'zgarmadi, live send/restart bajarilmadi.

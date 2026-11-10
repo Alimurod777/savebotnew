@@ -1865,7 +1865,7 @@ tanlash o'zgarmadi, live send/restart bajarilmadi.
 
 ## BUG-100: Reconnectdan keyin bot yangi updatelarni qabul qilmaydi
 
-Status: 🔎 Aniqlandi (2026-11-10), hali tuzatilmadi.
+Status: ✅ Tuzatildi (2026-11-10).
 Read-only service 31109 logi: 2026-11-09 21:12:36 connection closed,
 21:15:09 ConnectionMonitor safe_reconnect boshlagan. 21:15:29 BotRunner ham
 parallel restart boshlagan; 21:15:45 va 21:15:55 reconnect successful.
@@ -1875,3 +1875,15 @@ retry logi 2026-11-10 03:58da ham yangilangan, yangi task loglari esa yo'q.
 SSH host ssh2 xizmat hostidan alohida; lokal psda bot yo'qligi stop dalili emas.
 Tavsiya: oldingi no_updates qiymatini tiklash, reconnectlarni serializatsiya
 qilish. Joriy vazifa sababni aniqlash: kod/ENV o'zgarmadi, restart/send yo'q.
+
+BUG-100 yechimi: safe_disconnect no_updates qiymatini finally orqali
+muvaffaqiyat/xato/timeout/cancellationda tiklaydi. safe_reconnect per-client
+asyncio.Lock va generation/result bilan parallel monitor/runner chaqiruvlarini
+bitta urinishga birlashtiradi. Disconnect muvaffaqiyatsiz bo'lsa start qilmaydi.
+Bot.start mavjud ConnectionMonitorni qayta ishlatadi; har reconnect yangi
+monitor yaratmaydi. 9 offline regression update policy False/None/True,
+stop failure/timeout/cancellation, parallel success/failure va keyingi mustaqil
+reconnectni tekshiradi. Full pytest: 460 passed, 22 subtests passed.
+Migration: 663 symbols, 0 failures; pip check va diff check o'tdi.
+ENV/routing/sessions o'zgarmadi. Live service restart yoki send bajarilmadi;
+yangi kod service keyingi ishga tushirilganda yuklanadi.

@@ -1582,3 +1582,15 @@ parallel reconnect aniqlandi. safe_disconnect no_updates=True ni tiklamaydi
 warning alohida, process crash emas. Kod/ENV/restart/live send bajarilmadi.
 UMUMIY YO'NALISH: reconnectdan keyin bot yangi xabarlarni qabul qilishi kerak;
 SSH process ro'yxatini alohida Alwaysdata service holati deb talqin qilmaslik.
+
+
+## Sessiya davomi (2026-11-10) — Bot reconnect tuzatishi
+
+So'rov: «shuni to'g'irla». BUG-100 tuzatildi: temporary no_updates finallyda
+tiklanadi, concurrent reconnectlar client lock/generation bilan birlashtiriladi,
+mavjud monitor qayta ishlatiladi. Stop muvaffaqiyatsiz bo'lsa start yo'q.
+9 yangi offline regression; full pytest 460 passed/22 subtests; migration
+663 symbols/0 failures, pip check va diff check o'tdi. Kod GitHubga push qilinadi.
+UMUMIY YO'NALISH: ulanish tiklanganda bot yangi xabarlarni qabul qilsin,
+monitorlar to'planmasin. AGENTS.md no automatic restart siyosati saqlandi;
+ENV va live Telegramga tegilmadi. Service Restart yangi kodni faollashtiradi.

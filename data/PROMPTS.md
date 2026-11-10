@@ -1552,3 +1552,22 @@ loglar o'chirilmasin; bot avtomatik restart yoki jonli test send qilinmasin.
 
 Tekshiruv: full pytest 444 passed va 22 subtests passed; Wzgram migration
 0 failures; pip check, py_compile va git diff --check o'tdi.
+
+## Sessiya (2026-11-10) — 15/17 pinned service false failure report
+
+So'rov: send_text False, Text/caption none owner reportlarini tekshirish.
+Read-only Telegram tekshiruvi ikkala ID PINNED_MESSAGE ekanini tasdiqladi.
+Kontentsiz service eventni oddiy text yuborishdan oldin skip qilish, range
+hisobida alohida ko'rsatish, owner diagnostikasida Service type chiqarish
+main va Wzgram nusxalariga qo'llandi. Real text send failure va service photo
+yetkazish saqlanadi. Regressionlar service-only/mixed/deleted range va
+haqiqiy send failure reportini tekshiradi.
+
+UMUMIY YO'NALISH: xizmat xabari kontent deb yoki tizim xatosi deb hisoblanmasin;
+main/Wzgram tuzatishlari birga push qilinsin. ENVga tegilmasin; bot restart
+yoki Telegramga jonli xabar yuborilmasin.
+
+Tekshiruv: full pytest 449 passed va 22 subtests passed; yakuniy kengaytirilgan
+service regression 14 passed (public skip/batch error ham qamraldi). Migration
+0 failures, pip check va git diff --check o'tdi. Live tekshiruv faqat source
+metadata o'qishdan iborat, Telegramga xabar yuborilmadi.

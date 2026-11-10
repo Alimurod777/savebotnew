@@ -64,7 +64,7 @@ import shutil
 import re
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Tuple, Optional, Any
+from typing import List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, replace
 
 logger = logging.getLogger(__name__)
@@ -2008,7 +2008,10 @@ def _owner_diag_chat_lines(chat: Any) -> List[str]:
 def _owner_diag_media_lines(msg: Any) -> List[str]:
     lines: List[str] = []
     msg_type = get_message_type(msg) if msg else "Unknown"
-    lines.append(f"Post type: {msg_type}")
+    service = getattr(msg, "service", None)
+    lines.append(f"Post type: {'Service' if service else msg_type}")
+    if service:
+        lines.append(f"Service type: {getattr(service, 'value', service)}")
     if not msg:
         return lines
 
@@ -6420,6 +6423,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
             failed = 0
             failed_ids = []  # Only existing but unsent posts (not deleted)
             deleted = 0
+            service_skipped = 0
             albums_processed = 0
             stop_summary = None
             retry_post_id = None
@@ -6627,6 +6631,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
 
                                 if result == "deleted":
                                     deleted += 1
+                                elif result is None:
+                                    service_skipped += 1
                                 elif result:
                                     processed += 1
                                     if _batch:
@@ -6711,6 +6717,8 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     failed_info += f"\n...va yana {len(failed_ids) - 20} ta"
             
             deleted_info = f"\n🗑 O'chirilgan: {deleted}" if deleted > 0 else ""
+            service_info = (f"\nℹ️ Kontentsiz xizmat xabarlari: {service_skipped}"
+                            if service_skipped else "")
             
             if stop_summary:
                 await client.edit_message_text(
@@ -6719,9 +6727,9 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     f"Yuborilgan post/album: {processed}\n"
                     f"So'ralgan ID lar: {total_posts}\n"
                     f"📁 Albumlar: {albums_processed}\n"
-                    f"❌ Xato: {failed}{deleted_info}{failed_info}"
+                    f"❌ Xato: {failed}{deleted_info}{service_info}{failed_info}"
                 )
-            elif processed == 0 and failed == 0 and deleted > 0:
+            elif processed == 0 and failed == 0 and deleted > 0 and service_skipped == 0:
                 await client.edit_message_text(
                     user_id, status_msg.id,
                     f"⚠️ **Barcha xabarlar o'chirilgan**\n"
@@ -6733,7 +6741,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     user_id, status_msg.id,
                     f"⚠️ **Hech qanday xabar jo'natilmadi**\n"
                     f"So'ralgan: {total_posts}\n"
-                    f"❌ Xato: {failed}{deleted_info}"
+                    f"❌ Xato: {failed}{deleted_info}{service_info}"
                     f"{failed_info}"
                 )
             elif failed > 0:
@@ -6742,7 +6750,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     f"✅ **Tugadi**\n"
                     f"Yuklandi: {processed}/{total_posts}\n"
                     f"📁 Albumlar: {albums_processed}\n"
-                    f"❌ Xato: {failed}{deleted_info}"
+                    f"❌ Xato: {failed}{deleted_info}{service_info}"
                     f"{failed_info}"
                 )
             else:
@@ -6750,7 +6758,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                     user_id, status_msg.id,
                     f"✅ **Tugadi**\n"
                     f"Yuklandi: {processed}/{total_posts}\n"
-                    f"📁 Albumlar: {albums_processed}{deleted_info}"
+                    f"📁 Albumlar: {albums_processed}{deleted_info}{service_info}"
                 )
             
             # Unpin status message when done
@@ -6795,6 +6803,7 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
         source_context_msg = None
         
         processed = 0
+        service_skipped = 0
         _p_batch = BatchController(user_id) if _THROTTLE_AVAILABLE else None
 
         user_data = await async_db.find_user(user_id)
@@ -6845,7 +6854,9 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
                             session_string=session_string,
                             context=ctx.with_client_type("user_session"),
                         )
-                        if result and result != "deleted":
+                        if result is None:
+                            service_skipped += 1
+                        elif result and result != "deleted":
                             processed += 1
                             if _p_batch:
                                 _p_batch.record_success()
@@ -6994,15 +7005,21 @@ async def process_public_posts(client: Client, message: Message, parsed: ParsedU
         if _p_batch:
             _p_batch.finish()
         
-        if processed == 0 and total_posts > 0:
+        service_info = f"\nService messages skipped: {service_skipped}" if service_skipped else ""
+        if service_skipped > 0 and processed == 0 and service_skipped == total_posts:
             await client.edit_message_text(
                 user_id, status_msg.id,
-                f"⚠️ **No messages retrieved**\nRequested: {total_posts}\n\nMessages may have been deleted or are inaccessible."
+                f"No content to send. Requested: {total_posts}{service_info}",
+            )
+        elif processed == 0 and total_posts > 0:
+            await client.edit_message_text(
+                user_id, status_msg.id,
+                f"⚠️ **No messages retrieved**\nRequested: {total_posts}\n\nMessages may have been deleted or are inaccessible.{service_info}"
             )
         elif processed < total_posts:
             await client.edit_message_text(
                 user_id, status_msg.id,
-                f"✅ **Completed with warnings**\nProcessed: {processed}/{total_posts}\nSome messages could not be retrieved."
+                f"✅ **Completed with warnings**\nProcessed: {processed}/{total_posts}\nSome messages could not be retrieved.{service_info}"
             )
         else:
             await client.edit_message_text(user_id, status_msg.id, f"✅ **Completed**\nProcessed: {processed}/{total_posts}")
@@ -7063,13 +7080,15 @@ async def process_single_post(
     target_user_id: int = None,
     session_string: Optional[str] = None,
     context: Optional[TaskContext] = None,
-) -> bool:
+) -> Optional[Union[bool, str]]:
     """
     Process a single NON-ALBUM post completely before returning.
     
     NOTE: Album detection and processing is now handled by the caller
     using detect_album_boundary() and process_album_pipeline().
     This function only handles single messages.
+    Returns None for a contentless service event, "deleted" for a missing post,
+    and a boolean for actual delivery attempts. Neither skipped state is sent.
     
     Args:
         message: Original user message (can be None for queued items)
@@ -7205,6 +7224,14 @@ async def process_single_post(
                 logger.warning(f"send_venue error: {e}")
                 await _notify_failure("send_venue", "venue send/copy failed", e, msg)
                 return False
+
+        # A pin/title/etc. service event has no text to repost. Keep it
+        # distinct from both delivered content and a genuine send failure.
+        if (msg_type == "Text" and getattr(msg, "service", None)
+                and not (getattr(msg, "text", None) or getattr(msg, "caption", None))):
+            logger.info("Skipping contentless service message chat=%s post=%s service=%s",
+                        chat_id, post_id, msg.service)
+            return None
 
         # Handle text messages
         if msg_type == "Text":

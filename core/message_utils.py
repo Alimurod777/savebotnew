@@ -341,7 +341,9 @@ def normalize_poll_to_text(
     correct_option_id: Optional[int] = None,
     voted_option_id: Optional[int] = None,
     explanation: Optional[str] = None,
-    is_quiz: bool = False
+    is_quiz: bool = False,
+    *,
+    user_id: int = 0,
 ) -> str:
     """
     Convert poll/quiz to plain text representation.
@@ -353,16 +355,19 @@ def normalize_poll_to_text(
         voted_option_id: Index of user's vote
         explanation: Quiz explanation text
         is_quiz: Whether this is a quiz
+        user_id: Recipient whose selected language supplies bot-authored labels
     
     Returns:
         Formatted text representation of poll
     """
     option_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     
-    poll_type = "Quiz" if is_quiz else "So'rovnoma"
+    from TechVJ.lang import get_string
+
+    poll_type = get_string(user_id, "poll_quiz" if is_quiz else "poll_survey")
     lines = [f"**📊 {poll_type}**\n"]
-    lines.append(f"**Savol:**\n{question}\n")
-    lines.append("**Variantlar:**")
+    lines.append(get_string(user_id, "poll_question", value_0=question).removesuffix("\n"))
+    lines.append(get_string(user_id, "poll_options").rstrip("\n"))
     
     for i, opt in enumerate(options):
         letter = option_letters[i] if i < len(option_letters) else str(i + 1)
@@ -377,22 +382,22 @@ def normalize_poll_to_text(
     if voted_option_id is not None and voted_option_id < len(options):
         vote_letter = option_letters[voted_option_id] if voted_option_id < len(option_letters) else str(voted_option_id + 1)
         vote_text = options[voted_option_id]
-        lines.append(f"\n**Sizning ovozingiz:** {vote_letter}) {vote_text} ✓")
+        lines.append(get_string(user_id, "poll_vote", vote_letter=vote_letter, vote_text=vote_text) + " ✓")
         
         # Quiz result
         if is_quiz and correct_option_id is not None:
             correct_letter = option_letters[correct_option_id] if correct_option_id < len(option_letters) else "?"
             correct_text = options[correct_option_id] if correct_option_id < len(options) else "?"
-            lines.append(f"**To'g'ri javob:** {correct_letter}) {correct_text}")
+            lines.append(get_string(user_id, "poll_correct", correct_letter=correct_letter, correct_text=correct_text).lstrip("\n"))
             
             if voted_option_id == correct_option_id:
-                lines.append("\n**Natija:** ✅ TO'G'RI")
+                lines.append(get_string(user_id, "poll_result_correct").lstrip("\n"))
             else:
-                lines.append("\n**Natija:** ❌ NOTO'G'RI")
+                lines.append(get_string(user_id, "poll_result_wrong").lstrip("\n"))
     
     # Add explanation
     if explanation:
-        lines.append(f"\n**💡 Izoh:** {explanation}")
+        lines.append(get_string(user_id, "poll_explanation", value_0=explanation).lstrip("\n"))
     
     return "\n".join(lines)
 

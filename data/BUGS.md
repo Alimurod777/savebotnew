@@ -2044,3 +2044,35 @@ account lock/cooldown/retry algoritmi va bot-only text routing o‘zgarmadi.
 Eski bot-only regression locale ni aniq belgilaydi; 9 yangi test uchala
 holatni har uch tilda tekshiradi. Wzgram full pytest: 564 passed va
 22 subtests passed; migration 678 symbols/0 failures, pip check va diff check.
+## BUG-104: Split muvaffaqiyatidan keyin completion status chatda qoladi
+
+Status: ✅ Tuzatildi (2026-11-10).
+Foydalanuvchi «Файл разделён на 2 частей!» xabari barcha qismlar yuborilgach
+o‘chmay qolganini ko‘rsatdi. Sabab: standard split yo‘li split_complete bilan
+progressni edit qilib return True qiladi; umumiy muvaffaqiyat cleanupiga yetmaydi.
+Yechim: barcha qismlar muvaffaqiyatli yetkazilgach bot faqat o‘zining shu
+status message ID sini delete_messages bilan o‘chiradi. Cleanup FloodWait yoki
+boshqa xatosi non-fatal: yetkazilgan qismlar qayta yuborilmaydi. Split/yetkazish
+xatosida muvaffaqiyat cleanupi ishlamaydi, xato konteksti ko‘rinib qoladi.
+Regression: document/video success, cleanup FloodWait/exception, upload va
+copy failure; status ID/user target va qayta upload yo‘qligi tekshirildi.
+
+## BUG-105: Umumiy poll normalizerda hardcoded Uzbek label qolgan
+
+Status: ✅ Tuzatildi (2026-11-10).
+Foydalanuvchi ruscha savolli so‘rovnomada «Savol / Variantlar / Sizning
+ovozingiz» misolini yubordi. Auditda handle_poll dan tashqari mavjud
+core.message_utils.normalize_poll_to_text ham Uzbek label ishlatgani topildi.
+Yechim: mavjud normalizerga backward-compatible keyword-only user_id qo‘shildi;
+label/result/explanation headerlari umumiy poll_* tarjima kalitlaridan olinadi.
+core.safe_copy.safe_forward_or_copy recipient target_chat_id ni uzatadi.
+Savol, variantlar (oxirgi bo‘sh joy/newline ham), explanation va vote belgilari
+saqlanadi. Main full pytest: 553 passed, 22 subtests passed; 16 yangi offline
+regression, migration 678 symbols/0 failures, pip check va diff check o‘tdi.
+
+BUG-104/105 Wzgram tekshiruvi: main c7e57f1 merge qilindi. Shared account
+upload coordinator/worker o‘zgarmadi. Document/video muvaffaqiyatidan keyin
+faqat status tozalanishi, cleanup FloodWait/exception media qayta yubormasligi
+va shared poll rendererning recipient tili ham Wzgramda tekshirildi.
+Full pytest 580 passed, 22 subtests passed; migration 681 symbols/0 failures,
+pip check, compile va diff check o‘tdi. Live restart/send bajarilmadi.

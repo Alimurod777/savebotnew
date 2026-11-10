@@ -1,7 +1,7 @@
 """
 TechVJ/lang.py - Multi-language support for the bot.
 
-Supports: English (en), Uzbek (uz)
+Supports: English (en), Uzbek (uz), Russian (ru)
 Default: English
 """
 
@@ -215,6 +215,102 @@ Media link yuboring yoki xabarni forward qiling.""",
         "queue_done_errors": "✅ Tugadi: {done}/{total} (xato: {errors})",
         "queue_empty": "📭 Navbat bo'sh",
         "queue_status": "📋 **Navbat holati**\n\nFaol: {active}\nKutmoqda: {waiting}",
+    },
+    "ru": {
+        # General
+        "lang_select": "🌐 **Выберите язык**\n\nТекущий: Русский 🇷🇺",
+        "lang_changed": "✅ Язык изменён на **Русский** 🇷🇺",
+
+        # Start
+        "start_msg": "👋 **Добро пожаловать!**\n\nОтправьте ссылку на медиа или перешлите сообщение, чтобы сохранить его.",
+        "start_help": "Список команд: /help.",
+
+        # Download/Upload
+        "downloading": "⬇️ Скачивание...",
+        "uploading": "⬆️ Отправка...",
+        "download_complete": "✅ Скачивание завершено!",
+        "download_failed": "❌ Не удалось скачать файл",
+        "processing": "⏳ Обработка...",
+
+        # Large file splitting
+        "file_too_large": "📦 Файл больше 2 ГБ ({size})\nРазделение...",
+        "split_complete": "✅ Файл разделён на **{parts}** частей!\nДля объединения используйте программу для сборки файлов.",
+        "splitting_ffmpeg": "✂️ Разделение с помощью FFmpeg (качество сохраняется)...",
+        "splitting_binary": "✂️ Разделение файла...",
+        "uploading_part": "⬆️ Отправка: **{part}/{total}**\n`{name}` ({size})",
+
+        # Caption
+        "caption_continued": "📝 Продолжение подписи:",
+        "caption_overflow": "📎 Продолжение ниже ↓",
+
+        # Progress
+        "progress_download": "⬇️ Скачивание\n{progress}% | {speed}/с\nОсталось: {eta}",
+        "progress_upload": "⬆️ Отправка\n{progress}% | {speed}/с\nОсталось: {eta}",
+
+        # Errors
+        "error_generic": "❌ Ошибка: {error}",
+        "error_not_found": "❌ Файл не найден",
+        "error_timeout": "⏱️ Время ожидания истекло",
+        "error_flood": "⚠️ Слишком много запросов. Подождите {seconds} с",
+        "split_flood_wait": "⏳ Telegram временно ограничил отправку (FloodWait). Подождите {seconds} секунд. После этого отправка оставшихся частей продолжится автоматически. Повторно отправлять ссылку не нужно.",
+        "error_split": "❌ Не удалось разделить большой файл: {error}",
+
+        # Login/Logout
+        "not_logged_in": "❌ Вы не вошли в аккаунт.",
+        "already_logged_in": "✅ Вы уже вошли в аккаунт.\n\nЧтобы войти в другой аккаунт, сначала выполните /logout.",
+        "logout_success": "✅ **Вы вышли из аккаунта** ♦",
+        "login_cancelled": "❌ Вход отменён: время ожидания истекло.",
+        "process_cancelled": "❌ Процесс отменён!",
+        "send_phone": "📱 **Отправьте номер телефона** в международном формате.\n\nПример: `+998901234567`",
+        "invalid_phone": "❌ Неверный номер телефона.",
+        "sending_otp": "📤 Отправка кода подтверждения...",
+        "send_otp": "🔑 **Введите код подтверждения**, полученный на телефон.\n\nФормат: `1 2 3 4 5` (через пробел)",
+        "invalid_otp": "❌ Неверный код. Попробуйте ещё раз.",
+        "otp_expired": "❌ Срок действия кода истёк. Начните заново: /login.",
+        "otp_max_attempts": "❌ Достигнуто максимальное число попыток.",
+        "send_password": "🔐 **Двухэтапная аутентификация**\n\nВведите пароль:",
+        "invalid_password": "❌ Неверный пароль. Попробуйте ещё раз.",
+        "password_max_attempts": "❌ Достигнуто максимальное число попыток ввода пароля.",
+        "login_success": "✅ **Вход выполнен!**\n\nТеперь отправьте ссылку или перешлите сообщение, чтобы сохранить медиа.",
+        "login_error": "❌ Ошибка входа: {error}",
+        "db_unavailable": "⚠️ База данных недоступна. Сессия сохранена в файл.",
+
+        # QR Login
+        "qr_scan": "📱 **Отсканируйте этот QR-код** в приложении Telegram.\n\nНастройки → Устройства → Сканировать QR-код",
+        "qr_expired": "❌ Срок действия QR-кода истёк. Попробуйте снова: /login.",
+        "qr_waiting": "⏳ Ожидание сканирования...",
+
+        # Album
+        "album_processing": "📸 Обработка альбома ({count} элементов)...",
+        "album_complete": "✅ Альбом отправлен!",
+        "album_error": "❌ Ошибка альбома: {error}",
+
+        # Help
+        "help_msg": """📚 **Команды**
+
+/start - Запустить бота
+/help - Помощь
+/lang - Изменить язык 🌐
+/login - Войти в аккаунт
+/logout - Выйти из аккаунта
+
+**Использование:**
+Отправьте ссылку на медиа или перешлите сообщение, чтобы скачать или сохранить его.""",
+
+        # Queue
+        "queue_added": "📋 **Добавлено в очередь**\n\nПозиция: {position}\nСейчас скачивается: `{current}`\n\nОтменить: /stop",
+        "queue_full": "❌ Очередь заполнена (максимум {max}).\nДождитесь завершения текущих загрузок.",
+        "queue_next": "▶️ **Следующая ссылка из очереди...**\n`{link}`",
+        "queue_from": "📥 Из очереди: скачивание постов ({count})...",
+        "queue_topic": "📥 Из очереди: скачивание темы {topic_id}...",
+        "queue_thread": "📥 Из очереди: скачивание ветки {thread_id}...",
+        "queue_public": "📥 Из очереди: публичный канал ({count} постов)",
+        "queue_bot": "📥 Из очереди: скачивание чата с ботом...",
+        "queue_cleared": "📋 Удалено из очереди: {count}",
+        "queue_done": "✅ Готово: {done}/{total}",
+        "queue_done_errors": "✅ Готово: {done}/{total} (ошибок: {errors})",
+        "queue_empty": "📭 Очередь пуста",
+        "queue_status": "📋 **Состояние очереди**\n\nАктивных: {active}\nОжидающих: {waiting}",
     }
 }
 
@@ -281,19 +377,14 @@ def _(user_id: int, key: str, **kwargs) -> str:
 async def lang_command(client: Client, message: Message):
     """Handle /lang command."""
     user_id = message.from_user.id
-    current_lang = get_user_lang(user_id)
-    
-    # Build message based on current language
-    if current_lang == "uz":
-        text = "🌐 **Tilni tanlang**\n\nHozirgi: O'zbek 🇺🇿"
-    else:
-        text = "🌐 **Select Language**\n\nCurrent: English 🇬🇧"
+    text = get_string(user_id, "lang_select")
     
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
             InlineKeyboardButton("🇺🇿 O'zbek", callback_data="lang_uz"),
-        ]
+        ],
+        [InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru")],
     ])
     
     await message.reply(text, reply_markup=keyboard)
@@ -310,11 +401,7 @@ async def lang_callback(client: Client, callback: CallbackQuery):
     
     set_user_lang(user_id, lang)
     
-    # Respond in selected language
-    if lang == "uz":
-        text = "✅ Til **O'zbek**ga o'zgartirildi 🇺🇿"
-    else:
-        text = "✅ Language changed to **English** 🇬🇧"
+    text = get_string(user_id, "lang_changed")
     
     await callback.message.edit_text(text)
     await callback.answer()
@@ -323,5 +410,5 @@ async def lang_callback(client: Client, callback: CallbackQuery):
 def register_lang_handlers(app: Client):
     """Register language handlers with the bot."""
     app.on_message(filters.command("lang"))(lang_command)
-    app.on_callback_query(filters.regex(r"^lang_(en|uz)$"))(lang_callback)
+    app.on_callback_query(filters.regex(r"^lang_(en|uz|ru)$"))(lang_callback)
     logger.info("Language handlers registered")

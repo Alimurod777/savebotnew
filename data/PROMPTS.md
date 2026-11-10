@@ -1594,3 +1594,17 @@ mavjud monitor qayta ishlatiladi. Stop muvaffaqiyatsiz bo'lsa start yo'q.
 UMUMIY YO'NALISH: ulanish tiklanganda bot yangi xabarlarni qabul qilsin,
 monitorlar to'planmasin. AGENTS.md no automatic restart siyosati saqlandi;
 ENV va live Telegramga tegilmadi. Service Restart yangi kodni faollashtiradi.
+
+
+## Sessiya (2026-11-10) — /lang menyusiga rus tilini qo‘shish
+
+So‘rov: «lang ga rus tilini ham qosh».
+TechVJ/lang.py ga ru lug‘ati (mavjud 62 kalitning barchasi tarjimasi),
+🇷🇺 Русский tugmasi va lang_ru callback registratsiyasi qo‘shildi.
+Til tanlash va tasdiqlash matni mavjud get_string orqali olinadi;
+rus tili mavjud faylga saqlash mexanizmi bilan eslab qolinadi.
+Tekshiruv: uch til menyusi/callbacki va persistence, tarjima kalitlari va
+format placeholderlari offline tekshirildi; full pytest 460 passed va
+22 subtests passed; migration 663 symbols/0 failures, pip check o‘tdi.
+UMUMIY YO‘NALISH: /lang English, O‘zbek va Русский tillarini qo‘llasin.
+Upload/session/routing o‘zgarmadi; live Telegram send va restart bajarilmadi.

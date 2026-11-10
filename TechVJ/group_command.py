@@ -21,6 +21,7 @@ Message Ordering:
     - Deleted messages are skipped
 """
 
+from TechVJ.lang import get_string, get_report_error, get_report_type
 import asyncio
 import re
 import logging
@@ -116,7 +117,7 @@ class ParsedGroupInput:
     input_type: str  # "id", "username", "invite", "internal"
 
 
-def parse_group_input(text: str) -> Tuple[Optional[ParsedGroupInput], Optional[str]]:
+def parse_group_input(text: str, user_id: int = 0) -> Tuple[Optional[ParsedGroupInput], Optional[str]]:
     """
     Parse group input from user.
     
@@ -164,12 +165,7 @@ def parse_group_input(text: str) -> Tuple[Optional[ParsedGroupInput], Optional[s
         return ParsedGroupInput(text, "username"), None
     
     return None, (
-        "Invalid input format.\n\n"
-        "Supported formats:\n"
-        "• Group ID: `-1001234567890`\n"
-        "• Username: `@groupname`\n"
-        "• Link: `https://t.me/groupname`\n"
-        "• Internal: `https://t.me/c/1234567890/...`"
+        get_string(user_id, 'group_input_invalid')
     )
 
 
@@ -579,79 +575,36 @@ async def analyze_group_topics(client: Client, chat_id: int) -> GroupAnalysis:
 
 # ==================== OUTPUT FORMATTING ====================
 
-def format_group_analysis(analysis: GroupAnalysis) -> str:
-    """Format GroupAnalysis as human-readable report."""
-    lines = []
-    
-    # Error
+def format_group_analysis(analysis: GroupAnalysis, user_id: int = 0) -> str:
+    """Render group metadata in the requesting user's language."""
+    tr = lambda key, **kwargs: get_string(user_id, "report_" + key, **kwargs)
     if analysis.error:
-        return f"**Error:** {analysis.error.user_message}"
-    
-    # Header
-    lines.append("**Group Analysis**\n")
-    lines.append(f"**Title:** {analysis.title}")
+        return get_report_error(user_id, analysis.error)
+    lines = [f"**{tr('group_heading')}**\n", f"**{tr('title')}:** {analysis.title}"]
     if analysis.username:
-        lines.append(f"**Username:** @{analysis.username}")
-    lines.append(f"**ID:** `{analysis.group_id}`")
-    lines.append(f"**Members:** {analysis.member_count:,}")
-    
-    # Forum status
+        lines.append(f"**{tr('username')}:** @{analysis.username}")
+    lines.extend([f"**{tr('id')}:** `{analysis.group_id}`", f"**{tr('members')}:** {analysis.member_count:,}"])
+    lines.append(f"\n**{tr('topics')}:** {tr('enabled' if analysis.is_forum else 'disabled')}")
     if not analysis.is_forum:
-        lines.append("\n**Forum Topics:** Disabled")
-        lines.append("\n_This group does not use forum topics._")
+        lines.append(tr('no_topics'))
         return "\n".join(lines)
-    
-    lines.append(f"\n**Forum Topics:** Enabled")
-    lines.append(f"**Total Topics:** {analysis.total_topics}")
-    
+    lines.append(f"**{tr('topics_total')}:** {analysis.total_topics}")
     if not analysis.topics:
-        lines.append("\n_No accessible topics found._")
+        lines.append(tr('no_accessible_topics'))
         return "\n".join(lines)
-    
-    # Topics
-    lines.append(f"\n**Showing {len(analysis.topics)} topics:**\n")
-    
+    lines.append("\n" + tr('showing_topics', count=len(analysis.topics)) + "\n")
     for topic in analysis.topics:
-        # Topic header
-        status = ""
-        if topic.is_closed:
-            status = " [CLOSED]"
-        if topic.is_hidden:
-            status = " [HIDDEN]"
-        
-        lines.append(f"**{topic.title}**{status}")
-        lines.append(f"  • Topic ID: `{topic.topic_id}`")
-        lines.append(f"  • Messages: {topic.message_count}")
-        
-        # First message link (by date)
-        if topic.first_message:
-            first_link = build_topic_message_link(
-                analysis.group_id_short,
-                topic.topic_id,
-                topic.first_message.message_id
-            )
-            first_date = topic.first_message.date.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"  • First: [{first_date}]({first_link})")
-        
-        # Last message link (by date)
-        if topic.last_message:
-            last_link = build_topic_message_link(
-                analysis.group_id_short,
-                topic.topic_id,
-                topic.last_message.message_id
-            )
-            last_date = topic.last_message.date.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"  • Last: [{last_date}]({last_link})")
-        
-        # Topic link
-        topic_link = build_topic_link(analysis.group_id_short, topic.topic_id)
-        lines.append(f"  • Topic: {topic_link}")
-        lines.append("")  # Empty line between topics
-    
-    # Truncation notice
+        status = tr('hidden') if topic.is_hidden else (tr('closed') if topic.is_closed else '')
+        lines.extend([f"**{topic.title}**{status}", f"  • {tr('topic_id')}: `{topic.topic_id}`", f"  • {tr('messages')}: {topic.message_count}"])
+        for label, item in [('first', topic.first_message), ('last', topic.last_message)]:
+            if item:
+                link = build_topic_message_link(analysis.group_id_short, topic.topic_id, item.message_id)
+                date = item.date.strftime('%Y-%m-%d %H:%M')
+                lines.append(f"  • {tr(label)}: [{date}]({link})")
+        lines.append(f"  • {tr('topic')}: {build_topic_link(analysis.group_id_short, topic.topic_id)}")
+        lines.append('')
     if analysis.total_topics > len(analysis.topics):
-        lines.append(f"_... and {analysis.total_topics - len(analysis.topics)} more topics_")
-    
+        lines.append(tr('more_topics', count=analysis.total_topics - len(analysis.topics)))
     return "\n".join(lines)
 
 
@@ -685,17 +638,7 @@ async def group_command_handler(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply(
-            "**Usage:** `/group <group_identifier>`\n\n"
-            "**Supported formats:**\n"
-            "• Group ID: `/group -1001234567890`\n"
-            "• Username: `/group @groupname`\n"
-            "• Link: `/group https://t.me/groupname`\n"
-            "• Internal: `/group https://t.me/c/1234567890/123`\n\n"
-            "**Returns:**\n"
-            "• Group info and member count\n"
-            "• Forum topic list (if enabled)\n"
-            "• Message count per topic\n"
-            "• First/last message links (by date)",
+            get_string(user_id, 'group_usage'),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -703,23 +646,22 @@ async def group_command_handler(client: Client, message: Message):
     input_text = parts[1].strip()
     
     # Parse input
-    parsed, error = parse_group_input(input_text)
+    parsed, error = parse_group_input(input_text, user_id=user_id)
     if error:
-        await message.reply(f"**Error:** {error}", **build_reply_kwargs_from_message(message))
+        await message.reply(get_string(user_id, "error_generic", error=error), **build_reply_kwargs_from_message(message))
         return
     
     # Check user session
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
         await message.reply(
-            "You need to /login first to analyze groups.\n"
-            "The bot uses your session to access group data.",
+            get_string(user_id, "need_login"),
             **build_reply_kwargs_from_message(message)
         )
         return
     
     # Status message
-    status_msg = await message.reply("Analyzing group...")
+    status_msg = await message.reply(get_string(user_id, 'group_analyzing'))
     
     try:
         async with create_user_session(user_data['session'], user_id, timeout=RPC_TIMEOUT) as acc:
@@ -735,8 +677,7 @@ async def group_command_handler(client: Client, message: Message):
                     if "ALREADY" in str(e).upper():
                         # Already a member - need to resolve differently
                         await status_msg.edit_text(
-                            "**Error:** Cannot resolve invite link. "
-                            "Try using the group username or ID instead."
+                            get_string(user_id, 'group_invite_error')
                         )
                         return
                     raise
@@ -747,17 +688,17 @@ async def group_command_handler(client: Client, message: Message):
                     chat = await acc.get_chat(parsed.identifier)
                     group_id = chat.id
                 except Exception as e:
-                    await status_msg.edit_text(f"**Error:** Cannot find @{parsed.identifier}")
+                    await status_msg.edit_text(get_string(user_id, 'group_username_error', value_0=parsed.identifier))
                     return
             
             # Update status
-            await status_msg.edit_text("Fetching group info and topics...")
+            await status_msg.edit_text(get_string(user_id, 'group_fetching'))
             
             # Analyze group
             analysis = await analyze_group_topics(acc, group_id)
             
             # Format and send result
-            report = format_group_analysis(analysis)
+            report = format_group_analysis(analysis, user_id=user_id)
             
             # Split if too long
             if len(report) > 4000:
@@ -780,12 +721,12 @@ async def group_command_handler(client: Client, message: Message):
                 await status_msg.edit_text(report)
             
     except SessionInvalidError as e:
-        await status_msg.edit_text(f"**Session Error:** {e.user_message}")
+        await status_msg.edit_text(get_string(user_id, "session_invalid"))
     except SessionConnectionError as e:
-        await status_msg.edit_text(f"**Connection Error:** {e}")
+        await status_msg.edit_text(get_string(user_id, "connection_error", e=e))
     except asyncio.TimeoutError:
-        await status_msg.edit_text("**Error:** Request timed out. The group may be too large.")
+        await status_msg.edit_text(get_string(user_id, "report_error_timeout"))
     except Exception as e:
         error = classify_group_error(e)
-        await status_msg.edit_text(f"**Error:** {error.user_message}")
+        await status_msg.edit_text(get_report_error(user_id, error))
         logger.exception(f"/group error for user {user_id}: {e}")

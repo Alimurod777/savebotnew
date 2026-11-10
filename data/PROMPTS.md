@@ -1800,3 +1800,33 @@ UMUMIY YO‘NALISH: origin/wzgram main commitlarining barchasini o‘z ichiga
 olsin, Wzgramga xos upload koordinatsiyasi saqlansin; lokal Wzgram clone
 ham fast-forward qilinsin. ENV/runtime session fayllari o‘zgartirilmasin.
 Bot restarti yoki jonli Telegram send bajarilmasin.
+## Sessiya (2026-11-10) — Qolgan user UI tarjimalarini tekshirish
+
+So‘rov: «ayrim joylanda yana qolib ketgan». Qo‘shimcha misollar so‘raldi;
+shu paytda koddagi mustaqil audit davom ettirildi. Faol download-engine
+progress publisheri, hidden finish branchlari, QuizBot/poll labeli va
+/info /group /post hisobot/input/usage/error UIlari til tanloviga ulandi.
+Har tilda 379 kalit; Wzgram account upload queue/flood/stopped uchun ham
+umumiy tarjima kalitlari tayyorlandi. Source savol/variant/explanation,
+guruh/topik nomlari, fayl nomlari, description, ID va havolalar saqlandi;
+faqat bot yozgan label va machine-code turlar tarjima qilinadi. Texnik
+exception/entity diagnostika payloadlari saqlanadi. Asl quiz regressioni
+Uzbek locale ni aniq belgilaydi; yangi regressiyalar EN/UZ/RU reportlar,
+parser/handler usage, progress final va source preservationni tekshiradi.
+BUG-103 yozildi. Main full pytest: 537 passed, 22 subtests passed; migration
+675 symbols/0 failures, pip check va diff check o‘tdi.
+UMUMIY YO‘NALISH: main va origin/wzgram birga yangilansin; Wzgramga xos
+upload coordinator notice ham locale ishlatsin. Oddiy source kontentga,
+ENV/session credential, routing, flood algoritmi va live botga tegilmasin.
+
+## Sessiya davomi (2026-11-10) — Qolgan UI tarjimalarini Wzgramga sinxronlash
+
+Main 3139e55 Wzgram branchiga merge qilindi. Wzgramdagi upload coordinator
+queue/flood/stopped notice mavjud 379 kalitli katalog orqali requester
+locale siga ulandi. Text faqat bot orqali, shared account lock/cooldown va
+retry semantikasi o‘zgarmadi. 9 yangi offline notice testi, eski regressionda
+aniq Uzbek locale. Full Wzgram pytest 564 passed va 22 subtests passed;
+migration 678 symbols/0 failures, pip check, diff check o‘tdi.
+UMUMIY YO‘NALISH: main va Wzgram birga push qilinsin, lokal Wzgram clone
+ham yangilansin. Source kontent/nomlar va raw texnik diagnostika saqlansin;
+ENV, session credential, upload algoritmi va live botga tegilmasin.

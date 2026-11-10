@@ -196,11 +196,13 @@ def test_account_lookup_cached_and_same_account_uses_one_state():
 
 
 @pytest.mark.parametrize('reason,seconds,expected', [
-    ('queue', 0, 'Upload navbatda'),
+    ('queue', 0, 'Yuborish navbatda'),
     ('flood', 31, 'avtomatik davom etadi'),
-    ('stopped', 1913, 'upload to‘xtatildi'),
+    ('stopped', 1913, 'yuborish to‘xtatildi'),
 ])
-def test_user_notice_uses_bot_only(reason, seconds, expected):
+def test_user_notice_uses_bot_only(reason, seconds, expected, monkeypatch):
+    from TechVJ import lang
+    monkeypatch.setattr(lang, "get_user_lang", lambda _: "uz")
     async def run():
         bot = SimpleNamespace(send_message=AsyncMock(return_value='sent'))
         await upload_wait_notifier(bot, 456)(reason, seconds)
@@ -299,4 +301,25 @@ def test_private_range_resumes_after_full_flood_cooldown(monkeypatch, tmp_path, 
         notices = [call.kwargs['text'] if 'text' in call.kwargs else call.args[1]
                    for call in bot.send_message.await_args_list]
         assert any('62-postdan' in notice and str(seconds + 1) in notice for notice in notices)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('code', ['en', 'uz', 'ru'])
+@pytest.mark.parametrize('reason,key', [('queue','account_upload_queue'),
+    ('flood','account_upload_flood'),('stopped','account_upload_stopped')])
+def test_account_upload_notices_use_requester_locale(monkeypatch, tmp_path, code, reason, key):
+    from TechVJ import lang
+    from core import safe_send
+
+    async def run():
+        monkeypatch.setattr(lang, 'LANG_DIR', str(tmp_path))
+        assert lang.set_user_lang(123, code)
+        # The uploader's own language must never select the requester's UI.
+        assert lang.set_user_lang(999, 'en')
+        send = AsyncMock()
+        monkeypatch.setattr(safe_send, 'safe_send_message', send)
+        bot = SimpleNamespace()
+        notice = module.upload_wait_notifier(bot, 123)
+        await notice(reason, 27)
+        send.assert_awaited_once_with(bot, 123, lang.STRINGS[code][key].format(seconds=27))
     asyncio.run(run())

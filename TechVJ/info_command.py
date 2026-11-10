@@ -15,6 +15,7 @@ Returns:
 - Topics enabled status
 """
 
+from TechVJ.lang import get_string, get_report_error, get_report_type
 import re
 import asyncio
 from wzgram import Client, filters
@@ -73,7 +74,7 @@ async def safe_disconnect(client):
             pass
 
 
-def parse_info_link(url: str):
+def parse_info_link(url: str, user_id: int = 0):
     """
     Parse Telegram link for /info command.
     
@@ -117,10 +118,10 @@ def parse_info_link(url: str):
         username = channel_only.group(1)
         return username, None, None, None, "channel", None
     
-    return None, None, None, None, None, "Invalid Telegram link format"
+    return None, None, None, None, None, get_string(user_id, 'info_input_invalid')
 
 
-async def get_chat_info(client: Client, chat_id) -> dict:
+async def get_chat_info(client: Client, chat_id, user_id: int = 0) -> dict:
     """
     Get comprehensive chat information.
     
@@ -206,90 +207,62 @@ async def get_chat_info(client: Client, chat_id) -> dict:
     except Exception as e:
         error_str = str(e).upper()
         if "CHANNEL_PRIVATE" in error_str:
-            result["error"] = "Channel is private. You need to join it first."
+            result["error"] = get_string(user_id, "report_error_private")
         elif "USERNAME_NOT_OCCUPIED" in error_str:
-            result["error"] = "This username does not exist."
+            result["error"] = get_string(user_id, "report_error_invalid")
         elif "CHAT_ID_INVALID" in error_str:
-            result["error"] = "Invalid chat ID."
+            result["error"] = get_string(user_id, "report_error_invalid")
         elif "PEER_ID_INVALID" in error_str:
-            result["error"] = "Cannot access this chat. Make sure you're a member."
+            result["error"] = get_string(user_id, "report_error_private")
         else:
-            result["error"] = f"Error: {e}"
+            result["error"] = get_string(user_id, "request_error", e=e)
     
     return result
 
 
-def format_info_response(info: dict, link_type: str, topic_id: int = None, thread_id: int = None) -> str:
-    """Format the info response message."""
-    if info.get("error"):
-        return f"**Error:** {info['error']}"
-    
-    lines = ["**📊 Channel/Group Info**\n"]
-    
-    if info["title"]:
-        lines.append(f"**Title:** {info['title']}")
-    
-    if info["username"]:
-        lines.append(f"**Username:** @{info['username']}")
-    
-    if info["id"]:
-        lines.append(f"**ID:** `{info['id']}`")
-    
-    if info["type"]:
-        lines.append(f"**Type:** {info['type']}")
-    
-    if info["member_count"]:
-        lines.append(f"**Members:** {info['member_count']:,}")
-    
-    if info["last_message_id"]:
-        lines.append(f"**Last Post ID:** {info['last_message_id']}")
-    
-    if info.get("creation_date"):
+def format_info_response(info: dict, link_type: str, topic_id: int = None, thread_id: int = None, user_id: int = 0) -> str:
+    """Render translated labels without changing source names/descriptions."""
+    tr = lambda key, **kwargs: get_string(user_id, "report_" + key, **kwargs)
+    if info.get('error'):
+        return info['error']
+    lines = [f"**{tr('info_heading')}**\n"]
+    for label, field in [('title','title'), ('username','username'), ('id','id'), ('type','type'), ('members','member_count'), ('last_post','last_message_id')]:
+        value = info.get(field)
+        if not value:
+            continue
+        if field == 'type':
+            value = get_report_type(user_id, value)
+        elif field == 'username':
+            value = '@' + value
+        elif field == 'member_count':
+            value = f"{value:,}"
+        lines.append(f"**{tr(label)}:** {value}")
+    if info.get('creation_date'):
         try:
-            lines.append(f"**Created:** {info['creation_date'].strftime('%Y-%m-%d')}")
-        except:
+            lines.append(f"**{tr('created')}:** {info['creation_date'].strftime('%Y-%m-%d')}")
+        except (AttributeError, TypeError, ValueError):
             pass
-    
-    lines.append(f"\n**Comments:** {'✅ Enabled' if info['comments_enabled'] else '❌ Disabled'}")
-    lines.append(f"**Topics/Forum:** {'✅ Enabled' if info['topics_enabled'] else '❌ Disabled'}")
-    
-    if info.get("slow_mode"):
-        lines.append(f"**Slow Mode:** {info['slow_mode']}s")
-    
+    lines.append(f"\n**{tr('comments')}:** {tr('enabled' if info.get('comments_enabled') else 'disabled')}")
+    lines.append(f"**{tr('topics')}:** {tr('enabled' if info.get('topics_enabled') else 'disabled')}")
+    if info.get('slow_mode'):
+        lines.append(f"**{tr('slow')}:** {info['slow_mode']} s")
     if topic_id:
-        lines.append(f"\n**Topic ID:** {topic_id}")
-    
+        lines.append(f"\n**{tr('topic_id')}:** {topic_id}")
     if thread_id:
-        lines.append(f"\n**Thread ID:** {thread_id}")
-    
-    if info["linked_chat_id"]:
-        linked_title = info.get("linked_chat_title", "")
-        lines.append(f"\n**Discussion Group:**")
-        if linked_title:
-            lines.append(f"  • Name: {linked_title}")
+        lines.append(f"\n**{tr('thread_id')}:** {thread_id}")
+    if info.get('linked_chat_id'):
+        lines.append(f"\n**{tr('discussion')}:**")
+        if info.get('linked_chat_title'):
+            lines.append(f"  • {tr('title')}: {info['linked_chat_title']}")
         lines.append(f"  • ID: `{info['linked_chat_id']}`")
-    
-    if info.get("description"):
-        # Truncate long descriptions
-        desc = info["description"]
-        if len(desc) > 200:
-            desc = desc[:200] + "..."
-        lines.append(f"\n**Description:**\n{desc}")
-    
-    # Status flags
-    flags = []
-    if info.get("is_verified"):
-        flags.append("✅ Verified")
-    if info.get("is_scam"):
-        flags.append("⚠️ SCAM")
-    if info.get("is_fake"):
-        flags.append("⚠️ FAKE")
-    if info.get("is_restricted"):
-        flags.append("🔒 Restricted")
-    
+    if info.get('description'):
+        description = str(info['description'])
+        if len(description) > 200:
+            description = description[:200] + '...'
+        lines.append(f"\n**{tr('description')}:**\n{description}")
+    flags = [tr(label) for field, label in [('is_verified','verified'), ('is_scam','scam'), ('is_fake','fake'), ('is_restricted','restricted')] if info.get(field)]
     if flags:
-        lines.append(f"\n**Flags:** {', '.join(flags)}")
-    
+        lines.append(f"\n**{tr('flags')}:** {', '.join(flags)}")
     return "\n".join(lines)
 
 
@@ -309,12 +282,7 @@ async def info_command_handler(client: Client, message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply(
-            "**Usage:** `/info <telegram_link>`\n\n"
-            "**Examples:**\n"
-            "• `/info https://t.me/channelname`\n"
-            "• `/info https://t.me/channelname/123`\n"
-            "• `/info https://t.me/c/1234567890/123`\n"
-            "• `/info https://t.me/c/1234567890/123/456` (topic)",
+            get_string(user_id, 'info_usage'),
             **build_reply_kwargs_from_message(message)
         )
         return
@@ -322,23 +290,23 @@ async def info_command_handler(client: Client, message: Message):
     url = parts[1].strip()
     
     # Parse link
-    chat_id, message_id, topic_id, thread_id, link_type, error = parse_info_link(url)
+    chat_id, message_id, topic_id, thread_id, link_type, error = parse_info_link(url, user_id=user_id)
     
     if error:
         await message.reply(
-            f"**Error:** {error}",
+            get_string(user_id, "error_generic", error=error),
             **build_reply_kwargs_from_message(message)
         )
         return
     
-    status_msg = await message.reply("Fetching info...")
+    status_msg = await message.reply(get_string(user_id, 'info_fetching'))
     
     # Try with bot client first (for public channels)
     if link_type == "public" or link_type == "channel":
         try:
-            info = await get_chat_info(client, chat_id)
+            info = await get_chat_info(client, chat_id, user_id=user_id)
             if not info.get("error"):
-                response = format_info_response(info, link_type, topic_id, thread_id)
+                response = format_info_response(info, link_type, topic_id, thread_id, user_id=user_id)
                 await status_msg.edit_text(response)
                 return
         except:
@@ -348,18 +316,18 @@ async def info_command_handler(client: Client, message: Message):
     user_data = await async_db.find_user(user_id)
     if not get(user_data, 'logged_in', False) or not user_data.get('session'):
         await status_msg.edit_text(
-            "**Error:** You need to /login first to access private channels."
+            get_string(user_id, "need_login")
         )
         return
     
     acc, error = await create_user_client(user_data['session'])
     if error:
-        await status_msg.edit_text(f"**Connection Error:** {error}")
+        await status_msg.edit_text(get_string(user_id, "connection_error", e=error))
         return
     
     try:
-        info = await get_chat_info(acc, chat_id)
-        response = format_info_response(info, link_type, topic_id, thread_id)
+        info = await get_chat_info(acc, chat_id, user_id=user_id)
+        response = format_info_response(info, link_type, topic_id, thread_id, user_id=user_id)
         await status_msg.edit_text(response)
     finally:
         await safe_disconnect(acc)

@@ -5761,7 +5761,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                     if await pipeline.check_cancelled():
                         if _t_status:
                             await _t_status.finish(
-                                f"**Cancelled**\nProcessed: {processed}/{total_posts}\nSkipped: {skipped}"
+                                get_string(user_id, "cancelled_topic", processed=processed, total_posts=total_posts, skipped=skipped)
                             )
                         else:
                             await client.edit_message_text(
@@ -5961,8 +5961,8 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                             logger.warning("BatchController: stopping topic batch for user %s", user_id)
                             if _t_status:
                                 await _t_status.finish(
-                                    f"⚠️ **Ko'p xato — batch to'xtatildi**\n"
-                                    f"✅ {processed} | ❌ {failed} | ⏭ {skipped}"
+                                    get_string(user_id, "batch_errors") +
+                                    f"\n✅ {processed} | ❌ {failed} | ⏭ {skipped}"
                                 )
                             break
 
@@ -5991,9 +5991,7 @@ async def process_topic_posts(client: Client, message: Message, parsed: ParsedUR
                         if wait_time > 120:
                             if _t_status:
                                 await _t_status.finish(
-                                    f"⚠️ **FloodWait {wait_time}s** — batch paused.\n"
-                                    f"✅ {processed} processed, ❌ {failed} failed\n"
-                                    f"Retry in {wait_time // 60} min."
+                                    get_string(user_id, "topic_flood", wait_time=wait_time, processed=processed, failed=failed, value_3=wait_time // 60)
                                 )
                             else:
                                 try:
@@ -6624,7 +6622,7 @@ async def process_private_posts(client: Client, message: Message, parsed: Parsed
                         if await pipeline.check_cancelled():
                             if _status:
                                 await _status.finish(
-                                    f"**Cancelled**\nProcessed: {processed}/{total_posts}\nAlbums: {albums_processed}"
+                                    get_string(user_id, "cancelled_albums", processed=processed, total_posts=total_posts, albums_processed=albums_processed)
                                 )
                             else:
                                 await client.edit_message_text(
@@ -9090,13 +9088,13 @@ async def handle_poll(
                 else:
                     logger.warning(f"vote_poll failed: {vote_err}")
         
-        # Build text representation (Uzbek format as requested)
+        # Build text representation in the selected language
         option_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         
-        poll_type_text = "Quiz" if is_quiz else "So'rovnoma"
+        poll_type_text = get_string(message.chat.id, 'poll_quiz') if is_quiz else get_string(message.chat.id, 'poll_survey')
         text = f"**📊 {poll_type_text}**\n\n"
-        text += f"**Savol:**\n{poll.question}\n\n"
-        text += "**Variantlar:**\n"
+        text += get_string(message.chat.id, 'poll_question', value_0=poll.question)
+        text += get_string(message.chat.id, 'poll_options')
         
         for i, opt in enumerate(poll.options):
             letter = option_letters[i] if i < len(option_letters) else str(i + 1)
@@ -9111,34 +9109,34 @@ async def handle_poll(
         vote_letter = option_letters[vote_option] if vote_option < len(option_letters) else str(vote_option + 1)
         vote_text = poll.options[vote_option].text if vote_option < len(poll.options) else "?"
         
-        text += f"\n**Sizning ovozingiz:** {vote_letter}) {vote_text}"
+        text += get_string(message.chat.id, 'poll_vote', vote_letter=vote_letter, vote_text=vote_text)
         
         if vote_success:
             text += " ✓"
         elif vote_error and "ALREADY" not in vote_error.upper():
-            text += " (ovoz berilmadi)"
+            text += get_string(message.chat.id, 'poll_vote_failed')
         
         # Quiz result
         if is_quiz:
             correct_letter = option_letters[correct_id] if correct_id is not None and correct_id < len(option_letters) else "?"
             correct_text = poll.options[correct_id].text if correct_id is not None and correct_id < len(poll.options) else "?"
             
-            text += f"\n**To'g'ri javob:** {correct_letter}) {correct_text}"
+            text += get_string(message.chat.id, 'poll_correct', correct_letter=correct_letter, correct_text=correct_text)
             
             if vote_option == correct_id:
-                text += "\n\n**Natija:** ✅ TO'G'RI"
+                text += get_string(message.chat.id, 'poll_result_correct')
             else:
-                text += "\n\n**Natija:** ❌ NOTO'G'RI"
+                text += get_string(message.chat.id, 'poll_result_wrong')
         
         # Explanation
         if is_quiz and hasattr(poll, 'explanation') and poll.explanation:
-            text += f"\n\n**💡 Izoh:** {poll.explanation}"
+            text += get_string(message.chat.id, 'poll_explanation', value_0=poll.explanation)
         
         # QuizBot links (preserve existing workflow)
         if source_msg:
             quizbot_links = extract_quizbot_links(source_msg.reply_markup)
             if quizbot_links:
-                text += "\n\n🤖 **QuizBot Start:**"
+                text += get_string(message.chat.id, 'poll_quizbot')
                 for link in quizbot_links:
                     text += f"\n{link}"
         
@@ -9183,7 +9181,7 @@ async def handle_quizbot_post(client: Client, message: Message, source_msg) -> b
         
         quizbot_links = extract_quizbot_links(source_msg.reply_markup)
         if quizbot_links:
-            text = (text + "\n\n" if text else "") + "🤖 Testni boshlash:\n" + "\n".join(quizbot_links)
+            text = (text + "\n\n" if text else "") + get_string(message.chat.id, 'quiz_start') + "\n".join(quizbot_links)
         if not text:
             return False
         

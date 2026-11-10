@@ -121,18 +121,12 @@ def upload_wait_notifier(bot, user_id):
             return
         last_notice[:] = [reason, monotonic()]
         from core.safe_send import safe_send_message
-        if reason == 'queue':
-            text = ('⏳ Upload navbatda: yuboruvchi akkaunt boshqa faylni yuklamoqda. '
-                    'Navbatingiz kelganda avtomatik davom etadi. Qayta havola yuborish shart emas.')
-        elif reason == 'stopped':
-            text = (f'⚠️ Telegram upload cheklovi: {seconds} soniya kutish kerak. '
-                    'Joriy akkauntdagi upload to‘xtatildi. Boshqa sessiyaga o‘tish imkoni bo‘lmasa, '
-                    'bu urinish yakunlanadi. Akkaunt kutish tugamaguncha yangi upload boshlamaydi. '
-                    'Oldin kelgan bo‘laklarni saqlang. Qayta urinishda ular takrorlanishi mumkin.')
-        else:
-            text = (f'⏳ Telegram upload cheklovi: taxminan {seconds} soniya kutiladi, '
-                    'so‘ng avtomatik davom etadi. Qayta havola yuborish shart emas. '
-                    'Kutish paytida shu akkauntdan boshqa upload boshlanmaydi.')
+        from TechVJ.lang import get_string
+        key = {
+            'queue': 'account_upload_queue',
+            'stopped': 'account_upload_stopped',
+        }.get(reason, 'account_upload_flood')
+        text = get_string(user_id, key, seconds=seconds)
         await safe_send_message(bot, user_id, text)
     return notify
 

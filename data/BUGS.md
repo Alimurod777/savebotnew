@@ -2019,3 +2019,28 @@ kiritildi. Coordinator/worker/part-cooldown/Alwaysdata branch o‘zgarishlari
 saqlandi; locale regressioni moslandi. 530 test va 22 subtest o‘tdi, migration
 672 symbols/0 failures. Remote Wzgram va uning lokal clone’i sinxronlanadi;
 ENV, session credential va live botga tegilmadi. Status: ✅ tuzatildi.
+## BUG-103: Qo‘shimcha progress va tahlil UIlari /lang tanlovini hisobga olmaydi
+
+Status: ✅ Tuzatildi (2026-11-10).
+Foydalanuvchi ayrim joylarda eski til yana qolganini bildirdi. Auditda faol
+core/downloader/progress_v2 publisheri, status-tracker finish branchlari,
+QuizBot/poll qo‘shimcha sarlavhalari, /info /group /post input/usage/error va
+hisobot label/type/flaglari aniqlangan. Wzgram upload coordinatorining
+queue/flood/stopped xabarlari ham hardcoded Uzbek bo‘lgan.
+Yechim: core progress va finish branchlari mavjud get_string bilan birlashtirildi;
+upload final holati endi Download o‘rniga to‘g‘ri Upload nomini oladi. Quiz/poll
+label va hisobotlar locale-aware, parser/formatterlarda backward-compatible
+user_id optional argument bor. Report error/type uchun faqat machine code
+lookup ishlatiladi: source nomlari/description/fayl nomi/link va poll savol,
+variant, explanation matnlari tarjima qilinmaydi. Raw texnik diagnostika
+ma’lumotlari saqlanadi. Main lug‘atida har til uchun 379 kalit.
+Main tekshiruv: 25 yangi offline regression, full pytest 537 passed va
+22 subtests passed; migration 675 symbols/0 failures, pip check, diff check.
+Wzgram coordinator locale ulanishi va branch tekshiruvi alohida qayd qilinadi.
+
+BUG-103 Wzgram yakuni: core/upload_coordinator.upload_wait_notifier queue,
+flood va stopped holatlarida requesterning get_string tilini ishlatadi;
+account lock/cooldown/retry algoritmi va bot-only text routing o‘zgarmadi.
+Eski bot-only regression locale ni aniq belgilaydi; 9 yangi test uchala
+holatni har uch tilda tekshiradi. Wzgram full pytest: 564 passed va
+22 subtests passed; migration 678 symbols/0 failures, pip check va diff check.

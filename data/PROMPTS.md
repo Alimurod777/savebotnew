@@ -1898,3 +1898,14 @@ UMUMIY YO‘NALISH: keyingi Wzgram tuzatishlarida GitHub va sync worktree bilan
 birga foydalanuvchining savebotnew-wzgram lokal clone holati ham tekshirilsin.
 Tekshiruv: shu lokal papkada 56 focused test passed; Wzgram migration
 684 symbols/0 failures, git diff --check o‘tdi.
+
+
+## Sessiya davomi (2026-11-12) — Sync worktree olib tashlash
+
+User savebotnew-wzgram-sync ni olib tashlashni va ENVga tegmaslikni so‘radi.
+Sync worktree toza va uning commiti origin/wzgram tarixida borligi tekshirildi;
+git worktree remove bilan papka, git branch -d bilan lokal sync branch olib
+tashlandi. savebotnew-wzgram 963eb89 da, maintenance tuzatishi mavjud.
+UMUMIY YO‘NALISH: Wzgram ishlari bevosita savebotnew-wzgram da bajarilsin;
+sync worktree qayta yaratilmasin. Asosiy ikkala loyiha .env fayllari
+o‘zgartirilmadi, bot restart yoki live send bajarilmadi.

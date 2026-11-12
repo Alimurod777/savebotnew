@@ -1885,3 +1885,16 @@ User Wzgram ham tekshirilgani va GitHubga pushni so‘radi. Maintenance tuzatish
 main hamda alohida origin/wzgram branchiga qo‘llanadi; Wzgram upload coordinator
 farqlari saqlanadi. Ikkala branch offline tekshiriladi, faqat vazifaga tegishli
 kod/test/hujjatlar commit qilinadi; live bot restart qilinmaydi.
+
+## Sessiya davomi (2026-11-12) — Haqiqiy lokal Wzgram papkasini yangilash
+
+User savebotnew-wzgram papkasi yangilanmaganini ko‘rsatdi. Tekshiruv tasdiqladi:
+GitHub origin/wzgram va savebotnew-wzgram-sync 6e84dfe da, lekin alohida lokal
+/home/telegramdata4/savebotnew-wzgram clone 0ff5453 da qolgan. Toza lokal wzgram
+branch git fetch + merge --ff-only bilan 6e84dfe ga yangilandi; maintenance
+handler va navbat tekshiruvlari shu papkada ham mavjud. Kod origin/wzgram bilan
+bir xil. ENV/session fayllari o‘zgartirilmadi, live bot restart qilinmadi.
+UMUMIY YO‘NALISH: keyingi Wzgram tuzatishlarida GitHub va sync worktree bilan
+birga foydalanuvchining savebotnew-wzgram lokal clone holati ham tekshirilsin.
+Tekshiruv: shu lokal papkada 56 focused test passed; Wzgram migration
+684 symbols/0 failures, git diff --check o‘tdi.

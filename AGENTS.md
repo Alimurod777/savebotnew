@@ -882,3 +882,10 @@ relay_uploader.reload_sessions(strings)  # hot-reload
   log policy. Persist the empty list too, to clear stale remote exclusions.
 - Destination set/on/off/remove/reset preserve user exceptions. Guard submit,
   direct upload observation and queued delivery; leave user delivery unchanged.
+
+
+### Lokal Wzgram papkasi (2026-11-12)
+- Wzgram o‘zgarishlarini bevosita /home/telegramdata4/savebotnew-wzgram da bajaring.
+- savebotnew-wzgram-sync papkasi/worktree yaratilmansin. GitHubga push qilish
+  bilan birga asosiy lokal Wzgram papkasi ham yangilangan bo‘lsin.
+- Foydalanuvchining aniq talabi: .env fayllariga tegmang.

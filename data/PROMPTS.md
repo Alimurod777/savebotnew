@@ -1722,3 +1722,14 @@ User Wzgram ham tekshirilgani va GitHubga pushni so‘radi. Maintenance tuzatish
 main hamda alohida origin/wzgram branchiga qo‘llanadi; Wzgram upload coordinator
 farqlari saqlanadi. Ikkala branch offline tekshiriladi, faqat vazifaga tegishli
 kod/test/hujjatlar commit qilinadi; live bot restart qilinmaydi.
+
+
+## Sessiya davomi (2026-11-12) — Sync worktree olib tashlash
+
+User savebotnew-wzgram-sync ni olib tashlashni va ENVga tegmaslikni so‘radi.
+Sync worktree toza va uning commiti origin/wzgram tarixida borligi tekshirildi;
+git worktree remove bilan papka, git branch -d bilan lokal sync branch olib
+tashlandi. savebotnew-wzgram 963eb89 da, maintenance tuzatishi mavjud.
+UMUMIY YO‘NALISH: Wzgram ishlari bevosita savebotnew-wzgram da bajarilsin;
+sync worktree qayta yaratilmasin. Asosiy ikkala loyiha .env fayllari
+o‘zgartirilmadi, bot restart yoki live send bajarilmadi.

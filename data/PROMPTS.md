@@ -1693,3 +1693,32 @@ cleanup FloodWait/error, upload/copy failure). Main full pytest 553 passed va
 UMUMIY YO‘NALISH: main va Wzgram ikkisi yangilansin. Muvaffaqiyatli yuborilgan
 media/part/caption qoladi, vaqtinchalik bot statusi ketadi; xato yoki cleanup
 uchun kontent qayta yuborilmasin. ENV/session/live botga tegilmasin.
+
+## Sessiya (2026-11-12) — /maintenance on boshqa akkauntda ishlamasligi
+
+So‘rov: maintenance MongoDBda saqlandi desa ham bot ishlayapti; user boshqa
+akkauntdan sinaganini aniqlashtirdi. Faqat save URL yo‘lida turgan optional
+check barcha private komanda/login/callbacklarni qamramagan, navbatdagi ishlar
+ham qayta tekshirilmagan (BUG-106). Incoming private handler -10001 groupda
+maintenance javobi bilan keyingi handlerlarni to‘xtatadi. Owner, /stop /cancel
+/logout uchun ruxsat saqlandi. Flag yagona core.owner_settings manbasidan,
+governancedan mustaqil o‘qiladi; user/priority queued job boshlanishida qayta
+tekshiriladi. Boshlangan transferlar davom etadi; komanda buni tushuntiradi.
+16 yangi offline regression; focused maintenance/only/settings: 56 passed.
+
+UMUMIY YO‘NALISH: maintenance oddiy akkauntlarning yangi private so‘rovlarini
+hamda hali boshlanmagan queued downloadlarini bloklasin; owner boshqaruvi,
+to‘xtatish va logout ochiq qolsin. Mongo persistence, media/text routing va
+session tanlash saqlansin; avtomatik restart yoki jonli test send qilinmasin.
+
+Qo‘shimcha tekshiruv: full pytest 568 passed va 22 subtests passed; undan
+keyin qo‘shilgan command on/off regressioni bilan focused suite 56 passed.
+Wzgram migration 681 symbols/0 failures, pip check, py_compile va diff check
+o‘tdi. Tuzatish kodda tayyor; joriy bot jarayoni avtomatik restart qilinmadi.
+
+## Sessiya davomi (2026-11-12) — Wzgram tekshiruvi va GitHub push
+
+User Wzgram ham tekshirilgani va GitHubga pushni so‘radi. Maintenance tuzatishi
+main hamda alohida origin/wzgram branchiga qo‘llanadi; Wzgram upload coordinator
+farqlari saqlanadi. Ikkala branch offline tekshiriladi, faqat vazifaga tegishli
+kod/test/hujjatlar commit qilinadi; live bot restart qilinmaydi.

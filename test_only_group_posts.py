@@ -19,6 +19,11 @@ CHANNEL = -100654321
 OTHER = -100999999
 
 
+@pytest.fixture(autouse=True)
+def maintenance_off(monkeypatch):
+    monkeypatch.setattr(save, '_is_maintenance', lambda: False)
+
+
 def message(post_id=1, sender=GROUP, automatic=False, origin=None, **kwargs):
     return NS(id=post_id, chat=NS(id=GROUP), sender_chat=NS(id=sender) if sender else None,
               automatic_forward=automatic, forward_origin=NS(chat=NS(id=origin)) if origin else None,

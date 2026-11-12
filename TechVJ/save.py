@@ -117,11 +117,12 @@ except ImportError:
 from TechVJ.user_queue import user_queue, check_and_queue, format_queue_status
 
 # Governance layer (role + rate limit + permission)
+from core.owner_settings import is_maintenance as _is_maintenance
+
 try:
     from core.role_manager import role_manager as _role_manager, UserRole as _UserRole
     from core.rate_limiter import rate_limiter as _rate_limiter
     from core.permission_guard import permission_guard as _permission_guard
-    from TechVJ.owner_commands import is_maintenance as _is_maintenance
     _GOVERNANCE_AVAILABLE = True
 except ImportError as _gov_err:
     _GOVERNANCE_AVAILABLE = False
@@ -4597,6 +4598,15 @@ async def _dispatch_with_priority(
     """Dispatch a processing task through PriorityQueue when available."""
     if getattr(parsed, "only_group_posts", False):
         handler = process_only_group_posts
+
+    async def _run_handler(c, m, p):
+        # Recheck when a priority slot opens: maintenance may have changed
+        # since this request entered either queue.
+        if _is_maintenance() and context.user_id != OWNER_ID:
+            await c.send_message(context.target_chat_id, get_string(context.user_id, 'maintenance_notice'))
+            return
+        return await handler(c, m, p, context=context)
+
     if _GOVERNANCE_AVAILABLE:
         try:
             from core.priority_queue import priority_queue as _pq, PriorityJob
@@ -4604,7 +4614,7 @@ async def _dispatch_with_priority(
                 _role = role or _UserRole.NEW_USER
 
                 async def _job_handler(c, m, p):
-                    return await handler(c, m, p, context=context)
+                    return await _run_handler(c, m, p)
 
                 job = PriorityJob(
                     user_id=context.user_id,
@@ -4622,7 +4632,7 @@ async def _dispatch_with_priority(
                 context.task_id,
                 e,
             )
-    return await handler(client, message, parsed, context=context)
+    return await _run_handler(client, message, parsed)
 
 
 # ==================== MAIN MESSAGE HANDLER ====================
@@ -4664,6 +4674,9 @@ async def _save_request(client: Client, message: Message, url: str, only_group_p
     """Shared validation, governance and queueing for normal and /only links."""
     user_id = message.from_user.id
     try:
+        if _is_maintenance() and user_id != OWNER_ID:
+            await message.reply(get_string(user_id, 'maintenance_notice'))
+            return
         if "https://t.me/" not in url and "http://t.me/" not in url:
             if only_group_posts:
                 await message.reply(get_string(user_id, "only_usage"))
@@ -4732,11 +4745,6 @@ async def _save_request(client: Client, message: Message, url: str, only_group_p
 
         # ── Governance middleware ──────────────────────────────────────────────
         if _GOVERNANCE_AVAILABLE:
-            # Maintenance mode check
-            if _is_maintenance() and user_id != OWNER_ID:
-                await message.reply(get_string(user_id, 'maintenance_notice'))
-                return
-
             _gov_role = await _role_manager.get_role(user_id)
 
             # Banned check
@@ -4858,6 +4866,9 @@ async def _process_queued_item(client: Client, item):
     user_id = item.chat_id  # chat_id = user_id in private chats
     
     try:
+        if _is_maintenance() and user_id != OWNER_ID:
+            await client.send_message(user_id, get_string(user_id, 'maintenance_notice'))
+            return
         parsed = item.parsed_data
         base_ctx = _task_context_from_queue(item, parsed, client_type="bot")
         q_role = None

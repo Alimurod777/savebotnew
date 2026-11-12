@@ -41,7 +41,7 @@ from wzgram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKey
 
 from config import OWNER_ID
 from database.async_db import async_db
-from core.owner_settings import owner_settings
+from core.owner_settings import owner_settings, is_maintenance
 
 # Governance modullarni guarded import qilish
 # Agar import muvaffaqiyatsiz bo'lsa, handlerlar registratsiya qilinadi
@@ -68,10 +68,6 @@ except ImportError as _gov_err:
         BANNED = "banned_user"
 
 logger = logging.getLogger(__name__)
-
-# Maintenance mode flag (in-memory)
-_maintenance_mode = False
-
 
 def _owner(message: Message) -> bool:
     return message.from_user and message.from_user.id == OWNER_ID
@@ -592,7 +588,6 @@ async def cmd_stats(client: Client, message: Message):
 
 @Client.on_message(filters.command("maintenance") & filters.private)
 async def cmd_maintenance(client: Client, message: Message):
-    global _maintenance_mode
     if not _owner(message):
         return
     parts = message.text.split()
@@ -600,14 +595,13 @@ async def cmd_maintenance(client: Client, message: Message):
         await message.reply("Usage: /maintenance <on|off>")
         return
     await owner_settings.change('maintenance', parts[1].lower() == "on")
-    _maintenance_mode = parts[1].lower() == "on"
-    status = "🔧 Texnik xizmat rejimi YOQILDI." if _maintenance_mode else "✅ Bot normal rejimda ishlayapti."
+    status = (
+        "🔧 Texnik xizmat rejimi YOQILDI.\n"
+        "Foydalanuvchilarning yangi so‘rovlari va navbatdagi yuklashlar bloklanadi.\n"
+        "Owner uchun bot ishlaydi; boshlangan yuklashlar davom etadi."
+        if is_maintenance() else "✅ Bot normal rejimda ishlayapti."
+    )
     await message.reply(status + owner_settings.notice())
-
-
-def is_maintenance() -> bool:
-    """Called by save.py shim to gate all requests during maintenance."""
-    return owner_settings.values.get('maintenance', _maintenance_mode)
 
 
 # ── /broadcast ────────────────────────────────────────────────────────────────

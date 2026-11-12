@@ -187,6 +187,11 @@ class OwnerSettings:
 owner_settings = OwnerSettings()
 
 
+def is_maintenance() -> bool:
+    """Read the durable flag independently of optional governance imports."""
+    return bool(owner_settings.values.get('maintenance', False))
+
+
 def persist_owner_change(handler):
     @wraps(handler)
     async def wrapped(client, message, *args, **kwargs):

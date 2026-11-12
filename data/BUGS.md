@@ -2076,3 +2076,26 @@ faqat status tozalanishi, cleanup FloodWait/exception media qayta yubormasligi
 va shared poll rendererning recipient tili ham Wzgramda tekshirildi.
 Full pytest 580 passed, 22 subtests passed; migration 681 symbols/0 failures,
 pip check, compile va diff check o‘tdi. Live restart/send bajarilmadi.
+
+## BUG-106: Maintenance boshqa akkauntning komanda va navbat so‘rovlarini to‘xtatmaydi
+
+**Status:** ✅ Tuzatildi (2026-11-12).
+
+Muammo: `/maintenance on` MongoDBga yozilganini bildirsa ham boshqa akkaunt
+botdan foydalanishi mumkin. Tekshiruv faqat save URL middleware ichida,
+optional governance import flagiga bog‘langan edi. `/start`, login, boshqa
+komandalar va callbacklar tekshirilmagan; oldin navbatga kirgan ishlar ham
+maintenance holatini boshlanishida qayta o‘qimagan.
+
+Yechim: core.owner_settings.is_maintenance yagona durable flagni o‘qiydi.
+TechVJ/maintenance.py incoming private message va callbacklarni -10001 groupda,
+login ask-handler (-999) va commandlardan oldin bloklaydi; javob faqat botdan,
+user tilida, propagation reply xatosida ham to‘xtaydi. Owner va /stop /cancel
+/logout ochiq. save entry governance mavjudligidan mustaqil tekshiradi;
+user queue va priority slot ochilganda qayta tekshiriladi. Boshlangan transferlar
+avtomatik bekor qilinmaydi. Owner command javobi istisnolarni tushuntiradi.
+
+Tekshiruv: 16 yangi offline regression: komanda/OTP/link, callback, owner/off/
+cleanup istisnolari, governance yo‘qligi, queue release, priority wait va durable
+restore/command on-off. Live Telegram send, ENV/credential o‘zgarishi va service
+restart bajarilmadi.

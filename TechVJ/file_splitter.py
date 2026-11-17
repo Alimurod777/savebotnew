@@ -410,6 +410,8 @@ def get_system_info():
 def get_video_duration(video_path: str) -> float:
     """Get video duration using ffprobe."""
     try:
+        # Puts static-ffmpeg's bundled ffprobe on PATH for hosts without a system one.
+        get_ffmpeg_path()
         cmd = [
             'ffprobe', '-v', 'error',
             '-show_entries', 'format=duration',

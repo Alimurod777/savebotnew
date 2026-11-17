@@ -9,6 +9,10 @@ cp .env.example .env
 chmod 600 .env
 ```
 
+Root huquqi kerak emas: hammasi `venv` ichiga o'rnatiladi (ffmpeg ham —
+`static-ffmpeg` orqali). Muammolar bo'lsa: [README → Root huquqisiz
+o'rnatish](README.md#root-huquqisiz-ornatish-sudo-yoq-hosting).
+
 Mavjud `.env` faylini almashtirmang. `.env` ichida `API_ID`, `API_HASH`,
 `BOT_TOKEN`, `OWNER_ID` qiymatlarini kiriting. `DB_URI` MongoDB backup uchun.
 

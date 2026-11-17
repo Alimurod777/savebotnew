@@ -22,6 +22,53 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
+### Root huquqisiz o'rnatish (sudo yo'q hosting)
+
+`sudo`/`apt-get` shart emas: barcha kerakli kutubxonalar loyiha ichidagi
+`venv` ga o'rnatiladi, tizimga hech narsa yozilmaydi. Faqat Python 3.10+ kerak.
+
+```bash
+git clone --branch wzgram https://github.com/Alimurod777/savebotnew.git
+cd savebotnew
+python3 -m venv venv
+venv/bin/python -m pip install --upgrade pip
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/static_ffmpeg_paths   # ffmpeg/ffprobe ni venv ichiga oldindan yuklab oladi
+cp .env.example .env && chmod 600 .env
+venv/bin/python bot.py
+```
+
+Tizim paketlari o'rnini `requirements.txt` dagi paketlar bosadi:
+
+| apt paketi | Rootsiz o'rnini bosuvchi |
+| --- | --- |
+| `ffmpeg` | `static-ffmpeg` — binarlarni `venv` ichiga yuklaydi (birinchi ishlatishda yoki `static_ffmpeg_paths` bilan) |
+| `libmediainfo0v5` | `pymediainfo` wheel ichida `libmediainfo` bor |
+| `p7zip-full` | `py7zr` (sof Python) |
+| `python3-dev`, `build-essential` | kerak emas — Linux x86_64 da tayyor wheel'lar o'rnatiladi |
+
+Uchraydigan holatlar:
+
+- **`python3 -m venv` ishlamasa** (`ensurepip is not available`):
+  ```bash
+  python3 -m pip install --user virtualenv
+  python3 -m virtualenv venv
+  ```
+- **`externally-managed-environment` xatosi**: tizim Python'iga emas, doim
+  `venv/bin/python -m pip ...` orqali o'rnating. `pip install --user` yoki
+  `--break-system-packages` ishlatmang.
+- **`git` yo'q bo'lsa**: kodni GitHub'dan ZIP qilib yuklab oching, Wzgram'ni esa
+  arxivdan o'rnating (commit `requirements.txt` dagi bilan bir xil):
+  ```bash
+  venv/bin/python -m pip install "wzgram @ https://github.com/rjriajul/wzgram/archive/016ce19ef7136c3d8423bae26e5b3d4cd972bb44.zip"
+  grep -v '^wzgram @' requirements.txt > /tmp/req-nogit.txt
+  venv/bin/python -m pip install -r /tmp/req-nogit.txt
+  ```
+- **Disk kvotasi kichik bo'lsa**: `venv/bin/python -m pip install --no-cache-dir -r requirements.txt`.
+
+Tekshiruv: `venv/bin/python -m pip check && venv/bin/python verify_migration.py`.
+Alwaysdata uchun service sozlamasi: [ALWAYSDATA.md](ALWAYSDATA.md).
+
 `.env` faylida `API_ID`, `API_HASH`, `BOT_TOKEN`, `OWNER_ID` qiymatlarini
 kiriting. `OWNER_USERNAME` ixtiyoriy. `DB_URI` MongoDB backup uchun; bo'sh bo'lsa
 local-first yo'llar SQLite bilan ishlaydi, MongoDBga bog'liq legacy funksiyalar

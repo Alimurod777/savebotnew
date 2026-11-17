@@ -1386,7 +1386,9 @@ def _create_split_part_progress_callback(
         loop = None
 
     state = {
-        "last_edit": 0.0,
+        # -inf, not 0.0: monotonic() can be below `interval` right after boot,
+        # which would swallow the first progress update.
+        "last_edit": float("-inf"),
         "pending": False,
         "last_text": "",
     }

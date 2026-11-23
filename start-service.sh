@@ -1,13 +1,24 @@
 #!/bin/sh
-# Alwaysdata Advanced > Services: run this file in the foreground.
+# Alwaysdata Advanced > Services (or Scheduled tasks): run this file in the foreground.
 set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$PROJECT_DIR"
 
 if [ ! -x "$PROJECT_DIR/venv/bin/python" ]; then
-    echo "venv missing: create it and install requirements.txt first." >&2
+    echo "venv missing: run 'sh $PROJECT_DIR/setup.sh' first." >&2
     exit 1
+fi
+
+# One instance per checkout: two processes on one bot token break delivery.
+# The lock is held by the bot process itself and released when it exits.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$PROJECT_DIR/venv/.bot.lock"
+    if ! flock -n 9; then
+        echo "Bot already running; not starting a second instance." >&2
+        sleep 30
+        exit 0
+    fi
 fi
 
 export PATH="$PROJECT_DIR/venv/bin:$PATH"

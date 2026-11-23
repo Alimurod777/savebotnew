@@ -13,7 +13,7 @@ Python 3.11 bilan tekshirilgan. Ubuntu/Debian uchun:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-dev build-essential ffmpeg libmediainfo0v5 p7zip-full
-git clone --branch wzgram https://github.com/Alimurod777/savebotnew.git
+git clone https://github.com/Alimurod777/savebotnew.git
 cd savebotnew
 python3 -m venv venv
 source venv/bin/activate
@@ -28,15 +28,18 @@ cp .env.example .env
 `venv` ga o'rnatiladi, tizimga hech narsa yozilmaydi. Faqat Python 3.10+ kerak.
 
 ```bash
-git clone --branch wzgram https://github.com/Alimurod777/savebotnew.git
+git clone https://github.com/Alimurod777/savebotnew.git
 cd savebotnew
-python3 -m venv venv
-venv/bin/python -m pip install --upgrade pip
-venv/bin/python -m pip install -r requirements.txt
-venv/bin/static_ffmpeg_paths   # ffmpeg/ffprobe ni venv ichiga oldindan yuklab oladi
-cp .env.example .env && chmod 600 .env
-venv/bin/python bot.py
+sh setup.sh            # venv + kutubxonalar + .env + tekshiruv; qayta ishlatish xavfsiz
+nano .env              # API_ID, API_HASH, BOT_TOKEN, OWNER_ID
+sh start-service.sh    # botni ishga tushiradi
 ```
+
+`setup.sh` istalgan papkadan ishlaydi (`sh ~/savebotnew/setup.sh`), shuning uchun
+"requirements.txt topilmadi" xatosi chiqmaydi. Qo'lda o'rnatish:
+`python3 -m venv venv && venv/bin/python -m pip install -r requirements.txt`.
+ffmpeg birinchi ishlatishda `venv` ichiga yuklanadi; oldindan yuklash:
+`venv/bin/static_ffmpeg_paths`.
 
 Tizim paketlari o'rnini `requirements.txt` dagi paketlar bosadi:
 
